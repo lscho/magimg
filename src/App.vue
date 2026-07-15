@@ -17,6 +17,7 @@ import {
 import LoginModal from "@/components/LoginModal.vue";
 import RechargeModal from "@/components/RechargeModal.vue";
 import CreditLogModal from "@/components/CreditLogModal.vue";
+import SettingsModal from "@/components/SettingsModal.vue";
 import { useAppStore } from "@/stores/app";
 
 const app = useAppStore();
@@ -24,6 +25,7 @@ const route = useRoute();
 const showLogin = ref(false);
 const showRecharge = ref(false);
 const showCreditLog = ref(false);
+const showSettings = ref(false);
 const sidebarOpen = ref(false);
 
 onMounted(() => {
@@ -34,6 +36,11 @@ const currentMode = computed(() => route.params.mode);
 
 function closeSidebar() {
   sidebarOpen.value = false;
+}
+
+function openSettings() {
+  showSettings.value = true;
+  closeSidebar();
 }
 </script>
 
@@ -84,15 +91,15 @@ function closeSidebar() {
 
         <div class="sidebar-footer">
           <section class="credit-panel" :class="{ unauthenticated: !app.isAuthenticated }">
-            <RouterLink
+            <button
               class="account-settings-button"
-              to="/settings"
+              type="button"
               title="应用设置"
               aria-label="应用设置"
-              @click="closeSidebar"
+              @click="openSettings"
             >
               <Settings :size="17" />
-            </RouterLink>
+            </button>
             <template v-if="app.isAuthenticated">
               <button class="credit-balance-button" type="button" @click="showCreditLog = true">
                 <strong>{{ app.balance.balance }}</strong>
@@ -129,5 +136,6 @@ function closeSidebar() {
     <LoginModal v-if="showLogin" @close="showLogin = false" />
     <RechargeModal v-if="showRecharge" @close="showRecharge = false" />
     <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" />
+    <SettingsModal v-if="showSettings" @close="showSettings = false" />
   </div>
 </template>
