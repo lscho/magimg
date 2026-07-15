@@ -1,0 +1,130 @@
+# 幻画 AI · 跨平台构建流水线
+#
+# 触发方式：推送 v* 格式的 Tag（如 v1.0.0）时自动构建。
+# 构建目标（在 Linux 构建节点上交叉编译）：
+#   - Windows x86_64   (nsis 安装包)
+#   - Windows aarch64  (nsis 安装包)
+#   - macOS   x86_64   (app + dmg)
+#   - macOS   aarch64  (app + dmg)
+# 构建产物会上传到当前 Issue #1 的附件中。
+#
+# 说明：CNB 语义校验要求 tag_push 等仓库级事件必须放在 "$" 兜底分支下；
+# 因此统一在 "$" 下用 if 条件（放到 stage 级）筛选 v* Tag 后再分发到 4 条并行流水线。
+
+$:
+  tag_push:
+    # ── Windows x86_64 ──────────────────────────────────
+    - name: win-x86_64
+      docker:
+        build: .cnb/Dockerfile.tauri-build
+        volumes:
+          - cargo-registry:/root/.cargo/registry:rw
+          - node_modules
+      stages:
+        - name: guard
+          if: '[[ "$CNB_BRANCH" == v* ]]'
+          script: echo "building windows x86_64 for $CNB_BRANCH"
+        - name: prepare
+          script:
+            - npm ci --no-audit --no-fund
+            - npm run build
+            - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
+            - grep '"version"' src-tauri/tauri.conf.json | head -1
+        - name: build
+          script:
+            - cd src-tauri
+            - cargo tauri build --target x86_64-pc-windows-gnu --bundles nsis
+        - name: upload
+          script:
+            - for f in src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*; do echo "uploading $f"; cnb issues upload-file --file "$f"; done
+
+    # ── Windows aarch64 ─────────────────────────────────
+    - name: win-aarch64
+      docker:
+        build: .cnb/Dockerfile.tauri-build
+        volumes:
+          - cargo-registry:/root/.cargo/registry:rw
+          - node_modules
+      stages:
+        - name: guard
+          if: '[[ "$CNB_BRANCH" == v* ]]'
+          script: echo "building windows aarch64 for $CNB_BRANCH"
+        - name: prepare
+          script:
+            - npm ci --no-audit --no-fund
+            - npm run build
+            - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
+            - grep '"version"' src-tauri/tauri.conf.json | head -1
+        - name: build
+          script:
+            - cd src-tauri
+            - cargo tauri build --target aarch64-pc-windows-gnu --bundles nsis
+        - name: upload
+          script:
+            - for f in src-tauri/target/aarch64-pc-windows-gnu/release/bundle/nsis/*; do echo "uploading $f"; cnb issues upload-file --file "$f"; done
+
+    # ── macOS x86_64 (Intel) ────────────────────────────
+    - name: macos-x86_64
+      docker:
+        build: .cnb/Dockerfile.tauri-build
+        volumes:
+          - cargo-registry:/root/.cargo/registry:rw
+          - node_modules
+      stages:
+        - name: guard
+          if: '[[ "$CNB_BRANCH" == v* ]]'
+          script: echo "building macOS x86_64 for $CNB_BRANCH"
+        - name: prepare
+          script:
+            - npm ci --no-audit --no-fund
+            - npm run build
+            - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
+            - grep '"version"' src-tauri/tauri.conf.json | head -1
+        - name: build
+          env:
+            CC: x86_64-apple-darwin11-clang
+            CXX: x86_64-apple-darwin11-clang++
+            MACOSX_DEPLOYMENT_TARGET: "10.13"
+          script:
+            - cd src-tauri
+            - cargo tauri build --target x86_64-apple-darwin --bundles app,dmg
+        - name: upload
+          script:
+            - for f in src-tauri/target/x86_64-apple-darwin/release/bundle/app/* src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+
+    # ── macOS aarch64 (Apple Silicon) ───────────────────
+    - name: macos-aarch64
+      docker:
+        build: .cnb/Dockerfile.tauri-build
+        volumes:
+          - cargo-registry:/root/.cargo/registry:rw
+          - node_modules
+      stages:
+        - name: guard
+          if: '[[ "$CNB_BRANCH" == v* ]]'
+          script: echo "building macOS aarch64 for $CNB_BRANCH"
+        - name: prepare
+          script:
+            - npm ci --no-audit --no-fund
+            - npm run build
+            - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
+            - grep '"version"' src-tauri/tauri.conf.json | head -1
+        - name: build
+          env:
+            CC: aarch64-apple-darwin11-clang
+            CXX: aarch64-apple-darwin11-clang++
+            MACOSX_DEPLOYMENT_TARGET: "10.13"
+          script:
+            - cd src-tauri
+            - cargo tauri build --target aarch64-apple-darwin --bundles app,dmg
+        - name: upload
+          script:
+            - for f in src-tauri/target/aarch64-apple-darwin/release/bundle/app/* src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+
+    # ── 收尾通知 ────────────────────────────────────────
+    - name: done
+      stages:
+        - name: summary
+          if: '[[ "$CNB_BRANCH" == v* ]]'
+          script:
+            - echo "All platform builds finished. Artifacts uploaded to issue #1."
