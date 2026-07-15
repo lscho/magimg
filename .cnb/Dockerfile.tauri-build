@@ -1,0 +1,92 @@
+# 幻画 AI · Tauri 跨平台构建镜像
+#
+# 基于 Debian，预装：
+#   - Node.js 20 + npm（构建前端）
+#   - Rust 工具链（构建后端）
+#   - Tauri 2 官方 CLI
+#   - Windows / macOS 交叉编译工具链（mingw-w64 + osxcross）
+# 用于 CNB 云原生构建，在 Linux 节点上交叉打包出
+#   Windows (x86_64 / aarch64) 与 macOS (x86_64 / aarch64) 安装包。
+
+FROM debian:bookworm-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG RUST_VERSION=1.87.0
+# 用于 macOS 交叉编译的 SDK 大版本（phracker/MacOSX-SDKs release 页提供 10.15~11.3）
+ARG MACOS_SDK_MAJOR=11
+
+# ── 系统依赖 ──────────────────────────────────────────────
+# clang / libclang：Tauri 代码生成所需
+# mingw-w64：Windows 交叉编译（同时提供 x86_64 与 aarch64）
+# 其它为 osxcross 构建与基础工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl wget git xz-utils pkg-config \
+        build-essential \
+        clang libclang-dev \
+        mingw-w64 \
+        cmake libxml2-dev libssl-dev libbz2-dev \
+        zlib1g-dev \
+        file patchelf unzip python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js 20（含 npm）────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node -v && npm -v
+
+# ── Rust 工具链 ─────────────────────────────────────────
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustc --version && cargo --version
+
+# Tauri 2 CLI（全局安装，便于在任意目录调用）
+RUN npm install -g @tauri-apps/cli@^2
+
+# ── 注册交叉编译目标 ─────────────────────────────────────
+# Windows (GNU)
+RUN rustup target add x86_64-pc-windows-gnu aarch64-pc-windows-gnu
+# macOS
+RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+# Windows 交叉链接器配置
+RUN mkdir -p /root/.cargo \
+    && cat >> /root/.cargo/config.toml <<'EOF'
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-gcc-ar"
+
+[target.aarch64-pc-windows-gnu]
+linker = "aarch64-w64-mingw32-gcc"
+ar = "aarch64-w64-mingw32-gcc-ar"
+EOF
+
+# ── osxcross：macOS 交叉编译 SDK ─────────────────────────
+# 使用 phracker/MacOSX-SDKs 提供的预打包 SDK（含 10.15~11.3），
+# 由 osxcross 编译出交叉工具链。
+ENV PATH="/opt/osxcross/bin:${PATH}"
+ENV MACOSX_DEPLOYMENT_TARGET=10.13
+
+RUN set -eux; \
+    git clone --depth 1 https://github.com/tpoechtrager/osxcross /opt/osxcross-src; \
+    mkdir -p /opt/osxcross-src/tarballs; \
+    curl -fsSL -o /opt/osxcross-src/tarballs/MacOSX${MACOS_SDK_MAJOR}.sdk.tar.xz \
+        "https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX${MACOS_SDK_MAJOR}.sdk.tar.xz"; \
+    cd /opt/osxcross-src && ./build.sh; \
+    rm -rf /opt/osxcross-src/tarballs
+
+# 让 cargo 找到 macOS 交叉链接器
+RUN cat >> /root/.cargo/config.toml <<EOF
+
+[target.x86_64-apple-darwin]
+linker = "x86_64-apple-darwin\${MACOS_SDK_MAJOR}-clang"
+ar = "x86_64-apple-darwin\${MACOS_SDK_MAJOR}-ar"
+
+[target.aarch64-apple-darwin]
+linker = "aarch64-apple-darwin\${MACOS_SDK_MAJOR}-clang"
+ar = "aarch64-apple-darwin\${MACOS_SDK_MAJOR}-ar"
+EOF
+
+WORKDIR /app
