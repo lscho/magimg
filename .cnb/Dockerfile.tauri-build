@@ -31,10 +31,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         clang libclang-dev \
         mingw-w64 \
+        nsis \
         cmake libxml2-dev libssl-dev libbz2-dev \
         zlib1g-dev \
         file patchelf unzip python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# NSIS 安装包生成器（makensis）。Tauri v2 的 NSIS bundler 在 Linux 交叉编译
+# Windows 时会调用 `makensis`（某些版本硬编码为 `makensis.exe`），而 Debian 的
+# nsis 包只提供 `makensis`。建立 `makensis.exe -> makensis` 软链以兼容两种调用。
+RUN ln -sf /usr/bin/makensis /usr/bin/makensis.exe \
+    && command -v makensis && makensis -VERSION
 
 # ── Node.js 20（含 npm）────────────────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -85,13 +92,28 @@ EOF
 ENV PATH="/opt/osxcross/bin:${PATH}"
 ENV MACOSX_DEPLOYMENT_TARGET=10.13
 
+# 注意：osxcross 的 build.sh 在「提取 SDK 之后、执行 install 之前」会调用
+# `osxcross-cmp`（位于 build/wrapper 临时目录）。它依赖把该目录前置到 PATH 才能
+# 找到；在较新工具链（Debian bookworm + 新版 clang）下，UNATTENDED=1 分支里这一
+# PATH 注入的时机/顺序不稳，会导致 `osxcross-cmp: command not found` +
+# `[: -eq: unary operator expected`，随后 install 阶段不执行，最终 /opt/osxcross/bin
+# 根本不会生成，进而导致 cargo 找不到 macOS 交叉链接器。
+# 修复：在调用 ./build.sh 前显式把 $PWD/wrapper 前置到 PATH（osxcross 官方
+# issue 推荐的 workaround），保证 line 261 的 osxcross-cmp 调用可用。
 RUN set -eux; \
     git clone --depth 1 https://github.com/tpoechtrager/osxcross /opt/osxcross-src; \
     mkdir -p /opt/osxcross-src/tarballs; \
     curl -fsSL -o /opt/osxcross-src/tarballs/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz \
         "https://github.com/phracker/MacOSX-SDKs/releases/download/${MACOS_SDK_TAG}/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz"; \
-    cd /opt/osxcross-src && UNATTENDED=1 ./build.sh; \
+    cd /opt/osxcross-src && PATH="$PWD/wrapper:$PWD/build/wrapper:$PWD/build:$PATH" UNATTENDED=1 ./build.sh; \
     rm -rf /opt/osxcross-src/tarballs
+
+# 诊断：列出 osxcross 实际产出的交叉工具链名称，便于在 CI 镜像构建日志中确认
+# x86_64/aarch64-apple-<darwin>-clang 的真实命名（曾因 darwin 版本号不一致导致
+# cargo 找不到链接器）。若下方命令报错或列表为空，说明 osxcross 未正确产出工具链。
+RUN ls -1 /opt/osxcross/bin | grep -E 'apple-darwin' || true
+RUN command -v x86_64-apple-${OSXCROSS_TARGET}-clang \
+    || { echo "MISSING: x86_64-apple-${OSXCROSS_TARGET}-clang"; ls -1 /opt/osxcross/bin; exit 1; }
 
 # 让 cargo 找到 macOS 交叉链接器
 RUN cat >> /root/.cargo/config.toml <<EOF
