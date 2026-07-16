@@ -11,7 +11,7 @@
 FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG RUST_VERSION=1.87.0
+ARG RUST_VERSION=1.88.0
 # 用于 macOS 交叉编译的 SDK 版本（phracker/MacOSX-SDKs 的 release tag）。
 # 注意：release tag 11.3 仅提供 MacOSX11.3.sdk.tar.xz，不含小版本号的文件
 # （如 MacOSX11.sdk.tar.xz）已 404，因此必须用完整 tag（11.3）拼接文件名。
