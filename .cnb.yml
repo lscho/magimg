@@ -58,18 +58,21 @@ $:
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
           # aarch64-pc-windows-gnu 是 Rust Tier 3 目标，stable 工具链的预编译
-          # rust-std 不包含该目标，rustup 也无法 `target add`。改用 nightly 的
-          # rust-src 在编译时通过 -Zbuild-std 从源码构建该目标 std。
+          # rust-std 不包含该目标，rustup 也无法稳定 `target add`（依赖当日 nightly
+          # 是否发布了该目标预编译 std）。改用 nightly 的 rust-src 在编译时通过
+          # -Zbuild-std 从源码构建该目标 std。
           #
-          # 关键：只通过 rustup 环境变量锁定 nightly 工具链并启用 build-std，
-          # **不要**再用 CARGO_BUILD_TARGET 重复指定 target——否则会与 tauri
-          # 自身传入的 --target 冲突，导致 cargo 报 “Target does not exist”。
+          # 关键：Tauri v2 在编译前会用 `rustup target list --installed` 预校验 target，
+          # Tier 3 目标默认未“安装”，会直接报 “Target ... does not exist”。因此先
+          # best-effort 把该 target 注册到 nightly（当日 nightly 发布了其预编译 std
+          # 时即可成功），失败则回退到 -Zbuild-std 从源码编译 std。
           # 镜像中已 `rustup toolchain install nightly` 并预装 nightly 的 rust-src。
           env:
             RUSTUP_TOOLCHAIN: nightly
             CARGO_BUILD_STD: "std,panic_abort"
             RUSTC_BOOTSTRAP: "1"
           script:
+            - rustup target add aarch64-pc-windows-gnu --toolchain nightly || echo "nightly 未发布 aarch64-pc-windows-gnu 预编译 std，回退到 -Zbuild-std"
             # 使用全局 Tauri CLI（已在镜像安装，独立于 cargo 工具链），
             # 上述环境变量会让其调用的 cargo 走 nightly + -Zbuild-std。
             - npm run tauri build -- --target aarch64-pc-windows-gnu --bundles nsis
