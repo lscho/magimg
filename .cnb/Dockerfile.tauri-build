@@ -12,8 +12,10 @@ FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG RUST_VERSION=1.87.0
-# 用于 macOS 交叉编译的 SDK 大版本（phracker/MacOSX-SDKs release 页提供 10.15~11.3）
-ARG MACOS_SDK_MAJOR=11
+# 用于 macOS 交叉编译的 SDK 版本（phracker/MacOSX-SDKs 的 release tag）。
+# 注意：release tag 11.3 仅提供 MacOSX11.3.sdk.tar.xz，不含小版本号的文件
+# （如 MacOSX11.sdk.tar.xz）已 404，因此必须用完整 tag（11.3）拼接文件名。
+ARG MACOS_SDK_TAG=11.3
 
 # ── 系统依赖 ──────────────────────────────────────────────
 # clang / libclang：Tauri 代码生成所需
@@ -83,8 +85,8 @@ ENV MACOSX_DEPLOYMENT_TARGET=10.13
 RUN set -eux; \
     git clone --depth 1 https://github.com/tpoechtrager/osxcross /opt/osxcross-src; \
     mkdir -p /opt/osxcross-src/tarballs; \
-    curl -fsSL -o /opt/osxcross-src/tarballs/MacOSX${MACOS_SDK_MAJOR}.sdk.tar.xz \
-        "https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX${MACOS_SDK_MAJOR}.sdk.tar.xz"; \
+    curl -fsSL -o /opt/osxcross-src/tarballs/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz \
+        "https://github.com/phracker/MacOSX-SDKs/releases/download/${MACOS_SDK_TAG}/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz"; \
     cd /opt/osxcross-src && ./build.sh; \
     rm -rf /opt/osxcross-src/tarballs
 
@@ -92,12 +94,12 @@ RUN set -eux; \
 RUN cat >> /root/.cargo/config.toml <<EOF
 
 [target.x86_64-apple-darwin]
-linker = "x86_64-apple-darwin\${MACOS_SDK_MAJOR}-clang"
-ar = "x86_64-apple-darwin\${MACOS_SDK_MAJOR}-ar"
+linker = "x86_64-apple-darwin\${MACOS_SDK_TAG}-clang"
+ar = "x86_64-apple-darwin\${MACOS_SDK_TAG}-ar"
 
 [target.aarch64-apple-darwin]
-linker = "aarch64-apple-darwin\${MACOS_SDK_MAJOR}-clang"
-ar = "aarch64-apple-darwin\${MACOS_SDK_MAJOR}-ar"
+linker = "aarch64-apple-darwin\${MACOS_SDK_TAG}-clang"
+ar = "aarch64-apple-darwin\${MACOS_SDK_TAG}-ar"
 EOF
 
 WORKDIR /app
