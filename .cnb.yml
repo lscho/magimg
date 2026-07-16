@@ -57,13 +57,21 @@ $:
             - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
+          # aarch64-pc-windows-gnu 是 Rust Tier 3 目标，stable 工具链的预编译
+          # rust-std 不包含该目标，rustup 也无法 `target add`。改用 nightly 的
+          # rust-src 在编译时通过 -Zbuild-std 从源码构建该目标 std。
+          #
+          # 关键：只通过 rustup 环境变量锁定 nightly 工具链并启用 build-std，
+          # **不要**再用 CARGO_BUILD_TARGET 重复指定 target——否则会与 tauri
+          # 自身传入的 --target 冲突，导致 cargo 报 “Target does not exist”。
+          # 镜像中已 `rustup toolchain install nightly` 并预装 nightly 的 rust-src。
           env:
-            CARGO_BUILD_TARGET: aarch64-pc-windows-gnu
+            RUSTUP_TOOLCHAIN: nightly
+            CARGO_BUILD_STD: "std,panic_abort"
+            RUSTC_BOOTSTRAP: "1"
           script:
-            # aarch64-pc-windows-gnu 虽为 Rust Tier-3 目标，但 stable 工具链已提供其
-            # 预编译 rust-std。镜像中已通过 `rustup target add aarch64-pc-windows-gnu`
-            # 注册，因此直接交叉编译即可，无需 nightly 与 -Zbuild-std（后者依赖当日
-            # nightly 是否发布该目标 std，不稳定）。
+            # 使用全局 Tauri CLI（已在镜像安装，独立于 cargo 工具链），
+            # 上述环境变量会让其调用的 cargo 走 nightly + -Zbuild-std。
             - npm run tauri build -- --target aarch64-pc-windows-gnu --bundles nsis
         - name: upload
           script:
@@ -92,13 +100,15 @@ $:
             CXX: x86_64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
-            # macOS 交叉编译在 Linux 构建节点上进行；Tauri CLI 的 --bundles 枚举按
-            # 运行平台过滤，在非 macOS 平台上 `app` 不在允许集合内。`.app` 目录是
-            # `dmg` 的组成部分会被自动产出，因此只显式请求 `dmg` 即可。
-            - npm run tauri build -- --target x86_64-apple-darwin --bundles dmg
+            # macOS 交叉编译在 Linux 构建节点上进行。Tauri CLI v2 的 --bundles
+            # 枚举按**运行平台**过滤：在非 macOS 宿主上只允许 deb/rpm/appimage，
+            # `dmg`/`app` 均不在允许集合内（直接报 invalid value）。
+            # 交叉编译 macOS 时 Tauri 会直接产出 `.app` 目录（无需 hdiutil，
+            # hdiutil 仅 macOS 可用），因此不指定 --bundles，使用默认产出。
+            - npm run tauri build -- --target x86_64-apple-darwin
         - name: upload
           script:
-            - for f in src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+            - for f in src-tauri/target/x86_64-apple-darwin/release/bundle/**/*.app; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
 
     # ── macOS aarch64 (Apple Silicon) ───────────────────
     - name: macos-aarch64
@@ -123,13 +133,15 @@ $:
             CXX: aarch64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
-            # macOS 交叉编译在 Linux 构建节点上进行；Tauri CLI 的 --bundles 枚举按
-            # 运行平台过滤，在非 macOS 平台上 `app` 不在允许集合内。`.app` 目录是
-            # `dmg` 的组成部分会被自动产出，因此只显式请求 `dmg` 即可。
-            - npm run tauri build -- --target aarch64-apple-darwin --bundles dmg
+            # macOS 交叉编译在 Linux 构建节点上进行。Tauri CLI v2 的 --bundles
+            # 枚举按**运行平台**过滤：在非 macOS 宿主上只允许 deb/rpm/appimage，
+            # `dmg`/`app` 均不在允许集合内（直接报 invalid value）。
+            # 交叉编译 macOS 时 Tauri 会直接产出 `.app` 目录（无需 hdiutil，
+            # hdiutil 仅 macOS 可用），因此不指定 --bundles，使用默认产出。
+            - npm run tauri build -- --target aarch64-apple-darwin
         - name: upload
           script:
-            - for f in src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+            - for f in src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.app; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
 
     # ── 收尾通知 ────────────────────────────────────────
     - name: done

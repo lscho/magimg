@@ -11,7 +11,7 @@
 FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG RUST_VERSION=1.87.0
+ARG RUST_VERSION=1.88.0
 # 用于 macOS 交叉编译的 SDK 版本（phracker/MacOSX-SDKs 的 release tag）。
 # 注意：release tag 11.3 仅提供 MacOSX11.3.sdk.tar.xz，不含小版本号的文件
 # （如 MacOSX11.sdk.tar.xz）已 404，因此必须用完整 tag（11.3）拼接文件名。
@@ -55,9 +55,14 @@ RUN npm install -g @tauri-apps/cli@^2
 # Windows x86_64（stable 直接支持 Tier 1）
 RUN rustup target add x86_64-pc-windows-gnu
 
-# aarch64-pc-windows-gnu 虽为 Rust Tier-3 目标，但 stable 工具链已提供其预编译
-# rust-std，`rustup target add` 可直接拉取，无需 nightly 与 -Zbuild-std。
-RUN rustup target add aarch64-pc-windows-gnu
+# aarch64-pc-windows-gnu 是 Rust 的 Tier 3 目标，stable 工具链的预编译
+# rust-std 不包含该目标（实测 rustup 1.87.0 报 “toolchain does not support
+# target 'aarch64-pc-windows-gnu'”）。不能依赖“当日 nightly 是否发布了该
+# 目标的预编译 std”（不稳定，会随机失败），因此安装 nightly 的 rust-src 组件，
+# 在编译 Windows ARM64 时通过 `cargo +nightly -Zbuild-std` 从源码构建该目标 std。
+# 见 .cnb.yml 的 win-aarch64 流水线。
+RUN rustup toolchain install nightly --profile minimal \
+    && rustup component add rust-src --toolchain nightly
 
 # macOS（stable 直接支持）
 RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin
