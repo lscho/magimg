@@ -46,9 +46,16 @@ RUN rustc --version && cargo --version
 RUN npm install -g @tauri-apps/cli@^2
 
 # ── 注册交叉编译目标 ─────────────────────────────────────
-# Windows (GNU)
-RUN rustup target add x86_64-pc-windows-gnu aarch64-pc-windows-gnu
-# macOS
+# Windows x86_64（stable 直接支持 Tier 1）
+RUN rustup target add x86_64-pc-windows-gnu
+
+# aarch64-pc-windows-gnu 是 Rust 的 Tier 3 目标，stable 工具链的预编译
+# rust-std 不包含该目标，需借助 nightly 工具链添加；构建 Windows ARM64
+# 时（.cnb.yml 的 win-aarch64 流水线）使用 cargo +nightly。
+RUN rustup toolchain install nightly --profile minimal \
+    && rustup target add --toolchain nightly aarch64-pc-windows-gnu
+
+# macOS（stable 直接支持）
 RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
 # Windows 交叉链接器配置
