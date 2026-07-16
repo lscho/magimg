@@ -16,6 +16,10 @@ ARG RUST_VERSION=1.87.0
 # 注意：release tag 11.3 仅提供 MacOSX11.3.sdk.tar.xz，不含小版本号的文件
 # （如 MacOSX11.sdk.tar.xz）已 404，因此必须用完整 tag（11.3）拼接文件名。
 ARG MACOS_SDK_TAG=11.3
+# osxcross 依据 SDK 版本推算出的“darwin”目标版本（SDK 11.3 -> darwin20.4）。
+# 交叉工具链/链接器的命名使用此 darwin 版本（如 x86_64-apple-darwin20.4-clang），
+# 而非 MACOS_SDK_TAG。两者不同，cargo linker 配置里必须用这里的值。
+ARG OSXCROSS_TARGET=darwin20.4
 
 # ── 系统依赖 ──────────────────────────────────────────────
 # clang / libclang：Tauri 代码生成所需
@@ -87,19 +91,19 @@ RUN set -eux; \
     mkdir -p /opt/osxcross-src/tarballs; \
     curl -fsSL -o /opt/osxcross-src/tarballs/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz \
         "https://github.com/phracker/MacOSX-SDKs/releases/download/${MACOS_SDK_TAG}/MacOSX${MACOS_SDK_TAG}.sdk.tar.xz"; \
-    cd /opt/osxcross-src && ./build.sh; \
+    cd /opt/osxcross-src && UNATTENDED=1 ./build.sh; \
     rm -rf /opt/osxcross-src/tarballs
 
 # 让 cargo 找到 macOS 交叉链接器
 RUN cat >> /root/.cargo/config.toml <<EOF
 
 [target.x86_64-apple-darwin]
-linker = "x86_64-apple-darwin\${MACOS_SDK_TAG}-clang"
-ar = "x86_64-apple-darwin\${MACOS_SDK_TAG}-ar"
+linker = "x86_64-apple-\${OSXCROSS_TARGET}-clang"
+ar = "x86_64-apple-\${OSXCROSS_TARGET}-ar"
 
 [target.aarch64-apple-darwin]
-linker = "aarch64-apple-darwin\${MACOS_SDK_TAG}-clang"
-ar = "aarch64-apple-darwin\${MACOS_SDK_TAG}-ar"
+linker = "aarch64-apple-\${OSXCROSS_TARGET}-clang"
+ar = "aarch64-apple-\${OSXCROSS_TARGET}-ar"
 EOF
 
 WORKDIR /app
