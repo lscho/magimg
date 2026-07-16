@@ -31,9 +31,10 @@ $:
             - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
+          # 使用项目 devDependency 中的 @tauri-apps/cli（已在 prepare 的 npm ci 安装），
+          # 通过 npm run tauri 调用，避免依赖全局 tauri 是否在 PATH。
           script:
-            - cd src-tauri
-            - cargo tauri build --target x86_64-pc-windows-gnu --bundles nsis
+            - npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis
         - name: upload
           script:
             - for f in src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*; do echo "uploading $f"; cnb issues upload-file --file "$f"; done
@@ -59,12 +60,11 @@ $:
           env:
             CARGO_BUILD_TARGET: aarch64-pc-windows-gnu
           script:
-            - cd src-tauri
-            # aarch64-pc-windows-gnu 是 Tier 3 目标，其预编译 rust-std 随 nightly
-            # 每日构建不稳定发布。改用 nightly 的 rust-src 直接编译该目标 std：
-            # -Zbuild-std。镜像中已通过 `rustup component add rust-src --toolchain nightly`
-            # 预装 rust-src。
-            - cargo +nightly -Zbuild-std=std,panic_abort tauri build --target aarch64-pc-windows-gnu --bundles nsis
+            # aarch64-pc-windows-gnu 虽为 Rust Tier-3 目标，但 stable 工具链已提供其
+            # 预编译 rust-std。镜像中已通过 `rustup target add aarch64-pc-windows-gnu`
+            # 注册，因此直接交叉编译即可，无需 nightly 与 -Zbuild-std（后者依赖当日
+            # nightly 是否发布该目标 std，不稳定）。
+            - npm run tauri build -- --target aarch64-pc-windows-gnu --bundles nsis
         - name: upload
           script:
             - for f in src-tauri/target/aarch64-pc-windows-gnu/release/bundle/nsis/*; do echo "uploading $f"; cnb issues upload-file --file "$f"; done
@@ -88,15 +88,17 @@ $:
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
           env:
-            CC: x86_64-apple-darwin11-clang
-            CXX: x86_64-apple-darwin11-clang++
+            CC: x86_64-apple-darwin20.4-clang
+            CXX: x86_64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
-            - cd src-tauri
-            - cargo tauri build --target x86_64-apple-darwin --bundles app,dmg
+            # macOS 交叉编译在 Linux 构建节点上进行；Tauri CLI 的 --bundles 枚举按
+            # 运行平台过滤，在非 macOS 平台上 `app` 不在允许集合内。`.app` 目录是
+            # `dmg` 的组成部分会被自动产出，因此只显式请求 `dmg` 即可。
+            - npm run tauri build -- --target x86_64-apple-darwin --bundles dmg
         - name: upload
           script:
-            - for f in src-tauri/target/x86_64-apple-darwin/release/bundle/app/* src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+            - for f in src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
 
     # ── macOS aarch64 (Apple Silicon) ───────────────────
     - name: macos-aarch64
@@ -117,15 +119,17 @@ $:
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
           env:
-            CC: aarch64-apple-darwin11-clang
-            CXX: aarch64-apple-darwin11-clang++
+            CC: aarch64-apple-darwin20.4-clang
+            CXX: aarch64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
-            - cd src-tauri
-            - cargo tauri build --target aarch64-apple-darwin --bundles app,dmg
+            # macOS 交叉编译在 Linux 构建节点上进行；Tauri CLI 的 --bundles 枚举按
+            # 运行平台过滤，在非 macOS 平台上 `app` 不在允许集合内。`.app` 目录是
+            # `dmg` 的组成部分会被自动产出，因此只显式请求 `dmg` 即可。
+            - npm run tauri build -- --target aarch64-apple-darwin --bundles dmg
         - name: upload
           script:
-            - for f in src-tauri/target/aarch64-apple-darwin/release/bundle/app/* src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
+            - for f in src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*; do [ -e "$f" ] || continue; echo "uploading $f"; cnb issues upload-file --file "$f"; done
 
     # ── 收尾通知 ────────────────────────────────────────
     - name: done
@@ -133,4 +137,4 @@ $:
         - name: summary
           if: '[[ "$CNB_BRANCH" == v* ]]'
           script:
-            - echo "All platform builds finished. Artifacts uploaded to issue #1."
+            - echo All platform builds finished. Artifacts uploaded to issue 1.
