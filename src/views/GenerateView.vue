@@ -75,3 +75,27 @@ function applyTemplate(template: PromptTemplate) {
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />
   </div>
 </template>
+
+<style scoped lang="scss">
+.generate-layout {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 23vw, 372px);
+  gap: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1180px) {
+  .generate-layout {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+
+@media (max-width: 900px) {
+  .generate-layout {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+}
+</style>

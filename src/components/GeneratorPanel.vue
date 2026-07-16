@@ -170,3 +170,344 @@ async function pickReference() {
     </div>
   </section>
 </template>
+
+<style scoped lang="scss">
+.generator-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.panel-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 18px 14px;
+
+  h2 {
+    margin: 4px 0 0;
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 660;
+    letter-spacing: 0;
+  }
+}
+
+.generator-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 18px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.field {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 600;
+
+  > span {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  small {
+    position: absolute;
+    right: 10px;
+    bottom: 9px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 500;
+  }
+}
+
+.prompt-field textarea {
+  min-height: 112px;
+  padding-bottom: 28px;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.template-trigger {
+  color: var(--accent-strong);
+}
+
+.size-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.size-option {
+  min-width: 0;
+  height: 78px;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 24px 18px 14px;
+  align-items: center;
+  justify-items: center;
+  gap: 2px;
+  padding: 7px 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  text-align: center;
+  background: var(--surface-subtle);
+  box-shadow: none;
+
+  &:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+    background: var(--surface-strong);
+  }
+
+  &.active {
+    color: var(--accent-strong);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px rgba(120, 152, 245, 0.06);
+
+    i {
+      color: var(--accent);
+    }
+  }
+
+  i {
+    justify-self: center;
+    display: block;
+    border: 2px solid currentcolor;
+    border-radius: 2px;
+    color: #778292;
+  }
+
+  .shape-auto {
+    width: 22px;
+    height: 22px;
+    border-style: dashed;
+  }
+
+  .shape-square {
+    width: 21px;
+    height: 21px;
+  }
+
+  .shape-landscape {
+    width: 26px;
+    height: 17px;
+  }
+
+  .shape-portrait {
+    width: 16px;
+    height: 24px;
+  }
+
+  .shape-wide {
+    width: 27px;
+    height: 14px;
+  }
+
+  .shape-tall {
+    width: 14px;
+    height: 26px;
+  }
+
+  strong {
+    align-self: center;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+}
+
+.field .size-option small {
+  position: static;
+  align-self: center;
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.compression-field {
+  > span em {
+    color: var(--accent-strong);
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  input[type="range"] {
+    height: 22px;
+    padding: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .range-limits {
+    margin-top: -3px;
+  }
+}
+
+.field .range-limits small {
+  position: static;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.radio-group {
+  display: grid;
+  gap: 7px;
+}
+
+.format-radio-group {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.quality-radio-group {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.radio-option {
+  position: relative;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  box-shadow: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
+
+  &:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+    background: var(--surface-strong);
+  }
+
+  &.active {
+    color: var(--accent-strong);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px rgba(120, 152, 245, 0.06);
+  }
+
+  &:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.upload-zone {
+  width: 100%;
+  min-height: 108px;
+  display: grid;
+  place-items: center;
+  gap: 5px;
+  margin-bottom: 15px;
+  border: 1px dashed rgba(101, 207, 224, 0.42);
+  border-radius: 7px;
+  color: var(--tech-cyan);
+  background: rgba(101, 207, 224, 0.07);
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    background 180ms ease;
+
+  &:hover {
+    border-color: rgba(101, 207, 224, 0.7);
+    background: rgba(101, 207, 224, 0.1);
+  }
+
+  span {
+    max-width: 90%;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.generator-footer {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+  background: #0d131a;
+
+  > span {
+    color: var(--muted);
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 900px) {
+  .generator-panel {
+    max-height: none;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .generator-scroll {
+    overflow: visible;
+  }
+}
+
+@media (max-width: 600px) {
+  .panel-intro {
+    padding: 16px;
+  }
+
+  .generator-scroll {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .generator-footer {
+    padding: 13px 16px 16px;
+  }
+
+  .size-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+</style>

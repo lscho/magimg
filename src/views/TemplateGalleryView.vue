@@ -62,3 +62,81 @@ function useTemplate(template: PromptTemplate) {
     </div>
   </section>
 </template>
+
+<style scoped lang="scss">
+.template-page-heading {
+  align-items: flex-end;
+}
+
+.template-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  button {
+    min-width: 108px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border-radius: 5px;
+    color: var(--muted);
+    background: transparent;
+    font-size: 12px;
+    font-weight: 600;
+
+    &.active {
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+      box-shadow: none;
+    }
+  }
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+
+  &.comparison-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .template-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .template-page-heading {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 600px) {
+  .template-page-heading {
+    display: grid;
+  }
+
+  .template-mode-switch {
+    width: 100%;
+
+    button {
+      min-width: 0;
+    }
+  }
+}
+
+@media (max-width: 420px) {
+  .template-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

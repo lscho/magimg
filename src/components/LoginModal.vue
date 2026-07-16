@@ -57,3 +57,25 @@ async function submit() {
     </Transition>
   </div>
 </template>
+
+<style scoped lang="scss">
+.compact-modal {
+  width: min(420px, 100%);
+}
+
+.auth-switch-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.auth-switch {
+  min-height: 32px;
+  justify-content: center;
+  padding: 0;
+}
+
+.form-error {
+  color: var(--danger) !important;
+}
+</style>

@@ -132,3 +132,265 @@ async function logout() {
     </Transition>
   </div>
 </template>
+
+<style scoped lang="scss">
+.modal.settings-modal {
+  width: min(620px, 100%);
+  max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+
+  &:focus {
+    outline: none;
+  }
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 22px 18px;
+  border-bottom: 1px solid var(--line);
+
+  h2 {
+    margin: 4px 0 0;
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 660;
+  }
+
+  p {
+    margin: 7px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+}
+
+.settings-modal-close {
+  flex: 0 0 auto;
+}
+
+.settings-modal-form {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.settings-modal-body {
+  min-height: 0;
+  display: grid;
+  gap: 20px;
+  overflow: auto;
+  padding: 20px 22px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.settings-group {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+
+  &:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+}
+
+.settings-group-heading {
+  h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 660;
+  }
+
+  p {
+    margin: 5px 0 0;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+}
+
+.settings-fields {
+  display: grid;
+  gap: 14px;
+
+  label {
+    display: grid;
+    gap: 7px;
+    margin: 0;
+  }
+
+  .settings-directory-field,
+  .settings-prompt-field {
+    display: grid;
+    gap: 8px;
+  }
+}
+
+.settings-directory-label {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-field-label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.settings-field-help {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.settings-directory-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.settings-directory-button {
+  width: auto;
+  height: 42px;
+  padding: 0 13px;
+  white-space: nowrap;
+}
+
+.settings-toggle-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-toggle-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 0;
+  border-color: var(--line-strong);
+  border-radius: 999px;
+  background: var(--field);
+  cursor: pointer;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #aab3c0;
+    transition:
+      transform 0.18s ease,
+      background 0.18s ease;
+  }
+
+  &:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+
+    &::after {
+      background: var(--on-accent);
+      transform: translateX(20px);
+    }
+  }
+}
+
+.settings-prompt-field textarea {
+  min-height: 110px;
+  padding: 12px 13px;
+  line-height: 1.6;
+}
+
+.settings-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  background: #0d131a;
+
+  .primary-small {
+    height: 38px;
+    padding: 0 16px;
+  }
+}
+
+.settings-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.settings-logout-button {
+  width: auto;
+  height: 38px;
+  padding: 0 13px;
+  color: var(--danger);
+
+  &:hover {
+    color: #ff9ba4;
+    border-color: rgba(239, 125, 136, 0.5);
+    background: rgba(239, 125, 136, 0.09);
+  }
+}
+
+.settings-cancel-button {
+  width: auto;
+  height: 38px;
+  padding: 0 16px;
+}
+
+@media (max-width: 600px) {
+  .modal.settings-modal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .settings-modal-header {
+    padding: 18px 18px 15px;
+  }
+
+  .settings-modal-body {
+    padding: 17px 18px;
+  }
+
+  .settings-directory-control {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-directory-button {
+    width: 100%;
+  }
+
+  .settings-modal-footer {
+    align-items: stretch;
+    flex-wrap: wrap;
+    padding: 13px 18px;
+  }
+
+  .settings-modal-actions {
+    margin-left: auto;
+  }
+}
+</style>

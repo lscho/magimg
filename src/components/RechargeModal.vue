@@ -45,3 +45,49 @@ async function buy(packageId: string) {
     </section>
   </div>
 </template>
+
+<style scoped lang="scss">
+.package-grid {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.package-option {
+  position: relative;
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  background: var(--surface-subtle);
+
+  &:hover {
+    border-color: var(--line-strong);
+    background: var(--surface-strong);
+  }
+
+  strong {
+    font-size: 18px;
+    font-weight: 650;
+  }
+
+  small {
+    color: var(--accent-strong);
+  }
+
+  svg {
+    grid-row: 1 / 3;
+    grid-column: 2;
+  }
+
+  &.recommended {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+  }
+}
+</style>

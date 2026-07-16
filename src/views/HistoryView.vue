@@ -40,3 +40,85 @@ const app = useAppStore();
     </div>
   </section>
 </template>
+
+<style scoped lang="scss">
+.history-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: 136px minmax(0, 1fr);
+  gap: 14px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: none;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+
+  &:hover {
+    border-color: var(--line-strong);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  img {
+    width: 136px;
+    height: 108px;
+    object-fit: cover;
+    border-radius: 7px;
+    background: var(--surface-subtle);
+  }
+
+  h2 {
+    display: -webkit-box;
+    margin: 8px 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 620;
+    line-height: 1.45;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+}
+
+.history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.empty-state.full {
+  min-height: 390px;
+}
+
+@media (max-width: 1180px) {
+  .history-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .history-item {
+    grid-template-columns: 94px minmax(0, 1fr);
+
+    img {
+      width: 94px;
+      height: 94px;
+    }
+  }
+}
+</style>

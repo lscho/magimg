@@ -92,3 +92,205 @@ onMounted(() => {
     </section>
   </div>
 </template>
+
+<style scoped lang="scss">
+.modal.credit-log-modal {
+  width: min(560px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.credit-log-summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  span,
+  strong {
+    display: block;
+  }
+
+  span {
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  strong {
+    margin-top: 2px;
+    font-size: 22px;
+    font-weight: 700;
+  }
+}
+
+.credit-log-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(120, 152, 245, 0.2);
+  border-radius: 7px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.credit-log-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+}
+
+.credit-recharge-button {
+  min-height: 36px;
+  padding: 0 11px;
+}
+
+.credit-log-heading {
+  padding: 18px 0 12px;
+
+  h2 {
+    margin: 0;
+  }
+
+  p {
+    margin: 4px 0 0;
+  }
+}
+
+.credit-log-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+
+.credit-log-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.credit-kind-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--success);
+  background: rgba(101, 211, 173, 0.11);
+
+  &.expense {
+    color: var(--warm);
+    background: rgba(228, 160, 107, 0.1);
+  }
+}
+
+.credit-log-copy,
+.credit-log-amount {
+  strong,
+  span {
+    display: block;
+  }
+}
+
+.credit-log-copy {
+  strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.credit-log-copy span,
+.credit-log-amount span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.credit-log-amount {
+  text-align: right;
+
+  strong {
+    color: var(--success);
+    font-size: 13px;
+  }
+
+  &.expense strong {
+    color: var(--warm);
+  }
+}
+
+.credit-log-loading {
+  display: grid;
+  gap: 9px;
+
+  i {
+    height: 58px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: linear-gradient(110deg, #111820, #1c2a3e, #111820);
+    background-size: 240% 100%;
+    animation: shimmer 1.2s ease-in-out infinite;
+  }
+}
+
+.modal-empty-state {
+  min-height: 190px;
+  display: grid;
+  place-content: center;
+  place-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  span {
+    font-size: 10px;
+  }
+
+  .secondary-button {
+    width: auto;
+    margin-top: 5px;
+  }
+}
+
+@media (max-width: 600px) {
+  .modal.credit-log-modal {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+  }
+}
+
+@media (max-width: 420px) {
+  .credit-log-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .credit-log-amount {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+</style>

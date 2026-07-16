@@ -1,0 +1,41 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    "Avenir Next", Avenir, "SF Pro Display", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui,
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --bg: #080b10;
+  --surface: #10161d;
+  --surface-subtle: #151d27;
+  --surface-strong: #1b2531;
+  --surface-raised: #151d27;
+  --field: #0a0f15;
+  --sidebar: #0d1218;
+  --sidebar-soft: rgba(120, 152, 245, 0.16);
+  --line: #273342;
+  --line-strong: #3c4b5e;
+  --text: #f1f4f8;
+  --soft: #c6cdd7;
+  --muted: #8b96a5;
+  --accent: #7898f5;
+  --accent-strong: #a5b9ff;
+  --accent-hover: #8aa7fa;
+  --accent-soft: rgba(120, 152, 245, 0.14);
+  --accent-border: rgba(120, 152, 245, 0.48);
+  --on-accent: #0a1220;
+  --tech-cyan: #65cfe0;
+  --warm: #e4a06b;
+  --danger: #ef7d88;
+  --success: #65d3ad;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: #3c4959;
+    --line-strong: #596a80;
+    --muted: #aab4c1;
+  }
+}
