@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { Ban, Download, FolderOpen, Image, LoaderCircle, Maximize2, RotateCcw } from "lucide-vue-next";
-import { openDirectory } from "@/services/desktop";
+import { computed, shallowRef } from "vue";
+import {
+  Ban,
+  Download,
+  FolderOpen,
+  Image,
+  LoaderCircle,
+  Maximize2,
+  Pencil
+} from "lucide-vue-next";
+import { openDirectory, saveRemoteImageAs } from "@/services/desktop";
 import type { GeneratedImage, GenerationRecord } from "@/types";
 
 const props = defineProps<{
@@ -12,30 +20,50 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  regenerate: [];
   cancel: [];
 }>();
 
 const resultImages = computed(() => props.record?.images ?? []);
 const isSingleResult = computed(() => resultImages.value.length === 1);
+const primaryImage = computed(() => resultImages.value[0] ?? null);
+const hasSaveDirectory = computed(() => Boolean(props.saveDirectory.trim()));
+const saving = shallowRef(false);
+const actionError = shallowRef("");
 
 function imageFrameStyle(image: GeneratedImage) {
   return isSingleResult.value ? undefined : { aspectRatio: `${image.width} / ${image.height}` };
+}
+
+async function downloadImage() {
+  if (!primaryImage.value || !props.record) return;
+  saving.value = true;
+  actionError.value = "";
+  try {
+    await saveRemoteImageAs(
+      primaryImage.value.remoteUrl,
+      `huanhua-${props.record.generationId}`,
+      primaryImage.value.mimeType
+    );
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片保存失败，请稍后重试。";
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function openSaveDirectory() {
+  actionError.value = "";
+  try {
+    await openDirectory(props.saveDirectory.trim());
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "无法打开保存位置。";
+  }
 }
 </script>
 
 <template>
   <section class="result-panel">
     <div class="result-stage">
-      <div class="toolbar result-toolbar">
-        <button class="icon-button result-tool" :disabled="!saveDirectory" title="打开输出文件夹" aria-label="打开输出文件夹" @click="openDirectory(saveDirectory)">
-          <FolderOpen :size="16" />
-        </button>
-        <button class="icon-button result-tool" :disabled="!resultImages.length" title="全部下载" aria-label="全部下载">
-          <Download :size="16" />
-        </button>
-      </div>
-
       <div v-if="loading" class="result-loading" role="status" aria-live="polite">
         <div class="image-skeleton" />
         <span>
@@ -53,11 +81,6 @@ function imageFrameStyle(image: GeneratedImage) {
           :style="imageFrameStyle(image)"
         >
           <img :src="image.remoteUrl" :alt="`生成图片 ${index + 1}`" />
-          <figcaption>
-            <button class="icon-button" type="button" aria-label="放大查看"><Maximize2 :size="17" /></button>
-            <button class="icon-button" type="button" aria-label="重新生成" @click="emit('regenerate')"><RotateCcw :size="17" /></button>
-            <button class="icon-button" type="button" aria-label="保存图片"><Download :size="17" /></button>
-          </figcaption>
         </figure>
       </div>
       <div v-else class="empty-state">
@@ -66,6 +89,37 @@ function imageFrameStyle(image: GeneratedImage) {
         </div>
         <strong>等待你的第一个灵感</strong>
         <span>在右侧完善画面描述与参数，生成的作品会在这里呈现。</span>
+      </div>
+
+      <p v-if="actionError" class="result-action-error" role="alert">{{ actionError }}</p>
+      <div v-if="resultImages.length && !loading" class="toolbar result-toolbar" role="toolbar" aria-label="图片操作">
+        <button class="icon-button result-tool" type="button" title="放大查看" aria-label="放大查看">
+          <Maximize2 :size="16" />
+        </button>
+        <button class="icon-button result-tool" type="button" title="编辑图片" aria-label="编辑图片">
+          <Pencil :size="16" />
+        </button>
+        <button
+          class="icon-button result-tool"
+          type="button"
+          title="下载图片"
+          aria-label="下载图片"
+          :disabled="saving"
+          @click="downloadImage"
+        >
+          <LoaderCircle v-if="saving" class="saving-spinner" :size="16" />
+          <Download v-else :size="16" />
+        </button>
+        <button
+          v-if="hasSaveDirectory"
+          class="icon-button result-tool"
+          type="button"
+          title="打开默认保存位置"
+          aria-label="打开默认保存位置"
+          @click="openSaveDirectory"
+        >
+          <FolderOpen :size="16" />
+        </button>
       </div>
     </div>
   </section>
@@ -90,7 +144,7 @@ function imageFrameStyle(image: GeneratedImage) {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: 32px;
+  padding: 14px;
 
   > .empty-state {
     width: 100%;
@@ -108,8 +162,8 @@ function imageFrameStyle(image: GeneratedImage) {
 .result-toolbar {
   position: absolute;
   z-index: 4;
-  top: 14px;
-  right: 14px;
+  top: 24px;
+  right: 24px;
 
   :deep(.icon-button) {
     border-color: rgba(223, 230, 239, 0.16);
@@ -118,6 +172,27 @@ function imageFrameStyle(image: GeneratedImage) {
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
   }
+}
+
+.result-action-error {
+  position: absolute;
+  z-index: 5;
+  top: 70px;
+  right: 24px;
+  max-width: min(380px, calc(100% - 48px));
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(239, 125, 136, 0.42);
+  border-radius: 6px;
+  color: var(--danger);
+  background: rgba(16, 22, 29, 0.94);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.saving-spinner {
+  animation: spin 0.9s linear infinite;
 }
 
 .image-grid {
@@ -154,33 +229,6 @@ function imageFrameStyle(image: GeneratedImage) {
     min-height: 0;
     display: block;
     object-fit: contain;
-  }
-
-  figcaption {
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
-    display: flex;
-    gap: 6px;
-    opacity: 0;
-    transform: translateY(5px);
-    transition:
-      opacity 0.18s ease,
-      transform 0.18s ease;
-
-    .icon-button {
-      color: var(--text);
-      border-color: rgba(223, 230, 239, 0.16);
-      background: rgba(16, 22, 29, 0.84);
-      -webkit-backdrop-filter: blur(10px);
-      backdrop-filter: blur(10px);
-    }
-  }
-
-  &:hover figcaption,
-  &:focus-within figcaption {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -254,7 +302,7 @@ function imageFrameStyle(image: GeneratedImage) {
 
 @media (max-width: 600px) {
   .result-stage {
-    padding: 20px;
+    padding: 14px;
   }
 
   .image-grid {

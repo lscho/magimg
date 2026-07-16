@@ -70,6 +70,8 @@ export const localDb = {
   writeSettings: (settings: AppSettings) => writeJsonValue("settings.json", "settings", settings),
   readHistory: () => readJsonValue<GenerationRecord[]>("history.json", "items", []),
   writeHistory: (history: GenerationRecord[]) => writeJsonValue("history.json", "items", history),
+  readHiddenHistoryIds: () => readJsonValue<string[]>("history.json", "hiddenTaskIds", []),
+  writeHiddenHistoryIds: (ids: string[]) => writeJsonValue("history.json", "hiddenTaskIds", ids),
   readSession: () => readJsonValue<UserSession | null>("auth-cache.json", "session", null),
   writeSession: (session: UserSession | null) => writeJsonValue("auth-cache.json", "session", session)
 };

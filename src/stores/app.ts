@@ -195,6 +195,7 @@ export const useAppStore = defineStore("app", () => {
   const settings = ref<AppSettings>({ ...defaultSettings });
   const history = ref<GenerationRecord[]>([]);
   const serverHistory = ref<GenerationRecord[]>([]);
+  const hiddenHistoryIds = ref<string[]>([]);
   const balance = ref<CreditBalance>({ balance: 0, frozen: 0, updatedAt: new Date().toISOString() });
   const transactions = ref<CreditTransaction[]>([]);
   const transactionsLoading = shallowRef(false);
@@ -215,11 +216,14 @@ export const useAppStore = defineStore("app", () => {
   const isAuthenticated = computed(() => Boolean(session.value));
   const visibleHistory = computed(() => {
     const records = new Map<string, GenerationRecord>();
+    const hiddenIds = new Set(hiddenHistoryIds.value);
     history.value.forEach((record) => records.set(record.generationId, record));
     serverHistory.value.forEach((record) => {
       if (!records.has(record.generationId)) records.set(record.generationId, record);
     });
-    return [...records.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return [...records.values()]
+      .filter((record) => !hiddenIds.has(record.generationId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   });
 
   async function clearSession() {
@@ -233,9 +237,10 @@ export const useAppStore = defineStore("app", () => {
 
   async function init() {
     if (initialized.value) return;
-    const [savedSettings, savedHistory, savedSession] = await Promise.all([
+    const [savedSettings, savedHistory, savedHiddenHistoryIds, savedSession] = await Promise.all([
       localDb.readSettings(),
       localDb.readHistory(),
+      localDb.readHiddenHistoryIds(),
       localDb.readSession()
     ]);
     settings.value = {
@@ -249,6 +254,7 @@ export const useAppStore = defineStore("app", () => {
       }
     };
     history.value = Array.isArray(savedHistory) ? savedHistory : [];
+    hiddenHistoryIds.value = Array.isArray(savedHiddenHistoryIds) ? savedHiddenHistoryIds : [];
     session.value = savedSession;
     setApiBaseUrl(settings.value.apiBaseUrl);
     setAccessToken(savedSession?.accessToken ?? null);
@@ -433,12 +439,28 @@ export const useAppStore = defineStore("app", () => {
 
   async function addHistory(record: GenerationRecord) {
     history.value = [record, ...history.value.filter((item) => item.generationId !== record.generationId)].slice(0, 200);
+    if (hiddenHistoryIds.value.includes(record.generationId)) {
+      hiddenHistoryIds.value = hiddenHistoryIds.value.filter((id) => id !== record.generationId);
+      await localDb.writeHiddenHistoryIds(hiddenHistoryIds.value);
+    }
     await localDb.writeHistory(history.value);
   }
 
+  async function removeHistory(generationIds: string[]) {
+    const ids = new Set(generationIds);
+    if (!ids.size) return;
+
+    history.value = history.value.filter((record) => !ids.has(record.generationId));
+    serverHistory.value = serverHistory.value.filter((record) => !ids.has(record.generationId));
+    hiddenHistoryIds.value = [...new Set([...hiddenHistoryIds.value, ...ids])].slice(-1000);
+    await Promise.all([
+      localDb.writeHistory(history.value),
+      localDb.writeHiddenHistoryIds(hiddenHistoryIds.value)
+    ]);
+  }
+
   async function clearHistory() {
-    history.value = [];
-    await localDb.writeHistory([]);
+    await removeHistory(visibleHistory.value.map((record) => record.generationId));
   }
 
   async function generate(
@@ -613,6 +635,7 @@ export const useAppStore = defineStore("app", () => {
     refreshTaskHistory,
     saveSettings,
     addHistory,
+    removeHistory,
     clearHistory,
     generate,
     cancelCurrentGeneration,

@@ -314,5 +314,6 @@ export interface AppSettings {
 export interface LocalDatabase {
   settings: AppSettings;
   history: GenerationRecord[];
+  hiddenHistoryIds: string[];
   session: UserSession | null;
 }

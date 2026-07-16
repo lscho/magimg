@@ -21,7 +21,7 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 
 当前项目使用 Tauri 插件：
 
-- `@tauri-apps/plugin-dialog`：选择保存目录和图生图参考图。
+- `@tauri-apps/plugin-dialog`：选择保存目录、图生图参考图和生成结果的另存为位置。
 - `@tauri-apps/plugin-fs`：保存生成图片到本地。
 - `@tauri-apps/plugin-opener`：打开输出目录和外部充值支付链接。
 - `@tauri-apps/plugin-store`：以 JSON 形式保存设置、历史和登录缓存。
@@ -48,6 +48,8 @@ VITE_USE_MOCK_API=true
 
 浏览器预览使用 `localStorage` 保存登录会话、设置和历史，刷新页面后会恢复登录状态；退出登录或服务端返回 401 时会清除本地会话。
 
+结果区的下载按钮在桌面端会打开系统“另存为”对话框；浏览器预览使用浏览器下载。设置了默认保存目录后，结果区会显示打开文件夹按钮。创作历史支持点击作品多选，并在底部批量删除或下载；桌面端批量下载会先选择保存目录，浏览器预览则使用浏览器的多文件下载。
+
 开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用直接请求该地址，后端必须允许应用 WebView 的跨域请求。
 
 ## 验证命令
@@ -61,9 +63,9 @@ npm run build
 
 GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*` 版本标签时自动运行，也可以在 Actions 页面手动触发。每次构建会分别上传以下 Artifact：
 
-- `huanhua-windows-x64`：Windows x64。
-- `huanhua-windows-arm64`：Windows ARM64。
-- `huanhua-macos-x64`：macOS Intel。
-- `huanhua-macos-arm64`：macOS Apple Silicon。
+- `huanhua-windows-x64`：Windows x64 NSIS 安装程序（`.exe`）。
+- `huanhua-windows-arm64`：Windows ARM64 NSIS 安装程序（`.exe`）。
+- `huanhua-macos-x64`：macOS Intel 磁盘映像（`.dmg`）。
+- `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像（`.dmg`）。
 
-构建产物保留 14 天。当前工作流未配置 Windows 代码签名或 Apple Developer 签名、公证，直接分发时系统可能显示安全提示。
+标签触发成功后，工作流还会自动创建或更新同名 GitHub Release，并把四个平台的安装包作为 Release 附件上传；手动触发只生成保留 14 天的 Artifact。当前工作流未配置 Windows 代码签名或 Apple Developer 签名、公证，直接分发时系统可能显示安全提示。

@@ -26,18 +26,26 @@ jobs:
             runner: windows-2025
             target: x86_64-pc-windows-msvc
             artifact: huanhua-windows-x64
+            bundles: nsis
+            upload_path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           - name: Windows ARM64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
             artifact: huanhua-windows-arm64
+            bundles: nsis
+            upload_path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
           - name: macOS Intel
             runner: macos-15-intel
             target: x86_64-apple-darwin
             artifact: huanhua-macos-x64
+            bundles: dmg
+            upload_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - name: macOS Apple Silicon
             runner: macos-15
             target: aarch64-apple-darwin
             artifact: huanhua-macos-arm64
+            bundles: dmg
+            upload_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
     steps:
       - name: Check out repository
@@ -63,12 +71,38 @@ jobs:
         run: npm ci
 
       - name: Build Tauri bundles
-        run: npm run tauri -- build --target ${{ matrix.target }}
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/**
+          path: ${{ matrix.upload_path }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download desktop bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-artifacts/*/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" release-artifacts/*/* \
+              --generate-notes \
+              --title "幻画 AI $GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY"
+          fi

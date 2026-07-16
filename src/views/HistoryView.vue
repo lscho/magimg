@@ -10,7 +10,9 @@ import {
   Trash2,
   Wand2
 } from "lucide-vue-next";
+import HistorySelectionBar from "@/components/HistorySelectionBar.vue";
 import HistoryTaskCard from "@/components/HistoryTaskCard.vue";
+import { saveRemoteImagesToDirectory } from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
 import type { GenerationMode } from "@/types";
 
@@ -18,6 +20,11 @@ const app = useAppStore();
 const pageSize = 12;
 const activeMode = shallowRef<GenerationMode>("text-to-image");
 const currentPage = shallowRef(1);
+const selectedGenerationIds = shallowRef<Set<string>>(new Set());
+const downloading = shallowRef(false);
+const deleting = shallowRef(false);
+const actionMessage = shallowRef("");
+const actionError = shallowRef("");
 
 const filteredHistory = computed(() =>
   app.visibleHistory.filter((record) => record.mode === activeMode.value)
@@ -38,27 +45,111 @@ const rangeLabel = computed(() => {
   const end = Math.min(currentPage.value * pageSize, filteredHistory.value.length);
   return `${start}-${end} / ${filteredHistory.value.length} 项任务`;
 });
+const selectedRecords = computed(() => {
+  const selectedIds = selectedGenerationIds.value;
+  return app.visibleHistory.filter((record) => selectedIds.has(record.generationId));
+});
+const selectedCount = computed(() => selectedRecords.value.length);
 
 watch(activeMode, () => {
   currentPage.value = 1;
+  clearSelection();
 });
 
 watch(totalPages, (pageCount) => {
   currentPage.value = Math.min(currentPage.value, pageCount);
 });
 
+watch(
+  () => app.visibleHistory.map((record) => record.generationId),
+  (visibleIds) => {
+    const visibleIdSet = new Set(visibleIds);
+    const nextSelection = new Set(
+      [...selectedGenerationIds.value].filter((id) => visibleIdSet.has(id))
+    );
+    if (nextSelection.size !== selectedGenerationIds.value.size) {
+      selectedGenerationIds.value = nextSelection;
+    }
+  }
+);
+
 function setPage(page: number) {
   currentPage.value = Math.min(totalPages.value, Math.max(1, page));
+}
+
+function toggleSelection(generationId: string) {
+  const nextSelection = new Set(selectedGenerationIds.value);
+  if (nextSelection.has(generationId)) nextSelection.delete(generationId);
+  else nextSelection.add(generationId);
+  selectedGenerationIds.value = nextSelection;
+  actionMessage.value = "";
+  actionError.value = "";
+}
+
+function clearSelection() {
+  selectedGenerationIds.value = new Set();
+  actionMessage.value = "";
+  actionError.value = "";
+}
+
+async function deleteSelected() {
+  if (!selectedRecords.value.length) return;
+  const confirmed = window.confirm(`确定从创作历史中删除所选 ${selectedCount.value} 项任务吗？`);
+  if (!confirmed) return;
+
+  deleting.value = true;
+  actionError.value = "";
+  try {
+    await app.removeHistory(selectedRecords.value.map((record) => record.generationId));
+    clearSelection();
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "删除失败，请稍后重试。";
+  } finally {
+    deleting.value = false;
+  }
+}
+
+async function clearAllHistory() {
+  if (!app.visibleHistory.length) return;
+  const confirmed = window.confirm("确定清空当前设备上的全部创作历史吗？");
+  if (!confirmed) return;
+  await app.clearHistory();
+  clearSelection();
+}
+
+async function downloadSelected() {
+  const downloads = selectedRecords.value.flatMap((record) =>
+    record.images.map((image, index) => ({
+      image,
+      suggestedName: `huanhua-${record.generationId}${record.images.length > 1 ? `-${index + 1}` : ""}`
+    }))
+  );
+  if (!downloads.length) return;
+
+  downloading.value = true;
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    const result = await saveRemoteImagesToDirectory(downloads);
+    if (result.cancelled) return;
+    actionMessage.value = result.directory
+      ? `已保存 ${result.savedCount} 张图片`
+      : `已下载 ${result.savedCount} 张图片`;
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "批量下载失败，请稍后重试。";
+  } finally {
+    downloading.value = false;
+  }
 }
 </script>
 
 <template>
-  <section class="page-view history-view">
+  <section class="page-view history-view" :class="{ 'has-selection': selectedCount }">
     <div class="page-heading history-page-heading">
       <div class="history-heading-copy">
         <span class="section-kicker">CREATION LOG</span>
         <h1>创作历史</h1>
-        <p>回看每一次生成的状态、耗时与积分记录。</p>
+        <p>集中管理生成任务与历史作品。</p>
       </div>
 
       <div class="history-heading-actions">
@@ -83,10 +174,10 @@ function setPage(page: number) {
         <button
           class="icon-button danger history-clear"
           type="button"
-          :disabled="!app.history.length"
-          aria-label="清空本地历史"
-          title="清空本地历史"
-          @click="app.clearHistory"
+          :disabled="!app.visibleHistory.length"
+          aria-label="清空创作历史"
+          title="清空创作历史"
+          @click="clearAllHistory"
         >
           <Trash2 :size="16" />
         </button>
@@ -99,7 +190,13 @@ function setPage(page: number) {
     </div>
 
     <div v-if="paginatedHistory.length" class="history-grid">
-      <HistoryTaskCard v-for="record in paginatedHistory" :key="record.id" :record="record" />
+      <HistoryTaskCard
+        v-for="record in paginatedHistory"
+        :key="record.id"
+        :record="record"
+        :selected="selectedGenerationIds.has(record.generationId)"
+        @toggle="toggleSelection"
+      />
     </div>
     <div v-else class="empty-state full">
       <div class="empty-visual"><Clock3 :size="34" /></div>
@@ -157,6 +254,18 @@ function setPage(page: number) {
         <ChevronsRight :size="15" />
       </button>
     </nav>
+
+    <HistorySelectionBar
+      v-if="selectedCount"
+      :selected-count="selectedCount"
+      :downloading="downloading"
+      :deleting="deleting"
+      :message="actionMessage"
+      :error="actionError"
+      @clear="clearSelection"
+      @delete="deleteSelected"
+      @download="downloadSelected"
+    />
   </section>
 </template>
 
@@ -237,6 +346,10 @@ function setPage(page: number) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: start;
   gap: 12px;
+}
+
+.history-view.has-selection {
+  padding-bottom: 108px;
 }
 
 .empty-state.full {

@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ImageOff } from "lucide-vue-next";
+import { CalendarDays, Check, Coins, ImageOff } from "lucide-vue-next";
 import type { GenerationRecord, GenerationStatus } from "@/types";
 
-const props = defineProps<{ record: GenerationRecord }>();
+const props = defineProps<{
+  record: GenerationRecord;
+  selected: boolean;
+}>();
+
+const emit = defineEmits<{
+  toggle: [generationId: string];
+}>();
 
 const statusDetails: Record<GenerationStatus, { label: string; className: string }> = {
   queued: { label: "排队中", className: "status-queued" },
@@ -14,7 +21,6 @@ const statusDetails: Record<GenerationStatus, { label: string; className: string
 };
 
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
-  year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
@@ -24,44 +30,43 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 
 const previewImage = computed(() => props.record.images[0]);
 const statusDetail = computed(() => statusDetails[props.record.status]);
-const durationLabel = computed(() => formatDuration(props.record));
 const creditsLabel = computed(() => {
-  if (props.record.status === "failed" || props.record.status === "cancelled") return "0（已退回）";
+  if (props.record.status === "failed" || props.record.status === "cancelled") return "0";
   if (props.record.status === "queued" || props.record.status === "processing") {
-    return `-${props.record.costCredits}（预扣）`;
+    return `-${props.record.costCredits}`;
   }
   return `-${props.record.costCredits}`;
 });
-
-function formatDuration(record: GenerationRecord) {
-  if (record.status === "queued") return "等待中";
-  if (record.status === "processing") return "进行中";
-  if (!record.startedAt || !record.finishedAt) return "未记录";
-
-  const milliseconds = Date.parse(record.finishedAt) - Date.parse(record.startedAt);
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "未记录";
-
-  const totalSeconds = Math.floor(milliseconds / 1000);
-  if (totalSeconds < 1) return "< 1 秒";
-  if (totalSeconds < 60) return `${totalSeconds} 秒`;
-
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
-}
+const creditsTitle = computed(() => {
+  if (props.record.status === "failed" || props.record.status === "cancelled") return "积分已退回";
+  if (props.record.status === "queued" || props.record.status === "processing") return "预扣积分";
+  return "消耗积分";
+});
 </script>
 
 <template>
-  <article class="history-task-card">
-    <div class="history-task-media">
+  <article class="history-task-card" :class="{ selected }">
+    <button
+      v-if="previewImage"
+      class="history-task-media"
+      type="button"
+      :aria-label="selected ? '取消选择此历史作品' : '选择此历史作品'"
+      :aria-pressed="selected"
+      @click="emit('toggle', record.generationId)"
+    >
       <img
-        v-if="previewImage"
         :src="previewImage.remoteUrl"
         :alt="`${record.mode === 'text-to-image' ? '文生图' : '图生图'}历史作品`"
         loading="lazy"
         decoding="async"
       />
-      <div v-else class="history-task-placeholder">
+      <span v-if="selected" class="history-selected-mark" aria-hidden="true">
+        <Check :size="15" :stroke-width="2.5" />
+      </span>
+      <span class="history-size-tag">{{ record.params.size }}</span>
+    </button>
+    <div v-else class="history-task-media">
+      <div class="history-task-placeholder">
         <ImageOff :size="24" aria-hidden="true" />
         <span>{{ statusDetail.label }}</span>
       </div>
@@ -69,35 +74,24 @@ function formatDuration(record: GenerationRecord) {
     </div>
 
     <div class="history-task-content">
-      <div class="history-task-heading">
-        <span>{{ record.mode === "text-to-image" ? "文生图" : "图生图" }}</span>
-        <span>{{ record.params.quality === "auto" ? "自动质量" : record.params.quality }}</span>
-      </div>
-
       <h2 :title="record.params.prompt">{{ record.params.prompt }}</h2>
 
-      <dl class="history-task-facts">
-        <div>
-          <dt>任务状态</dt>
-          <dd class="history-status" :class="statusDetail.className">
-            <i aria-hidden="true"></i>{{ statusDetail.label }}
-          </dd>
-        </div>
-        <div>
-          <dt>任务耗时</dt>
-          <dd>{{ durationLabel }}</dd>
-        </div>
-        <div>
-          <dt>积分消耗</dt>
-          <dd class="credits-value">{{ creditsLabel }}</dd>
-        </div>
-        <div>
-          <dt>创建时间</dt>
-          <dd :title="dateFormatter.format(new Date(record.createdAt))">
-            {{ dateFormatter.format(new Date(record.createdAt)) }}
-          </dd>
-        </div>
-      </dl>
+      <div class="history-task-status">
+        <span class="history-status" :class="statusDetail.className">
+          <i aria-hidden="true"></i>{{ statusDetail.label }}
+        </span>
+        <span class="history-meta credits-value" :title="creditsTitle">
+          <Coins :size="12" aria-hidden="true" />{{ creditsLabel }}
+        </span>
+        <time
+          class="history-meta"
+          :datetime="record.createdAt"
+          :title="new Date(record.createdAt).toLocaleString('zh-CN')"
+        >
+          <CalendarDays :size="12" aria-hidden="true" />
+          {{ dateFormatter.format(new Date(record.createdAt)) }}
+        </time>
+      </div>
 
       <p v-if="record.errorMessage" class="history-task-error" :title="record.errorMessage">
         {{ record.errorMessage }}
@@ -122,20 +116,36 @@ function formatDuration(record: GenerationRecord) {
     border-color: var(--line-strong);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
   }
+
+  &.selected {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 2px var(--accent-soft),
+      0 10px 24px rgba(0, 0, 0, 0.2);
+  }
 }
 
 .history-task-media {
   position: relative;
+  width: 100%;
   aspect-ratio: 4 / 3;
+  display: block;
   overflow: hidden;
+  padding: 0;
   border-bottom: 1px solid var(--line);
+  border-radius: 0;
   background: var(--field);
+  text-align: initial;
 
   img {
     width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
+  }
+
+  &:focus-visible {
+    outline-offset: -3px;
   }
 }
 
@@ -165,28 +175,29 @@ function formatDuration(record: GenerationRecord) {
   font-weight: 700;
 }
 
+.history-selected-mark {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  color: var(--on-accent);
+  background: var(--accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
 .history-task-content {
   display: grid;
   gap: 10px;
   padding: 12px;
 }
 
-.history-task-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-
-  > span:first-child {
-    color: var(--accent-strong);
-  }
-}
-
 .history-task-content h2 {
-  min-height: calc(3em * 1.55);
+  min-height: calc(2em * 1.55);
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
@@ -195,47 +206,17 @@ function formatDuration(record: GenerationRecord) {
   font-weight: 620;
   line-height: 1.55;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
 }
 
-.history-task-facts {
+.history-task-status {
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin: 0;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-
-  > div {
-    min-width: 0;
-    display: grid;
-    gap: 5px;
-    padding: 9px;
-    border-right: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    background: var(--field);
-  }
-
-  dt,
-  dd {
-    margin: 0;
-  }
-
-  dt {
-    color: var(--muted);
-    font-size: 8px;
-    font-weight: 650;
-  }
-
-  dd {
-    overflow: hidden;
-    color: var(--soft);
-    font-size: 10px;
-    font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 
 .history-status {
@@ -272,8 +253,25 @@ function formatDuration(record: GenerationRecord) {
   }
 }
 
+.history-meta {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &:last-child {
+    justify-self: end;
+  }
+}
+
 .credits-value {
-  color: var(--warm) !important;
+  color: var(--warm);
 }
 
 .history-task-error {
@@ -287,9 +285,4 @@ function formatDuration(record: GenerationRecord) {
   -webkit-line-clamp: 2;
 }
 
-@media (max-width: 420px) {
-  .history-task-facts {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

@@ -1,7 +1,7 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import type { SelectedImageFile } from "@/types";
+import type { GeneratedImage, SelectedImageFile } from "@/types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -78,16 +78,118 @@ export async function openExternal(target: string): Promise<void> {
 
 export async function openDirectory(path: string): Promise<void> {
   if (!path) return;
-  await openExternal(path);
+  if (!isTauri) {
+    window.alert("浏览器预览无法打开本地文件夹，请在桌面客户端中使用此功能。");
+    return;
+  }
+  await openPath(path);
+}
+
+function imageExtension(mimeType?: string) {
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  return "png";
+}
+
+function imageFilter(mimeType?: string) {
+  if (mimeType === "image/jpeg") return { name: "JPEG 图片", extensions: ["jpg", "jpeg"] };
+  if (mimeType === "image/webp") return { name: "WebP 图片", extensions: ["webp"] };
+  return { name: "PNG 图片", extensions: ["png"] };
+}
+
+async function remoteImageBytes(url: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function safeImageFilename(suggestedName: string, mimeType?: string) {
+  const extension = imageExtension(mimeType);
+  const basename = suggestedName.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "-");
+  return `${basename}.${extension}`;
+}
+
+export async function saveRemoteImageAs(
+  url: string,
+  suggestedName: string,
+  mimeType?: string
+): Promise<string | null> {
+  if (!url) return null;
+  const filename = safeImageFilename(suggestedName, mimeType);
+
+  if (!isTauri) {
+    const bytes = await remoteImageBytes(url);
+    const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "image/png" }));
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(blobUrl);
+    return filename;
+  }
+
+  const path = await save({
+    title: "保存生成图片",
+    defaultPath: filename,
+    filters: [imageFilter(mimeType)]
+  });
+  if (!path) return null;
+
+  await writeFile(path, await remoteImageBytes(url));
+  return path;
+}
+
+export interface BatchImageDownload {
+  image: GeneratedImage;
+  suggestedName: string;
+}
+
+export interface BatchDownloadResult {
+  savedCount: number;
+  directory: string | null;
+  cancelled: boolean;
+}
+
+export async function saveRemoteImagesToDirectory(
+  downloads: BatchImageDownload[]
+): Promise<BatchDownloadResult> {
+  if (!downloads.length) return { savedCount: 0, directory: null, cancelled: false };
+
+  if (!isTauri) {
+    for (const { image, suggestedName } of downloads) {
+      const bytes = await remoteImageBytes(image.remoteUrl);
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: image.mimeType || "image/png" }));
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = safeImageFilename(suggestedName, image.mimeType);
+      anchor.click();
+      URL.revokeObjectURL(blobUrl);
+    }
+    return { savedCount: downloads.length, directory: null, cancelled: false };
+  }
+
+  const directory = await open({
+    directory: true,
+    multiple: false,
+    title: "选择历史作品保存目录"
+  });
+  if (typeof directory !== "string") {
+    return { savedCount: 0, directory: null, cancelled: true };
+  }
+
+  await mkdir(directory, { recursive: true }).catch(() => undefined);
+  for (const { image, suggestedName } of downloads) {
+    const filename = safeImageFilename(suggestedName, image.mimeType);
+    await writeFile(`${directory}/${filename}`, await remoteImageBytes(image.remoteUrl));
+  }
+  return { savedCount: downloads.length, directory, cancelled: false };
 }
 
 export async function saveRemoteImage(url: string, directory: string, filename: string): Promise<string | undefined> {
   if (!isTauri || !directory) return undefined;
 
-  const response = await fetch(url);
-  const buffer = new Uint8Array(await response.arrayBuffer());
   await mkdir(directory, { recursive: true }).catch(() => undefined);
   const path = `${directory}/${filename}`;
-  await writeFile(path, buffer);
+  await writeFile(path, await remoteImageBytes(url));
   return path;
 }

@@ -26,7 +26,15 @@ const showTemplates = shallowRef(false);
 const mode = computed<GenerationMode>(() =>
   route.params.mode === "image-to-image" ? "image-to-image" : "text-to-image"
 );
-const visibleRecord = computed(() => currentRecord.value ?? app.visibleHistory[0] ?? null);
+const visibleRecord = computed(
+  () =>
+    (currentRecord.value?.mode === mode.value ? currentRecord.value : null) ??
+    app.visibleHistory.find((record) => record.mode === mode.value) ??
+    null
+);
+const hasResult = computed(
+  () => visibleRecord.value?.status === "succeeded" && visibleRecord.value.images.length > 0
+);
 const generationCost = computed(() =>
   mode.value === "image-to-image"
     ? app.capabilities.imageToImageCost
@@ -114,7 +122,6 @@ function applyTemplate(template: PromptTemplate) {
       :loading="app.generating"
       :save-directory="app.settings.saveDirectory"
       :can-cancel="app.currentTaskStatus === 'pending'"
-      @regenerate="generate"
       @cancel="cancelGeneration"
     />
     <GeneratorPanel
@@ -123,6 +130,7 @@ function applyTemplate(template: PromptTemplate) {
       :loading="app.generating"
       :cost="generationCost"
       :balance="app.balance.balance"
+      :has-result="hasResult"
       :insufficient-credits="insufficientCredits"
       :error="app.error"
       :show-output-options="isMockApi"

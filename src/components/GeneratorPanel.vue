@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CircleAlert, ImageUp, LayoutTemplate, Sparkles, Trash2, WandSparkles } from "lucide-vue-next";
+import {
+  CircleAlert,
+  ImageUp,
+  LayoutTemplate,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  WandSparkles
+} from "lucide-vue-next";
 import { sizePresets } from "@/constants/defaults";
 import { chooseImageFile } from "@/services/desktop";
 import type {
@@ -18,6 +26,7 @@ const props = defineProps<{
   loading: boolean;
   cost: number;
   balance: number;
+  hasResult: boolean;
   insufficientCredits: boolean;
   error: string;
   showOutputOptions: boolean;
@@ -73,7 +82,7 @@ const generateButtonLabel = computed(() => {
       ? `积分不足，还需 ${missingCredits.value} 积分`
       : "积分不足，请先充值";
   }
-  return "开始生成";
+  return props.hasResult ? "重新生成" : "开始生成";
 });
 const visibleError = computed(() => (props.insufficientCredits ? "" : props.error));
 
@@ -235,6 +244,7 @@ async function pickReference() {
         @click="emit('generate')"
       >
         <CircleAlert v-if="insufficientCredits" :size="18" aria-hidden="true" />
+        <RotateCcw v-else-if="hasResult" :size="18" aria-hidden="true" />
         <WandSparkles v-else :size="18" aria-hidden="true" />
         {{ generateButtonLabel }}
       </button>
