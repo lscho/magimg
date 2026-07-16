@@ -32,6 +32,11 @@ const generationCost = computed(() =>
     ? app.capabilities.imageToImageCost
     : app.capabilities.textToImageCost
 );
+const insufficientCredits = computed(
+  () =>
+    app.isAuthenticated &&
+    (app.balance.balance < generationCost.value || app.generationErrorKind === "insufficientCredits")
+);
 
 watch(
   mode,
@@ -55,6 +60,14 @@ watch(
     }
   },
   { immediate: true }
+);
+
+watch(
+  params,
+  () => {
+    app.clearGenerationError();
+  },
+  { deep: true }
 );
 
 function clearPrompt() {
@@ -109,6 +122,8 @@ function applyTemplate(template: PromptTemplate) {
       :mode="mode"
       :loading="app.generating"
       :cost="generationCost"
+      :balance="app.balance.balance"
+      :insufficient-credits="insufficientCredits"
       :error="app.error"
       :show-output-options="isMockApi"
       :max-prompt-length="4000"

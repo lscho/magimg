@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ImageUp, LayoutTemplate, Sparkles, Trash2, WandSparkles } from "lucide-vue-next";
+import { CircleAlert, ImageUp, LayoutTemplate, Sparkles, Trash2, WandSparkles } from "lucide-vue-next";
 import { sizePresets } from "@/constants/defaults";
 import { chooseImageFile } from "@/services/desktop";
 import type {
@@ -17,6 +17,8 @@ const props = defineProps<{
   mode: GenerationMode;
   loading: boolean;
   cost: number;
+  balance: number;
+  insufficientCredits: boolean;
   error: string;
   showOutputOptions: boolean;
   maxPromptLength: number;
@@ -63,6 +65,17 @@ const supportedSizePresets = computed(() =>
   })
 );
 const modeTitle = computed(() => (props.mode === "image-to-image" ? "图生图" : "文生图"));
+const missingCredits = computed(() => Math.max(0, props.cost - props.balance));
+const generateButtonLabel = computed(() => {
+  if (props.loading) return "正在创作...";
+  if (props.insufficientCredits) {
+    return missingCredits.value > 0
+      ? `积分不足，还需 ${missingCredits.value} 积分`
+      : "积分不足，请先充值";
+  }
+  return "开始生成";
+});
+const visibleError = computed(() => (props.insufficientCredits ? "" : props.error));
 
 function patch(partial: Partial<ImageParams>) {
   const next: ImageParams = {
@@ -204,14 +217,26 @@ async function pickReference() {
     </div>
 
     <div class="generator-footer">
-      <p v-if="error" class="generator-error" role="alert">{{ error }}</p>
+      <p v-if="visibleError" id="generation-error" class="generator-error" role="alert">
+        <CircleAlert :size="15" aria-hidden="true" />
+        <span>{{ visibleError }}</span>
+      </p>
       <span>预计消耗 {{ cost }} 积分</span>
       <button
         class="primary-button generate-button"
-        :disabled="loading || !params.prompt.trim() || (mode === 'image-to-image' && !params.referenceImagePath)"
+        :class="{ 'is-insufficient': insufficientCredits }"
+        :disabled="
+          loading ||
+          insufficientCredits ||
+          !params.prompt.trim() ||
+          (mode === 'image-to-image' && !params.referenceImagePath)
+        "
+        :aria-describedby="visibleError ? 'generation-error' : undefined"
         @click="emit('generate')"
       >
-        <WandSparkles :size="18" /> {{ loading ? "正在创作..." : "开始生成" }}
+        <CircleAlert v-if="insufficientCredits" :size="18" aria-hidden="true" />
+        <WandSparkles v-else :size="18" aria-hidden="true" />
+        {{ generateButtonLabel }}
       </button>
     </div>
   </section>
@@ -527,10 +552,31 @@ async function pickReference() {
 }
 
 .generator-error {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
   margin: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(239, 125, 136, 0.42);
+  border-radius: 7px;
   color: var(--danger);
-  font-size: 11px;
-  line-height: 1.45;
+  background: rgba(239, 125, 136, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+
+  svg {
+    margin-top: 1px;
+  }
+}
+
+.generate-button.is-insufficient:disabled {
+  border: 1px solid rgba(228, 160, 107, 0.46);
+  color: var(--warm);
+  background: rgba(228, 160, 107, 0.1);
+  box-shadow: none;
+  opacity: 1;
 }
 
 @media (max-width: 900px) {

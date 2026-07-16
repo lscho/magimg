@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, shallowRef, useTemplateRef } from "vue";
-import { KeyRound, X } from "lucide-vue-next";
+import { ExternalLink, KeyRound, X } from "lucide-vue-next";
+import { openExternal } from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
 
 const emit = defineEmits<{ close: [] }>();
@@ -11,6 +12,16 @@ const loading = shallowRef(false);
 const error = shallowRef("");
 const success = shallowRef("");
 const normalizedCode = computed(() => code.value.toUpperCase().replace(/\s+/gu, ""));
+const cardPurchaseUrl = computed(() => {
+  const target = app.capabilities.cardPurchaseUrl?.trim() || "";
+  if (!target) return "";
+  try {
+    const url = new URL(target);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? url.toString() : "";
+  } catch {
+    return "";
+  }
+});
 
 onMounted(() => {
   dialog.value?.focus();
@@ -28,6 +39,16 @@ async function redeem() {
     error.value = exception instanceof Error ? exception.message : "卡密兑换失败";
   } finally {
     loading.value = false;
+  }
+}
+
+async function purchaseCard() {
+  if (!cardPurchaseUrl.value) return;
+  error.value = "";
+  try {
+    await openExternal(cardPurchaseUrl.value);
+  } catch {
+    error.value = "购买页面无法打开，请稍后重试。";
   }
 }
 </script>
@@ -68,9 +89,15 @@ async function redeem() {
         </label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <p v-if="success" class="form-success" role="status">{{ success }}</p>
-        <button class="primary-button" type="submit" :disabled="loading || normalizedCode.length < 8">
-          {{ loading ? "兑换中..." : "兑换积分" }}
-        </button>
+        <div class="recharge-actions">
+          <button class="primary-button" type="submit" :disabled="loading || normalizedCode.length < 8">
+            {{ loading ? "兑换中..." : "兑换积分" }}
+          </button>
+          <button v-if="cardPurchaseUrl" class="text-button purchase-card-link" type="button" @click="purchaseCard">
+            购买卡密
+            <ExternalLink :size="14" />
+          </button>
+        </div>
       </form>
     </section>
   </div>
@@ -115,6 +142,19 @@ async function redeem() {
 .recharge-form {
   display: grid;
   gap: 14px;
+}
+
+.recharge-actions {
+  display: grid;
+  gap: 7px;
+}
+
+.purchase-card-link {
+  min-height: 30px;
+  justify-self: center;
+  padding: 0 6px;
+  color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .form-error,

@@ -26,7 +26,7 @@ let unauthorizedHandler: (() => void | Promise<void>) | null = null;
 
 interface ApiErrorPayload {
   statusCode?: number;
-  message?: string;
+  message?: string | string[];
 }
 
 interface RequestOptions extends RequestInit {
@@ -67,6 +67,24 @@ function runtimeApiBaseUrl(nextBaseUrl: string) {
   return import.meta.env.DEV && normalized === configured ? "" : normalized;
 }
 
+function defaultErrorMessage(statusCode: number) {
+  if (statusCode === 401) return "请先登录或重新登录。";
+  if (statusCode === 403) return "当前账号无法执行此操作。";
+  if (statusCode === 429) return "请求过于频繁，请稍后再试。";
+  if (statusCode >= 500) return "服务暂时不可用，请稍后重试。";
+  return `请求失败（${statusCode}），请稍后重试。`;
+}
+
+function errorMessage(payload: ApiErrorPayload | null, statusCode: number) {
+  const message = payload?.message;
+  if (Array.isArray(message)) {
+    const combined = message.map((item) => item.trim()).filter(Boolean).join("；");
+    if (combined) return combined;
+  }
+  if (typeof message === "string" && message.trim()) return message.trim();
+  return defaultErrorMessage(statusCode);
+}
+
 export function resolveApiAssetUrl(path: string) {
   if (/^https?:\/\//u.test(path) || path.startsWith("data:") || path.startsWith("blob:")) {
     return path;
@@ -83,15 +101,20 @@ export function resolveApiAssetUrl(path: string) {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { idempotencyKey, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
-  const response = await fetch(buildApiUrl(path), {
-    ...fetchOptions,
-    headers: {
-      ...(!isFormData && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-      ...fetchOptions.headers
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      ...fetchOptions,
+      headers: {
+        ...(!isFormData && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        ...fetchOptions.headers
+      }
+    });
+  } catch {
+    throw new ApiError("无法连接服务，请检查网络或接口地址。", 0);
+  }
 
   let payload: ApiErrorPayload | T | null = null;
   try {
@@ -105,7 +128,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (response.status === 401 && unauthorizedHandler) {
       await unauthorizedHandler();
     }
-    throw new ApiError(errorPayload?.message || `请求失败：${response.status}`, response.status);
+    throw new ApiError(errorMessage(errorPayload, response.status), response.status);
   }
 
   return payload as T;

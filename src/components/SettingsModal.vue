@@ -56,33 +56,6 @@ async function logout() {
         <form class="settings-modal-form" @submit.prevent="save">
           <div class="settings-modal-body">
             <section class="settings-group">
-              <div class="settings-group-heading">
-                <h3>服务连接</h3>
-                <p>配置幻画服务端地址。</p>
-              </div>
-
-              <div class="settings-fields">
-                <label for="settings-api-base-url">
-                  <span class="settings-field-label">API 服务地址</span>
-                  <span class="settings-field-help">填写服务端 Origin 或包含 /api/client/v1 的完整基础路径。</span>
-                  <input
-                    id="settings-api-base-url"
-                    v-model="draft.apiBaseUrl"
-                    type="url"
-                    inputmode="url"
-                    autocomplete="url"
-                    placeholder="https://api.example.com"
-                  />
-                </label>
-              </div>
-            </section>
-
-            <section class="settings-group">
-              <div class="settings-group-heading">
-                <h3>文件保存</h3>
-                <p>设置生成图片的本地保存位置和保存方式。</p>
-              </div>
-
               <div class="settings-fields">
                 <div class="settings-directory-field">
                   <label class="settings-directory-label" for="settings-save-directory">
@@ -121,11 +94,6 @@ async function logout() {
             </section>
 
             <section class="settings-group">
-              <div class="settings-group-heading">
-                <h3>创作默认值</h3>
-                <p>设置每次新建创作时自动填入的内容。</p>
-              </div>
-
               <div class="settings-fields">
                 <label class="settings-prompt-field" for="settings-default-prompt">
                   <span class="settings-field-label">默认提示词</span>
@@ -220,21 +188,6 @@ async function logout() {
   &:last-child {
     padding-bottom: 0;
     border-bottom: 0;
-  }
-}
-
-.settings-group-heading {
-  h3 {
-    margin: 0;
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 660;
-  }
-
-  p {
-    margin: 5px 0 0;
-    font-size: 10px;
-    line-height: 1.5;
   }
 }
 

@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
 import { defaultParams, defaultSettings } from "@/constants/defaults";
 import {
+  ApiError,
   apiClient,
   isMockApi,
   resolveApiAssetUrl,
@@ -157,6 +158,37 @@ function isSupportedQuality(quality: ImageParams["quality"]): quality is Support
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+type GenerationErrorKind = "none" | "insufficientCredits" | "authentication" | "general";
+
+function generationErrorDetails(exception: unknown): {
+  kind: Exclude<GenerationErrorKind, "none">;
+  message: string;
+} {
+  const message = exception instanceof Error ? exception.message.trim() : "";
+  const isInsufficientCredits =
+    /(?:积分|余额).*(?:不足|不够)|(?:不足|不够).*(?:积分|余额)/u.test(message);
+
+  if ((exception instanceof ApiError && exception.statusCode === 409 && isInsufficientCredits) || isInsufficientCredits) {
+    return {
+      kind: "insufficientCredits",
+      message: "积分不足，请充值后继续生成。"
+    };
+  }
+  if (
+    (exception instanceof ApiError && exception.statusCode === 401) ||
+    /请先登录|登录已过期/u.test(message)
+  ) {
+    return {
+      kind: "authentication",
+      message: message || "请先登录或重新登录后再生成。"
+    };
+  }
+  return {
+    kind: "general",
+    message: message || "生成失败，请稍后重试。"
+  };
+}
+
 export const useAppStore = defineStore("app", () => {
   const initialized = shallowRef(false);
   const session = ref<UserSession | null>(null);
@@ -178,6 +210,7 @@ export const useAppStore = defineStore("app", () => {
   const currentTaskId = shallowRef<string | null>(null);
   const currentTaskStatus = shallowRef<GenerationTask["status"] | null>(null);
   const error = shallowRef("");
+  const generationErrorKind = shallowRef<GenerationErrorKind>("none");
 
   const isAuthenticated = computed(() => Boolean(session.value));
   const visibleHistory = computed(() => {
@@ -239,6 +272,7 @@ export const useAppStore = defineStore("app", () => {
 
   async function login(phone: string, password: string) {
     error.value = "";
+    generationErrorKind.value = "none";
     const response = await apiClient.login(phone.trim(), password, "幻画 AI 桌面端");
     session.value = toSession(response);
     setAccessToken(response.token);
@@ -249,6 +283,7 @@ export const useAppStore = defineStore("app", () => {
 
   async function register(phone: string, code: string, password: string) {
     error.value = "";
+    generationErrorKind.value = "none";
     const response = await apiClient.register(phone.trim(), code.trim(), password, "幻画 AI 桌面端");
     session.value = toSession(response);
     setAccessToken(response.token);
@@ -411,13 +446,14 @@ export const useAppStore = defineStore("app", () => {
     params: ImageParams,
     referenceImage: SelectedImageFile | null = null
   ) {
-    if (!session.value) throw new Error("请先登录后再生成图片。");
-
     generating.value = true;
     error.value = "";
+    generationErrorKind.value = "none";
     currentTaskId.value = null;
     currentTaskStatus.value = null;
     try {
+      if (!session.value) throw new Error("请先登录后再生成图片。");
+
       const fixedParams: ImageParams = {
         ...params,
         model: "gpt-image-2",
@@ -490,7 +526,9 @@ export const useAppStore = defineStore("app", () => {
       await Promise.all([refreshProfile(), refreshTransactions(), refreshTaskHistory()]);
       return completedRecord;
     } catch (exception) {
-      error.value = exception instanceof Error ? exception.message : "生成失败，请稍后重试。";
+      const details = generationErrorDetails(exception);
+      error.value = details.message;
+      generationErrorKind.value = details.kind;
       void refreshProfile();
       void refreshTransactions();
       throw exception;
@@ -516,8 +554,17 @@ export const useAppStore = defineStore("app", () => {
   async function redeemCard(code: string) {
     const result = await apiClient.redeemCard(code.trim());
     balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    if (generationErrorKind.value === "insufficientCredits") {
+      error.value = "";
+      generationErrorKind.value = "none";
+    }
     await refreshTransactions();
     return result;
+  }
+
+  function clearGenerationError() {
+    error.value = "";
+    generationErrorKind.value = "none";
   }
 
   function selectTemplate(template: PromptTemplate) {
@@ -551,6 +598,7 @@ export const useAppStore = defineStore("app", () => {
     generating,
     currentTaskStatus,
     error,
+    generationErrorKind,
     isAuthenticated,
     init,
     sendSms,
@@ -568,6 +616,7 @@ export const useAppStore = defineStore("app", () => {
     clearHistory,
     generate,
     cancelCurrentGeneration,
+    clearGenerationError,
     redeemCard,
     selectTemplate,
     consumeTemplate

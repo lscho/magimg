@@ -113,6 +113,7 @@ export const mockApi = {
     return {
       textToImageCost: 10,
       imageToImageCost: 15,
+      cardPurchaseUrl: "https://example.com/cards",
       maxAttempts: 3,
       uploadMaxBytes: 5 * 1024 * 1024,
       supportedMimeTypes: ["image/jpeg", "image/png", "image/webp"],

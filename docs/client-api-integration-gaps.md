@@ -10,13 +10,13 @@
 | 短信 | `POST /auth/sms/send` | 注册和找回密码发送验证码，并按服务端冷却时间禁用按钮 |
 | 认证 | `POST /auth/register`、`POST /auth/login`、`POST /auth/password/reset`、`POST /auth/logout` | 手机号注册、登录、重置密码、撤销会话；401 自动清理本地登录缓存 |
 | 用户 | `GET /me` | 恢复会话、刷新用户积分，并更新本地用户缓存 |
-| 平台能力 | `GET /capabilities` | 使用服务端计费、上传大小、MIME 和质量档位配置 |
+| 平台能力 | `GET /capabilities` | 使用服务端计费、卡密购买地址、上传大小、MIME 和质量档位配置 |
 | 模板 | `GET /template-categories`、`GET /templates`、`GET /templates/:id` | 模板广场和生成页模板弹窗使用服务端数据；详情接口已封装 |
 | 积分 | `GET /points`、`POST /cards/redeem` | 积分日志使用服务端分页数据，充值弹窗改为卡密兑换 |
 | 上传 | `POST /uploads/images` | 图生图先读取本地文件并 multipart 上传，再使用 `inputAssetId` 创建任务 |
 | 任务 | `POST /tasks`、`GET /tasks`、`GET /tasks/:id`、`POST /tasks/:id/cancel` | 创建任务携带幂等键；每 2 秒查询状态；排队任务可取消；服务端任务合并到历史记录 |
 
-真实接口基础路径固定为 `/api/client/v1`。`VITE_API_BASE_URL` 和应用设置中的 API 服务地址可配置为服务端 Origin，也可直接包含该基础路径。切换服务地址会清除旧服务的会话，并重新加载平台能力和模板。
+真实接口基础路径固定为 `/api/client/v1`。`VITE_API_BASE_URL` 可配置为服务端 Origin，也可直接包含该基础路径。
 
 ## 已跳过的客户端功能
 
@@ -24,7 +24,7 @@
 
 | 客户端能力 | 差异 | 当前处理 |
 | --- | --- | --- |
-| 付费套餐与外部支付订单 | 没有套餐、创建订单、订单状态或支付 URL 接口 | 真实充值流程改为卡密兑换；旧套餐支付不再使用 |
+| 付费套餐与支付订单 | 没有套餐、创建订单和订单状态接口 | 真实充值流程使用卡密兑换；卡密购买通过 `capabilities.cardPurchaseUrl` 打开外部页面 |
 | 输出格式与压缩比例 | `POST /tasks` 不接受 `outputFormat`、`outputCompression` | 真实模式隐藏这两个控件且不发送；Mock 仍保留演示，实际格式以 `outputAsset.mimeType` 为准 |
 | 背景、内容审核、流式与分片 | 不接受 `background`、`moderation`、`stream`、`partialImages` | 不发送 |
 | 风格与图生图强度 | 不接受 `style`、`strength`、`preserveComposition` | 不发送 |

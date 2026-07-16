@@ -240,6 +240,7 @@ Authorization: Bearer <client-token>
 {
   "textToImageCost": 10,
   "imageToImageCost": 15,
+  "cardPurchaseUrl": "https://example.com/cards",
   "maxAttempts": 3,
   "uploadMaxBytes": 5242880,
   "supportedMimeTypes": ["image/jpeg", "image/png", "image/webp"],
@@ -254,7 +255,9 @@ Authorization: Bearer <client-token>
 }
 ```
 
-> 默认值为上例（文生图 10 点、图生图 15 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400）。实际值以服务端 `ls_config.name='generation'` 配置为准。
+`cardPurchaseUrl` 为可选的卡密购买页面地址。客户端仅在该值为有效的 `http` 或 `https` 地址时显示“购买卡密”；Tauri 桌面端使用系统浏览器打开，Web 端使用新窗口打开。
+
+> 默认值除 `cardPurchaseUrl` 外为上例（文生图 10 点、图生图 15 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400）。实际值以服务端 `ls_config.name='generation'` 配置为准。
 
 ---
 
@@ -570,6 +573,7 @@ interface ClientPagination<T> {
 interface GenerationSettings {
   textToImageCost: number
   imageToImageCost: number
+  cardPurchaseUrl?: string
   maxAttempts: number
   uploadMaxBytes: number
   supportedMimeTypes: string[]

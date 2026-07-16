@@ -25,6 +25,7 @@ const showRecharge = shallowRef(false);
 const showCreditLog = shallowRef(false);
 const showSettings = shallowRef(false);
 const sidebarOpen = shallowRef(false);
+const formattedBalance = computed(() => new Intl.NumberFormat("zh-CN").format(app.balance.balance));
 
 onMounted(() => {
   void app.init();
@@ -42,7 +43,6 @@ function openSettings() {
 }
 
 function openRechargeFromCreditLog() {
-  showCreditLog.value = false;
   showRecharge.value = true;
 }
 </script>
@@ -65,6 +65,18 @@ function openRechargeFromCreditLog() {
         />
         <strong>幻画 AI</strong>
       </div>
+      <button
+        v-if="app.isAuthenticated"
+        class="header-credit-button"
+        type="button"
+        :aria-label="`积分余额 ${formattedBalance}，查看积分记录`"
+        :title="`积分余额 ${formattedBalance}`"
+        @click="showCreditLog = true"
+      >
+        <Coins :size="15" aria-hidden="true" />
+        <span>积分</span>
+        <strong>{{ formattedBalance }}</strong>
+      </button>
     </header>
 
     <div class="workspace" :class="{ 'sidebar-is-open': sidebarOpen }">
@@ -103,16 +115,6 @@ function openRechargeFromCreditLog() {
         <div class="sidebar-footer">
           <template v-if="app.isAuthenticated">
             <button
-              class="credit-balance-button"
-              type="button"
-              aria-label="积分记录"
-              @click="showCreditLog = true"
-            >
-              <Coins :size="16" />
-              <strong>{{ app.balance.balance }}</strong>
-              <span class="rail-tooltip" aria-hidden="true">积分记录</span>
-            </button>
-            <button
               class="account-settings-button"
               type="button"
               aria-label="应用设置"
@@ -135,8 +137,8 @@ function openRechargeFromCreditLog() {
     </div>
 
     <LoginModal v-if="showLogin" @close="showLogin = false" />
-    <RechargeModal v-if="showRecharge" @close="showRecharge = false" />
     <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" @recharge="openRechargeFromCreditLog" />
+    <RechargeModal v-if="showRecharge" @close="showRecharge = false" />
     <SettingsModal v-if="showSettings" @close="showSettings = false" />
   </div>
 </template>
@@ -155,18 +157,23 @@ function openRechargeFromCreditLog() {
   position: relative;
   z-index: 20;
   min-width: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 12px;
   border-bottom: 1px solid var(--line);
   background: #0e141b;
 }
 
 .app-title {
+  position: absolute;
+  left: 50%;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   color: var(--text);
   pointer-events: none;
+  transform: translateX(-50%);
   user-select: none;
 
   &-logo {
@@ -180,6 +187,47 @@ function openRechargeFromCreditLog() {
     font-size: 13px;
     font-weight: 680;
     letter-spacing: 0;
+  }
+}
+
+.header-credit-button {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  max-width: min(280px, calc(50vw - 84px));
+  height: 34px;
+  display: inline-grid;
+  grid-template-columns: 16px auto minmax(0, auto);
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid rgba(228, 160, 107, 0.34);
+  border-radius: 7px;
+  color: var(--warm);
+  background: rgba(228, 160, 107, 0.08);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+
+  &:hover {
+    border-color: rgba(228, 160, 107, 0.58);
+    background: rgba(228, 160, 107, 0.13);
+  }
+
+  span {
+    color: var(--soft);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -266,42 +314,6 @@ function openRechargeFromCreditLog() {
   border-top: 1px solid var(--line);
 }
 
-.credit-balance-button {
-  position: relative;
-  width: 44px;
-  height: 54px;
-  flex: 0 0 auto;
-  display: grid;
-  align-items: center;
-  justify-items: center;
-  grid-template-rows: 20px 18px;
-  align-content: center;
-  gap: 3px;
-  padding: 5px 3px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  color: var(--warm);
-  background: var(--surface-subtle);
-  transition:
-    color 0.18s ease,
-    border-color 0.18s ease,
-    background 0.18s ease;
-
-  &:hover {
-    border-color: var(--line-strong);
-    background: var(--surface-strong);
-  }
-
-  strong {
-    max-width: 38px;
-    overflow: hidden;
-    white-space: nowrap;
-    font-size: 11px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-  }
-}
-
 .account-settings-button,
 .sidebar-login-link {
   position: relative;
@@ -353,8 +365,6 @@ function openRechargeFromCreditLog() {
 
 .nav-item:hover .rail-tooltip,
 .nav-item:focus-visible .rail-tooltip,
-.credit-balance-button:hover .rail-tooltip,
-.credit-balance-button:focus-visible .rail-tooltip,
 .account-settings-button:hover .rail-tooltip,
 .account-settings-button:focus-visible .rail-tooltip,
 .sidebar-login-link:hover .rail-tooltip,
@@ -455,19 +465,8 @@ function openRechargeFromCreditLog() {
     padding: 12px 0 0;
   }
 
-  .credit-balance-button {
-    width: 100%;
-    height: 50px;
-    display: grid;
-    grid-template-columns: 20px auto 1fr;
-    grid-template-rows: 1fr;
-    justify-items: start;
-    gap: 10px;
-    padding: 0 14px;
-
-    .rail-tooltip {
-      justify-self: end;
-    }
+  .header-credit-button span {
+    display: none;
   }
 
   .content {

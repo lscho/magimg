@@ -145,6 +145,7 @@ export interface ClientPagination<T> {
 export interface GenerationSettings {
   textToImageCost: number;
   imageToImageCost: number;
+  cardPurchaseUrl?: string;
   maxAttempts: number;
   uploadMaxBytes: number;
   supportedMimeTypes: string[];

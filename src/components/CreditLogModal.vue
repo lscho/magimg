@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, useTemplateRef } from "vue";
 import { ArrowDownLeft, ArrowUpRight, Coins, Plus, RefreshCw, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/app";
 import type { CreditTransactionKind } from "@/types";
 
 const emit = defineEmits<{ close: []; recharge: [] }>();
 const app = useAppStore();
+const dialog = useTemplateRef<HTMLElement>("dialog");
 
 const kindLabels: Record<CreditTransactionKind, string> = {
   recharge: "充值到账",
@@ -27,14 +28,31 @@ function formatTime(value: string) {
 }
 
 onMounted(() => {
+  dialog.value?.focus();
   void app.refreshTransactions();
 });
 </script>
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <section class="modal credit-log-modal" role="dialog" aria-modal="true" aria-labelledby="credit-log-title">
-      <button class="icon-button modal-close" aria-label="关闭积分日志" @click="emit('close')"><X :size="18" /></button>
+    <section
+      ref="dialog"
+      class="modal credit-log-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="credit-log-title"
+      tabindex="-1"
+      @keydown.esc="emit('close')"
+    >
+      <header class="credit-log-heading">
+        <div>
+          <h2 id="credit-log-title">积分日志</h2>
+          <p>最近的积分收入与使用明细。</p>
+        </div>
+        <button class="icon-button" type="button" aria-label="关闭积分日志" @click="emit('close')">
+          <X :size="18" />
+        </button>
+      </header>
 
       <div class="credit-log-summary">
         <div class="credit-log-icon"><Coins :size="22" /></div>
@@ -50,13 +68,6 @@ onMounted(() => {
           <button class="icon-button" type="button" title="刷新积分记录" aria-label="刷新积分记录" @click="app.refreshTransactions">
             <RefreshCw :size="16" />
           </button>
-        </div>
-      </div>
-
-      <div class="credit-log-heading">
-        <div>
-          <h2 id="credit-log-title">积分日志</h2>
-          <p>最近的积分收入与使用明细。</p>
         </div>
       </div>
 
@@ -99,7 +110,12 @@ onMounted(() => {
   max-height: min(720px, calc(100vh - 48px));
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
   overflow: hidden;
+
+  &:focus {
+    outline: none;
+  }
 }
 
 .credit-log-summary {
@@ -153,7 +169,10 @@ onMounted(() => {
 }
 
 .credit-log-heading {
-  padding: 18px 0 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
 
   h2 {
     margin: 0;
@@ -161,6 +180,10 @@ onMounted(() => {
 
   p {
     margin: 4px 0 0;
+  }
+
+  .icon-button {
+    flex: 0 0 auto;
   }
 }
 
