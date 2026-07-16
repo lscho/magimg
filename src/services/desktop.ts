@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
+import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import type { SelectedImageFile } from "@/types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -10,13 +11,56 @@ export async function chooseDirectory(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function chooseImageFile(): Promise<string | null> {
-  if (!isTauri) return null;
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/u).pop() || "reference-image";
+}
+
+function mimeTypeFromName(name: string) {
+  const extension = name.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "webp") return "image/webp";
+  return "image/png";
+}
+
+export async function chooseImageFile(): Promise<SelectedImageFile | null> {
+  if (!isTauri) {
+    return await new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/jpeg,image/png,image/webp";
+      input.hidden = true;
+
+      const finish = (selected: SelectedImageFile | null) => {
+        input.remove();
+        resolve(selected);
+      };
+      input.addEventListener(
+        "change",
+        () => {
+          const file = input.files?.[0];
+          finish(file ? { name: file.name, path: file.name, file } : null);
+        },
+        { once: true }
+      );
+      input.addEventListener("cancel", () => finish(null), { once: true });
+      document.body.append(input);
+      input.click();
+    });
+  }
+
   const selected = await open({
     multiple: false,
     filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
   });
-  return typeof selected === "string" ? selected : null;
+  if (typeof selected !== "string") return null;
+
+  const name = fileNameFromPath(selected);
+  const bytes = await readFile(selected);
+  return {
+    name,
+    path: selected,
+    file: new File([bytes], name, { type: mimeTypeFromName(name) })
+  };
 }
 
 export async function openExternal(target: string): Promise<void> {

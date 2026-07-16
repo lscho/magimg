@@ -1,5 +1,7 @@
 export type GenerationMode = "text-to-image" | "image-to-image";
-export type GenerationStatus = "queued" | "processing" | "succeeded" | "failed";
+export type ClientGenerationMode = "textToImage" | "imageToImage";
+export type GenerationStatus = "queued" | "processing" | "succeeded" | "failed" | "cancelled";
+export type GenerationTaskStatus = "pending" | "processing" | "succeeded" | "failed" | "cancelled";
 export type AspectRatio = "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
 export type ImageModelName = "gpt-image-2" | "gpt-image-1.5" | "gpt-image-1" | "gpt-image-1-mini" | "dall-e-2" | "dall-e-3";
 export type ImageSize =
@@ -14,7 +16,8 @@ export type ImageSize =
   | "256x256"
   | "512x512"
   | "1792x1024"
-  | "1024x1792";
+  | "1024x1792"
+  | `${number}x${number}`;
 export type OutputFormat = "png" | "jpeg" | "webp";
 export type ResponseFormat = "url" | "b64_json";
 export type Background = "transparent" | "opaque" | "auto";
@@ -39,6 +42,7 @@ export interface ImageParams {
   strength?: number;
   preserveComposition?: boolean;
   referenceImagePath?: string;
+  templateId?: string;
 }
 
 export interface GeneratedImage {
@@ -47,6 +51,7 @@ export interface GeneratedImage {
   localPath?: string;
   width: number;
   height: number;
+  mimeType?: string;
 }
 
 export interface GenerationRecord {
@@ -59,15 +64,19 @@ export interface GenerationRecord {
   costCredits: number;
   balanceAfter: number;
   createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
   errorMessage?: string;
 }
 
 export interface UserSession {
   accessToken: string;
+  expiresAt?: string;
   user: {
     id: string;
     nickname: string;
-    email: string;
+    phone?: string;
+    email?: string;
     avatarUrl?: string;
   };
 }
@@ -92,6 +101,7 @@ export interface CreditTransaction {
 
 export interface PromptTemplate {
   id: string;
+  templateId?: string;
   mode: GenerationMode;
   title: string;
   category: string;
@@ -99,7 +109,144 @@ export interface PromptTemplate {
   prompt: string;
   tags: string[];
   previewImage: string;
+  sourceImage?: string;
+  width?: number;
+  height?: number;
+  quality?: SupportedQuality;
   previewCrop?: "full" | "source" | "effect";
+}
+
+export type SupportedQuality = "auto" | "low" | "medium" | "high";
+
+export interface ClientUser {
+  id: string;
+  username: string;
+  phone?: string;
+  email?: string;
+  points: number;
+  status: "active" | "disabled";
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface ClientAuthResponse {
+  user: ClientUser;
+  token: string;
+  expiresAt: string;
+}
+
+export interface ClientPagination<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface GenerationSettings {
+  textToImageCost: number;
+  imageToImageCost: number;
+  maxAttempts: number;
+  uploadMaxBytes: number;
+  supportedMimeTypes: string[];
+  supportedQualities: SupportedQuality[];
+  sizeRules: {
+    edgeStep: number;
+    maxEdge: number;
+    maxAspectRatio: number;
+    minPixels: number;
+    maxPixels: number;
+  };
+}
+
+export interface TemplateCategory {
+  id: string;
+  name: string;
+  description?: string;
+  sort: number;
+  status: "active" | "disabled";
+  templateCount?: number;
+}
+
+export interface GenerationTemplate {
+  id: string;
+  categoryId: string;
+  categoryName?: string;
+  name: string;
+  description?: string;
+  mode: ClientGenerationMode;
+  sourceImage?: string;
+  effectImage: string;
+  prompt: string;
+  width: number;
+  height: number;
+  quality: SupportedQuality;
+  sort: number;
+  status: "draft" | "published";
+  useCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientAsset {
+  id: string;
+  kind: "input" | "output";
+  url: string;
+  mimeType: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface GenerationTask {
+  id: string;
+  requestId: string;
+  mode: ClientGenerationMode;
+  prompt: string;
+  templateId?: string;
+  inputAsset?: ClientAsset;
+  outputAsset?: ClientAsset;
+  width: number;
+  height: number;
+  quality: SupportedQuality;
+  pointsCost: number;
+  status: GenerationTaskStatus;
+  attemptCount: number;
+  errorMessage?: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export type PointLedgerType = "cardRedeem" | "taskCharge" | "taskRefund" | "adminAdjustment";
+
+export interface PointLedgerEntry {
+  id: string;
+  type: PointLedgerType;
+  amount: number;
+  balanceAfter: number;
+  referenceId?: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface CardRedeemResult {
+  points: number;
+  balance: number;
+}
+
+export interface CreateGenerationTaskInput {
+  mode?: ClientGenerationMode;
+  prompt?: string;
+  templateId?: string;
+  inputAssetId?: string;
+  width?: number;
+  height?: number;
+  quality?: SupportedQuality;
+}
+
+export interface SelectedImageFile {
+  name: string;
+  path: string;
+  file: File;
 }
 
 export interface CreditPackage {

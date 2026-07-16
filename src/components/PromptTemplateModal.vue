@@ -1,22 +1,41 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { LayoutTemplate, X } from "lucide-vue-next";
+import { computed, onMounted, ref, useTemplateRef } from "vue";
+import { LayoutTemplate, LoaderCircle, X } from "lucide-vue-next";
 import PromptTemplateCard from "@/components/PromptTemplateCard.vue";
-import { promptTemplates, templateCategories } from "@/constants/promptTemplates";
+import { useAppStore } from "@/stores/app";
 import type { GenerationMode, PromptTemplate } from "@/types";
 
 const props = defineProps<{ mode: GenerationMode }>();
 const emit = defineEmits<{ close: []; use: [template: PromptTemplate] }>();
+const app = useAppStore();
+const dialog = useTemplateRef<HTMLElement>("dialog");
 const activeCategory = ref("全部");
-const categories = computed(() => templateCategories(props.mode));
+const categories = computed(() => [
+  "全部",
+  ...Array.from(new Set(app.templates.filter((item) => item.mode === props.mode).map((item) => item.category)))
+]);
 const visibleTemplates = computed(() =>
-  promptTemplates.filter((item) => item.mode === props.mode && (activeCategory.value === "全部" || item.category === activeCategory.value))
+  app.templates.filter(
+    (item) => item.mode === props.mode && (activeCategory.value === "全部" || item.category === activeCategory.value)
+  )
 );
+
+onMounted(() => {
+  dialog.value?.focus();
+});
 </script>
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <section class="modal template-modal" role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+    <section
+      ref="dialog"
+      class="modal template-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="template-modal-title"
+      tabindex="-1"
+      @keydown.esc="emit('close')"
+    >
       <button class="icon-button modal-close" aria-label="关闭模板广场" @click="emit('close')"><X :size="18" /></button>
       <div class="modal-heading-with-icon">
         <div><LayoutTemplate :size="20" /></div>
@@ -38,7 +57,20 @@ const visibleTemplates = computed(() =>
         </button>
       </div>
 
-      <div class="template-modal-grid" :class="{ 'comparison-grid': mode === 'image-to-image' }">
+      <div v-if="app.templatesLoading" class="modal-empty-state" role="status">
+        <LoaderCircle :size="28" />
+        <strong>正在加载模板</strong>
+      </div>
+      <div v-else-if="app.templatesError" class="modal-empty-state">
+        <strong>模板加载失败</strong>
+        <span>{{ app.templatesError }}</span>
+        <button class="secondary-button" type="button" @click="app.refreshTemplates">重新加载</button>
+      </div>
+      <div
+        v-else-if="visibleTemplates.length"
+        class="template-modal-grid"
+        :class="{ 'comparison-grid': mode === 'image-to-image' }"
+      >
         <PromptTemplateCard
           v-for="item in visibleTemplates"
           :key="item.id"
@@ -46,6 +78,9 @@ const visibleTemplates = computed(() =>
           compact
           @use="emit('use', $event)"
         />
+      </div>
+      <div v-else class="modal-empty-state">
+        <strong>暂无可用模板</strong>
       </div>
     </section>
   </div>
@@ -58,6 +93,10 @@ const visibleTemplates = computed(() =>
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
+
+  &:focus {
+    outline: none;
+  }
 }
 
 .modal-heading-with-icon {
@@ -102,6 +141,25 @@ const visibleTemplates = computed(() =>
   padding: 2px 4px 2px 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
+}
+
+.modal-empty-state {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  place-items: center;
+  gap: 9px;
+  color: var(--muted);
+  text-align: center;
+
+  strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  span {
+    font-size: 10px;
+  }
 }
 
 @media (max-width: 600px) {

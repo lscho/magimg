@@ -3,11 +3,26 @@ import { computed } from "vue";
 import { ImageUp, LayoutTemplate, Sparkles, Trash2, WandSparkles } from "lucide-vue-next";
 import { sizePresets } from "@/constants/defaults";
 import { chooseImageFile } from "@/services/desktop";
-import type { GenerationMode, ImageParams, ImageSize, OutputFormat } from "@/types";
+import type {
+  GenerationMode,
+  ImageParams,
+  ImageSize,
+  OutputFormat,
+  SelectedImageFile,
+  SupportedQuality,
+  GenerationSettings
+} from "@/types";
 
 const props = defineProps<{
   mode: GenerationMode;
   loading: boolean;
+  cost: number;
+  error: string;
+  showOutputOptions: boolean;
+  maxPromptLength: number;
+  supportedQualities: SupportedQuality[];
+  uploadMaxBytes: number;
+  sizeRules: GenerationSettings["sizeRules"];
 }>();
 const params = defineModel<ImageParams>("params", { required: true });
 
@@ -15,20 +30,38 @@ const emit = defineEmits<{
   generate: [];
   clear: [];
   openTemplates: [];
+  referenceSelected: [image: SelectedImageFile];
 }>();
 
-const cost = 7;
 const outputFormatOptions: Array<{ value: OutputFormat; label: string }> = [
   { value: "png", label: "PNG" },
   { value: "jpeg", label: "JPEG" },
   { value: "webp", label: "WebP" }
 ];
-const qualityOptions: Array<{ value: ImageParams["quality"]; label: string }> = [
+const allQualityOptions: Array<{ value: SupportedQuality; label: string }> = [
   { value: "auto", label: "自动" },
   { value: "low", label: "草稿" },
   { value: "medium", label: "标准" },
   { value: "high", label: "高清" }
 ];
+const qualityOptions = computed(() =>
+  allQualityOptions.filter((option) => props.supportedQualities.includes(option.value))
+);
+const supportedSizePresets = computed(() =>
+  sizePresets.filter((preset) => {
+    if (preset.value === "auto") return true;
+    const [width, height] = preset.value.split("x").map(Number);
+    const pixels = width * height;
+    return (
+      width % props.sizeRules.edgeStep === 0 &&
+      height % props.sizeRules.edgeStep === 0 &&
+      Math.max(width, height) <= props.sizeRules.maxEdge &&
+      Math.max(width, height) / Math.min(width, height) <= props.sizeRules.maxAspectRatio &&
+      pixels >= props.sizeRules.minPixels &&
+      pixels <= props.sizeRules.maxPixels
+    );
+  })
+);
 const modeTitle = computed(() => (props.mode === "image-to-image" ? "图生图" : "文生图"));
 
 function patch(partial: Partial<ImageParams>) {
@@ -49,7 +82,10 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
 
 async function pickReference() {
   const selected = await chooseImageFile();
-  if (selected) patch({ referenceImagePath: selected });
+  if (selected) {
+    patch({ referenceImagePath: selected.path });
+    emit("referenceSelected", selected);
+  }
 }
 </script>
 
@@ -66,7 +102,12 @@ async function pickReference() {
       <button v-if="mode === 'image-to-image'" class="upload-zone" type="button" @click="pickReference">
         <ImageUp :size="24" />
         <strong>{{ params.referenceImagePath ? "已选择参考图" : "上传参考图" }}</strong>
-        <span>{{ params.referenceImagePath || "支持 PNG / JPG / WEBP" }}</span>
+        <span>
+          {{
+            params.referenceImagePath ||
+            `支持 PNG / JPG / WEBP，最大 ${Math.floor(uploadMaxBytes / 1024 / 1024)} MB`
+          }}
+        </span>
       </button>
 
       <div class="field prompt-field">
@@ -82,18 +123,18 @@ async function pickReference() {
         <textarea
           :value="params.prompt"
           aria-label="提示词"
-          maxlength="32000"
+          :maxlength="maxPromptLength"
           placeholder="描述主体、场景、构图、光线和风格"
           @input="patch({ prompt: ($event.target as HTMLTextAreaElement).value })"
         />
-        <small>{{ params.prompt.length }} / 32000</small>
+        <small>{{ params.prompt.length }} / {{ maxPromptLength }}</small>
       </div>
 
       <div class="field size-field">
         <span>比例 / 尺寸</span>
         <div class="size-grid">
           <button
-            v-for="preset in sizePresets"
+            v-for="preset in supportedSizePresets"
             :key="preset.value"
             type="button"
             class="size-option"
@@ -107,7 +148,7 @@ async function pickReference() {
         </div>
       </div>
 
-      <div class="field">
+      <div v-if="showOutputOptions" class="field">
         <span>输出格式</span>
         <div class="radio-group format-radio-group" role="radiogroup" aria-label="输出格式">
           <label
@@ -128,7 +169,7 @@ async function pickReference() {
         </div>
       </div>
 
-      <label v-if="params.outputFormat !== 'png'" class="field compression-field">
+      <label v-if="showOutputOptions && params.outputFormat !== 'png'" class="field compression-field">
         <span>压缩比例 <em>{{ params.outputCompression }}%</em></span>
         <input
           type="range"
@@ -163,8 +204,13 @@ async function pickReference() {
     </div>
 
     <div class="generator-footer">
+      <p v-if="error" class="generator-error" role="alert">{{ error }}</p>
       <span>预计消耗 {{ cost }} 积分</span>
-      <button class="primary-button generate-button" :disabled="loading || !params.prompt.trim()" @click="emit('generate')">
+      <button
+        class="primary-button generate-button"
+        :disabled="loading || !params.prompt.trim() || (mode === 'image-to-image' && !params.referenceImagePath)"
+        @click="emit('generate')"
+      >
         <WandSparkles :size="18" /> {{ loading ? "正在创作..." : "开始生成" }}
       </button>
     </div>
@@ -478,6 +524,13 @@ async function pickReference() {
     color: var(--muted);
     font-size: 11px;
   }
+}
+
+.generator-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 @media (max-width: 900px) {

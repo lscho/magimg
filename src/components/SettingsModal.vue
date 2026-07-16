@@ -57,6 +57,28 @@ async function logout() {
           <div class="settings-modal-body">
             <section class="settings-group">
               <div class="settings-group-heading">
+                <h3>服务连接</h3>
+                <p>配置幻画服务端地址。</p>
+              </div>
+
+              <div class="settings-fields">
+                <label for="settings-api-base-url">
+                  <span class="settings-field-label">API 服务地址</span>
+                  <span class="settings-field-help">填写服务端 Origin 或包含 /api/client/v1 的完整基础路径。</span>
+                  <input
+                    id="settings-api-base-url"
+                    v-model="draft.apiBaseUrl"
+                    type="url"
+                    inputmode="url"
+                    autocomplete="url"
+                    placeholder="https://api.example.com"
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <div class="settings-group-heading">
                 <h3>文件保存</h3>
                 <p>设置生成图片的本地保存位置和保存方式。</p>
               </div>

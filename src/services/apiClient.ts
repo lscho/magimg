@@ -1,119 +1,255 @@
 import { mockApi } from "@/services/mockApi";
 import type {
-  ApiResponse,
-  CreditBalance,
-  CreditPackage,
-  CreditTransaction,
-  GenerateResponse,
-  ImageParams,
-  RechargeOrder,
-  UserSession
+  CardRedeemResult,
+  ClientAsset,
+  ClientAuthResponse,
+  ClientGenerationMode,
+  ClientPagination,
+  ClientUser,
+  CreateGenerationTaskInput,
+  GenerationSettings,
+  GenerationTask,
+  GenerationTaskStatus,
+  GenerationTemplate,
+  PointLedgerEntry,
+  TemplateCategory
 } from "@/types";
 
-const useMock = import.meta.env.VITE_USE_MOCK_API !== "false";
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "";
+const CLIENT_API_PREFIX = "/api/client/v1";
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL || "";
+
+export const isMockApi = import.meta.env.VITE_USE_MOCK_API !== "false";
 
 let token: string | null = null;
+let apiBaseUrl = runtimeApiBaseUrl(configuredApiBaseUrl);
+let unauthorizedHandler: (() => void | Promise<void>) | null = null;
+
+interface ApiErrorPayload {
+  statusCode?: number;
+  message?: string;
+}
+
+interface RequestOptions extends RequestInit {
+  idempotencyKey?: string;
+}
+
+export class ApiError extends Error {
+  readonly statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "ApiError";
+    this.statusCode = statusCode;
+  }
+}
 
 export function setAccessToken(nextToken: string | null) {
   token = nextToken;
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
+export function setApiBaseUrl(nextBaseUrl: string) {
+  apiBaseUrl = runtimeApiBaseUrl(nextBaseUrl);
+}
+
+export function setUnauthorizedHandler(handler: (() => void | Promise<void>) | null) {
+  unauthorizedHandler = handler;
+}
+
+function buildApiUrl(path: string) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const baseIncludesPrefix = apiBaseUrl.endsWith(CLIENT_API_PREFIX);
+  return `${apiBaseUrl}${baseIncludesPrefix ? "" : CLIENT_API_PREFIX}${normalizedPath}`;
+}
+
+function runtimeApiBaseUrl(nextBaseUrl: string) {
+  const normalized = nextBaseUrl.trim().replace(/\/+$/u, "");
+  const configured = configuredApiBaseUrl.trim().replace(/\/+$/u, "");
+  return import.meta.env.DEV && normalized === configured ? "" : normalized;
+}
+
+export function resolveApiAssetUrl(path: string) {
+  if (/^https?:\/\//u.test(path) || path.startsWith("data:") || path.startsWith("blob:")) {
+    return path;
+  }
+
+  const base = apiBaseUrl || window.location.origin;
+  try {
+    return new URL(path, `${base.replace(/\/+$/u, "")}/`).toString();
+  } catch {
+    return path;
+  }
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { idempotencyKey, ...fetchOptions } = options;
+  const isFormData = fetchOptions.body instanceof FormData;
+  const response = await fetch(buildApiUrl(path), {
+    ...fetchOptions,
     headers: {
-      "Content-Type": "application/json",
+      ...(!isFormData && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      ...fetchOptions.headers
     }
   });
 
-  const payload = (await response.json()) as ApiResponse<T>;
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.message || `请求失败：${response.status}`);
+  let payload: ApiErrorPayload | T | null = null;
+  try {
+    payload = (await response.json()) as ApiErrorPayload | T;
+  } catch {
+    payload = null;
   }
-  return payload;
+
+  if (!response.ok) {
+    const errorPayload = payload as ApiErrorPayload | null;
+    if (response.status === 401 && unauthorizedHandler) {
+      await unauthorizedHandler();
+    }
+    throw new ApiError(errorPayload?.message || `请求失败：${response.status}`, response.status);
+  }
+
+  return payload as T;
 }
 
-function toImageGenerationBody(params: ImageParams) {
-  return {
-    prompt: params.prompt,
-    model: "gpt-image-2",
-    n: params.n,
-    size: params.size,
-    background: params.background,
-    moderation: params.moderation,
-    ...(params.outputFormat !== "png" ? { output_compression: params.outputCompression } : {}),
-    output_format: params.outputFormat,
-    partial_images: params.partialImages,
-    quality: params.quality,
-    stream: params.stream,
-    ...(params.user ? { user: params.user } : {}),
-    ...(params.referenceImagePath ? { referenceImagePath: params.referenceImagePath } : {}),
-    ...(typeof params.strength === "number" ? { strength: params.strength } : {}),
-    ...(typeof params.preserveComposition === "boolean" ? { preserveComposition: params.preserveComposition } : {})
-  };
+function queryString(params: Record<string, string | number | undefined>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  });
+  const value = search.toString();
+  return value ? `?${value}` : "";
+}
+
+function idempotencyKey() {
+  return `huanhua:${crypto.randomUUID()}`;
 }
 
 export const apiClient = {
-  async login(email: string, password: string): Promise<ApiResponse<UserSession>> {
-    if (useMock) return mockApi.login(email);
-    return request<UserSession>("/v1/auth/login", {
+  sendSms(phone: string, purpose: "register" | "passwordReset") {
+    if (isMockApi) return mockApi.sendSms(phone, purpose);
+    return request<{ accepted: true; cooldownSeconds: number; expiresInSeconds: number }>("/auth/sms/send", {
       method: "POST",
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ phone, purpose })
     });
   },
 
-  async register(email: string, password: string): Promise<ApiResponse<UserSession>> {
-    if (useMock) return mockApi.register(email);
-    return request<UserSession>("/v1/auth/register", {
+  login(phone: string, password: string, deviceName?: string) {
+    if (isMockApi) return mockApi.login(phone, password);
+    return request<ClientAuthResponse>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ phone, password, ...(deviceName ? { deviceName } : {}) })
     });
   },
 
-  async logout(): Promise<void> {
-    if (!useMock) {
-      await request("/v1/auth/logout", { method: "POST" });
-    }
-  },
-
-  me: () => (useMock ? mockApi.me() : request<UserSession["user"]>("/v1/users/me")),
-  balance: () => (useMock ? mockApi.balance() : request<CreditBalance>("/v1/credits/balance")),
-  transactions: (limit = 50) =>
-    useMock ? mockApi.transactions(limit) : request<CreditTransaction[]>(`/v1/credits/transactions?limit=${limit}`),
-  packages: () => (useMock ? mockApi.packages() : request<CreditPackage[]>("/v1/credits/packages")),
-
-  createOrder(packageId: string): Promise<ApiResponse<RechargeOrder>> {
-    if (useMock) return mockApi.createOrder(packageId);
-    return request<RechargeOrder>("/v1/credits/orders", {
+  register(phone: string, code: string, password: string, deviceName?: string) {
+    if (isMockApi) return mockApi.register(phone, code, password);
+    return request<ClientAuthResponse>("/auth/register", {
       method: "POST",
-      body: JSON.stringify({ packageId })
+      body: JSON.stringify({ phone, code, password, ...(deviceName ? { deviceName } : {}) })
     });
   },
 
-  order(orderId: string) {
-    return useMock ? mockApi.order(orderId) : request<RechargeOrder>(`/v1/credits/orders/${orderId}`);
-  },
-
-  generateTextToImage(params: ImageParams) {
-    if (useMock) return mockApi.generate(params);
-    return request<GenerateResponse>("/v1/generations/text-to-image", {
+  resetPassword(phone: string, code: string, password: string) {
+    if (isMockApi) return mockApi.resetPassword(phone, code, password);
+    return request<{ success: true }>("/auth/password/reset", {
       method: "POST",
-      body: JSON.stringify(toImageGenerationBody(params))
+      body: JSON.stringify({ phone, code, password })
     });
   },
 
-  generateImageToImage(params: ImageParams) {
-    if (useMock) return mockApi.generate(params);
-    return request<GenerateResponse>("/v1/generations/image-to-image", {
+  capabilities() {
+    return isMockApi ? mockApi.capabilities() : request<GenerationSettings>("/capabilities");
+  },
+
+  templateCategories() {
+    return isMockApi
+      ? mockApi.templateCategories()
+      : request<{ items: TemplateCategory[] }>("/template-categories");
+  },
+
+  templates(options: {
+    page?: number;
+    pageSize?: number;
+    mode?: ClientGenerationMode;
+    categoryId?: string;
+  } = {}) {
+    if (isMockApi) return mockApi.templates(options);
+    return request<ClientPagination<GenerationTemplate>>(
+      `/templates${queryString({
+        page: options.page,
+        pageSize: options.pageSize,
+        mode: options.mode,
+        categoryId: options.categoryId
+      })}`
+    );
+  },
+
+  template(id: string) {
+    return isMockApi ? mockApi.template(id) : request<GenerationTemplate>(`/templates/${encodeURIComponent(id)}`);
+  },
+
+  me() {
+    return isMockApi ? mockApi.me() : request<ClientUser>("/me");
+  },
+
+  async logout() {
+    if (isMockApi) return mockApi.logout();
+    await request<{ success: true }>("/auth/logout", { method: "POST" });
+  },
+
+  redeemCard(code: string) {
+    if (isMockApi) return mockApi.redeemCard(code);
+    return request<CardRedeemResult>("/cards/redeem", {
       method: "POST",
-      body: JSON.stringify(toImageGenerationBody(params))
+      body: JSON.stringify({ code })
     });
   },
 
-  generation(generationId: string) {
-    return useMock ? mockApi.generation(generationId) : request<GenerateResponse>(`/v1/generations/${generationId}`);
+  points(page = 1, pageSize = 50) {
+    if (isMockApi) return mockApi.points(page, pageSize);
+    return request<ClientPagination<PointLedgerEntry>>(`/points${queryString({ page, pageSize })}`);
+  },
+
+  uploadImage(file: File) {
+    if (isMockApi) return mockApi.uploadImage(file);
+    const body = new FormData();
+    body.append("file", file, file.name);
+    return request<ClientAsset>("/uploads/images", { method: "POST", body });
+  },
+
+  createTask(input: CreateGenerationTaskInput) {
+    if (isMockApi) return mockApi.createTask(input);
+    return request<GenerationTask>("/tasks", {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey: idempotencyKey()
+    });
+  },
+
+  tasks(options: {
+    page?: number;
+    pageSize?: number;
+    status?: GenerationTaskStatus;
+    mode?: ClientGenerationMode;
+  } = {}) {
+    if (isMockApi) return mockApi.tasks(options);
+    return request<ClientPagination<GenerationTask>>(
+      `/tasks${queryString({
+        page: options.page,
+        pageSize: options.pageSize,
+        status: options.status,
+        mode: options.mode
+      })}`
+    );
+  },
+
+  task(id: string) {
+    return isMockApi ? mockApi.task(id) : request<GenerationTask>(`/tasks/${encodeURIComponent(id)}`);
+  },
+
+  cancelTask(id: string) {
+    return isMockApi
+      ? mockApi.cancelTask(id)
+      : request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   }
 };

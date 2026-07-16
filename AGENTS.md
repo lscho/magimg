@@ -43,14 +43,14 @@ src-tauri/           Rust 入口、桌面配置和 capability
 代理必须基于以下现状工作，不得把占位能力描述为已完成：
 
 - 默认启用 Mock API；仅当 `VITE_USE_MOCK_API=false` 时请求真实后端。
-- 相邻后端项目尚未实现 `docs/backend-api.md` 中的幻画业务接口。
-- 设置中的 `apiBaseUrl` 当前只持久化，不会动态改变 `apiClient.ts` 的请求地址。
-- 真实图生图仍缺少参考图上传流程；当前只传递本地 `referenceImagePath`。
-- 浏览器预览的本地设置和历史仅保存在内存中，刷新后会丢失。
-- 浏览器预览不能选择图生图参考文件；`chooseImageFile()` 返回 `null`。
+- 真实客户端接口以 `docs/CLIENT_API.md` 为准，旧 `docs/backend-api.md` 契约已废弃。
+- 设置中的 `apiBaseUrl` 保存后会动态改变 `apiClient.ts` 的请求地址。
+- 真实图生图会先上传参考图，再用 `inputAssetId` 创建任务。
+- 浏览器预览使用 `localStorage` 保存设置、历史和登录会话；Tauri 使用 plugin-store。
 - 结果区的单图保存、全部下载、放大查看按钮目前只有界面，尚无完整行为。
 - 项目目前没有自动化单元测试或 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
+- 任务接口不接收输出格式、压缩比例、背景、审核、流式、风格和图生图强度等旧参数；差异见 `docs/client-api-integration-gaps.md`。
 
 若任务涉及上述缺口，应明确区分“补实现”和“调整现有实现”，并同步相关文档。
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, ArrowUpRight } from "lucide-vue-next";
+import { WandSparkles } from "lucide-vue-next";
 import type { PromptTemplate } from "@/types";
 
 withDefaults(defineProps<{ template: PromptTemplate; compact?: boolean }>(), {
@@ -14,29 +14,37 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
       v-if="template.mode === 'text-to-image'"
       class="template-visual template-visual-single"
       :class="`crop-${template.previewCrop || 'full'}`"
-      :style="{ backgroundImage: `url(${template.previewImage})` }"
-      role="img"
-      :aria-label="`${template.title}效果预览`"
     >
+      <img
+        :src="template.previewImage"
+        :alt="`${template.title}效果预览`"
+        loading="lazy"
+        decoding="async"
+      />
       <span>效果预览</span>
     </div>
-    <div v-else class="template-visual template-visual-comparison">
-      <div
-        class="comparison-pane source"
-        :style="{ backgroundImage: `url(${template.previewImage})` }"
-        role="img"
-        :aria-label="`${template.title}源图`"
-      >
-        <span>源图</span>
+    <div
+      v-else
+      class="template-visual-comparison"
+      :class="{ 'combined-preview': !template.sourceImage }"
+    >
+      <div class="comparison-pane source">
+        <img
+          :src="template.sourceImage || template.previewImage"
+          :alt="`${template.title}原图`"
+          loading="lazy"
+          decoding="async"
+        />
+        <span class="comparison-label">原图</span>
       </div>
-      <div class="comparison-arrow" aria-hidden="true"><ArrowRight :size="14" /></div>
-      <div
-        class="comparison-pane effect"
-        :style="{ backgroundImage: `url(${template.previewImage})` }"
-        role="img"
-        :aria-label="`${template.title}效果图`"
-      >
-        <span>效果图</span>
+      <div class="comparison-pane effect">
+        <img
+          :src="template.previewImage"
+          :alt="`${template.title}效果图`"
+          loading="lazy"
+          decoding="async"
+        />
+        <span class="comparison-label">效果</span>
       </div>
     </div>
 
@@ -47,11 +55,20 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
           <i v-for="tag in template.tags.slice(0, 2)" :key="tag">{{ tag }}</i>
         </div>
       </div>
-      <h2>{{ template.title }}</h2>
-      <blockquote>{{ template.prompt }}</blockquote>
-      <button class="template-use" type="button" @click="emit('use', template)">
-        使用模板 <ArrowUpRight :size="15" />
-      </button>
+      <div class="template-title-row">
+        <h2>{{ template.title }}</h2>
+        <button
+          class="template-use"
+          type="button"
+          :aria-label="`使用${template.title}模板`"
+          :title="`使用${template.title}模板`"
+          @click="emit('use', template)"
+        >
+          <WandSparkles :size="14" />
+          <span>使用</span>
+        </button>
+      </div>
+      <blockquote :title="template.prompt">{{ template.prompt }}</blockquote>
     </div>
   </article>
 </template>
@@ -83,23 +100,34 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
     grid-template-rows: auto auto;
 
     blockquote {
+      min-height: calc(2em * 1.65);
       -webkit-line-clamp: 2;
+    }
+
+    .template-use {
+      height: 30px;
+      min-width: 58px;
     }
   }
 
   h2 {
+    display: -webkit-box;
     margin: 0;
+    overflow: hidden;
     font-size: 14px;
     font-weight: 680;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   blockquote {
     display: -webkit-box;
+    min-height: calc(3em * 1.65);
     margin: 0;
     overflow: hidden;
-    color: var(--soft);
-    font-size: 11px;
-    line-height: 1.65;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.6;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
   }
@@ -111,35 +139,30 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
   border-radius: 7px;
   background-color: var(--surface-strong);
 
-  &-single {
-    aspect-ratio: 16 / 9;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: cover;
-
-    &.crop-source,
-    &.crop-effect {
-      background-size: 200% auto;
-    }
-
-    &.crop-source {
-      background-position: left center;
-    }
-
-    &.crop-effect {
-      background-position: right center;
-    }
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
   }
 
-  &-comparison {
-    aspect-ratio: 2 / 1;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  &-single {
+    &.crop-source,
+    &.crop-effect {
+      aspect-ratio: 1;
+
+      img {
+        width: 200%;
+        max-width: none;
+      }
+    }
+
+    &.crop-effect img {
+      transform: translateX(-50%);
+    }
   }
 }
 
-.template-visual-single > span,
-.comparison-pane > span {
+.template-visual-single > span {
   position: absolute;
   left: 9px;
   bottom: 9px;
@@ -154,54 +177,95 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
   font-weight: 700;
 }
 
+.template-visual-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  background: var(--field);
+}
+
+.comparison-label {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  left: 8px;
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  color: #fff;
+  background: rgba(8, 11, 16, 0.82);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.26);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 2px #000;
+}
+
 .comparison-pane {
   position: relative;
   min-width: 0;
-  background-repeat: no-repeat;
-  background-size: 200% auto;
+  overflow: hidden;
+  background-color: var(--surface-strong);
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
 
   &.source {
-    background-position: left center;
+    border-right: 1px solid rgba(255, 255, 255, 0.3);
+
+    &::after {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      content: "";
+      pointer-events: none;
+      background: rgba(4, 7, 11, 0.26);
+      box-shadow: inset -18px 0 30px rgba(0, 0, 0, 0.28);
+    }
   }
 
   &.effect {
-    background-position: right center;
+    box-shadow: inset 0 0 0 1px rgba(101, 207, 224, 0.08);
 
-    > span {
-      right: 9px;
+    .comparison-label {
+      right: 8px;
       left: auto;
-      color: var(--on-accent);
-      border-color: rgba(211, 220, 255, 0.32);
-      background: rgba(120, 152, 245, 0.92);
+      border-color: rgba(101, 207, 224, 0.46);
     }
   }
 }
 
-.comparison-arrow {
-  position: absolute;
-  z-index: 2;
-  top: 50%;
-  left: 50%;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 2px solid rgba(255, 255, 255, 0.82);
-  border-radius: 50%;
-  color: var(--accent-strong);
-  background: rgba(16, 22, 29, 0.9);
-  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.32);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  transform: translate(-50%, -50%);
+.combined-preview {
+  .comparison-pane {
+    aspect-ratio: 1;
+
+    img {
+      width: 200%;
+      max-width: none;
+    }
+  }
+
+  .effect img {
+    transform: translateX(-50%);
+  }
 }
 
 .template-card-content {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 14px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 9px;
+  padding: 12px;
 }
 
 .template-card-top {
@@ -215,6 +279,14 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
     font-size: 9px;
     font-weight: 800;
   }
+}
+
+.template-title-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
 }
 
 .template-tags {
@@ -234,21 +306,40 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 }
 
 .template-use {
-  min-height: 34px;
+  min-width: 64px;
+  height: 32px;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 5px;
   padding: 0 10px;
-  border: 1px solid rgba(120, 152, 245, 0.18);
-  border-radius: 5px;
-  color: var(--accent-strong);
-  background: rgba(120, 152, 245, 0.1);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  color: var(--on-accent);
+  background: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
   font-size: 11px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 
   &:hover {
-    border-color: rgba(120, 152, 245, 0.38);
-    background: rgba(120, 152, 245, 0.16);
+    background: var(--accent-hover);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 6px 16px rgba(59, 83, 168, 0.22);
+  }
+}
+
+@media (max-width: 560px) {
+  .comparison-label {
+    top: 6px;
+    left: 6px;
+  }
+
+  .comparison-pane.effect .comparison-label {
+    right: 6px;
   }
 }
 </style>

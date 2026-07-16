@@ -5,20 +5,33 @@ import { defaultParams } from "@/constants/defaults";
 import GeneratorPanel from "@/components/GeneratorPanel.vue";
 import ResultGrid from "@/components/ResultGrid.vue";
 import PromptTemplateModal from "@/components/PromptTemplateModal.vue";
+import { isMockApi } from "@/services/apiClient";
 import { useAppStore } from "@/stores/app";
-import type { GenerationMode, GenerationRecord, ImageParams, PromptTemplate } from "@/types";
+import type {
+  GenerationMode,
+  GenerationRecord,
+  ImageParams,
+  PromptTemplate,
+  SelectedImageFile
+} from "@/types";
 
 const route = useRoute();
 const router = useRouter();
 const app = useAppStore();
 const params = ref<ImageParams>({ ...defaultParams });
 const currentRecord = shallowRef<GenerationRecord | null>(null);
+const referenceImage = shallowRef<SelectedImageFile | null>(null);
 const showTemplates = shallowRef(false);
 
 const mode = computed<GenerationMode>(() =>
   route.params.mode === "image-to-image" ? "image-to-image" : "text-to-image"
 );
 const visibleRecord = computed(() => currentRecord.value ?? app.visibleHistory[0] ?? null);
+const generationCost = computed(() =>
+  mode.value === "image-to-image"
+    ? app.capabilities.imageToImageCost
+    : app.capabilities.textToImageCost
+);
 
 watch(
   mode,
@@ -26,7 +39,9 @@ watch(
     app.activeMode = nextMode;
     const template = app.consumeTemplate(nextMode);
     if (template) {
-      params.value = { ...params.value, model: "gpt-image-2", prompt: template.prompt };
+      applyTemplateParams(template);
+    } else {
+      params.value = { ...params.value, templateId: undefined };
     }
   },
   { immediate: true }
@@ -47,11 +62,34 @@ function clearPrompt() {
 }
 
 async function generate() {
-  currentRecord.value = await app.generate(mode.value, params.value);
+  try {
+    currentRecord.value = await app.generate(mode.value, params.value, referenceImage.value);
+  } catch {
+    // The store exposes the user-facing error in the generator panel.
+  }
+}
+
+async function cancelGeneration() {
+  try {
+    await app.cancelCurrentGeneration();
+  } catch {
+    // A task may begin processing between rendering the button and cancellation.
+  }
+}
+
+function applyTemplateParams(template: PromptTemplate) {
+  params.value = {
+    ...params.value,
+    model: "gpt-image-2",
+    prompt: template.prompt,
+    templateId: template.templateId,
+    ...(template.width && template.height ? { size: `${template.width}x${template.height}` as const } : {}),
+    ...(template.quality ? { quality: template.quality } : {})
+  };
 }
 
 function applyTemplate(template: PromptTemplate) {
-  params.value = { ...params.value, model: "gpt-image-2", prompt: template.prompt };
+  applyTemplateParams(template);
   showTemplates.value = false;
 }
 </script>
@@ -62,14 +100,24 @@ function applyTemplate(template: PromptTemplate) {
       :record="visibleRecord"
       :loading="app.generating"
       :save-directory="app.settings.saveDirectory"
+      :can-cancel="app.currentTaskStatus === 'pending'"
       @regenerate="generate"
+      @cancel="cancelGeneration"
     />
     <GeneratorPanel
       v-model:params="params"
       :mode="mode"
       :loading="app.generating"
+      :cost="generationCost"
+      :error="app.error"
+      :show-output-options="isMockApi"
+      :max-prompt-length="4000"
+      :supported-qualities="app.capabilities.supportedQualities"
+      :upload-max-bytes="app.capabilities.uploadMaxBytes"
+      :size-rules="app.capabilities.sizeRules"
       @clear="clearPrompt"
       @open-templates="showTemplates = true"
+      @reference-selected="referenceImage = $event"
       @generate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />

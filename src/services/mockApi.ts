@@ -1,163 +1,279 @@
 import { sampleImages } from "@/constants/defaults";
+import { promptTemplates } from "@/constants/promptTemplates";
 import type {
-  ApiResponse,
-  CreditBalance,
-  CreditPackage,
-  CreditTransaction,
-  GenerateResponse,
-  ImageParams,
-  RechargeOrder,
-  UserSession
+  CardRedeemResult,
+  ClientAsset,
+  ClientAuthResponse,
+  ClientGenerationMode,
+  ClientPagination,
+  ClientUser,
+  CreateGenerationTaskInput,
+  GenerationSettings,
+  GenerationTask,
+  GenerationTaskStatus,
+  GenerationTemplate,
+  PointLedgerEntry,
+  TemplateCategory
 } from "@/types";
 
 let mockBalance = 1200;
 const now = Date.now();
-const mockTransactions: CreditTransaction[] = [
+const mockTransactions: PointLedgerEntry[] = [
   {
-    id: "credit_recharge_demo",
-    kind: "recharge",
+    id: "5",
+    type: "cardRedeem",
     amount: 1000,
     balanceAfter: 1200,
-    description: "创作包充值到账",
+    note: "创作积分充值",
     createdAt: new Date(now - 22 * 60 * 60 * 1000).toISOString(),
-    referenceId: "order_demo_001"
+    referenceId: "card_demo_001"
   },
   {
-    id: "credit_bonus_demo",
-    kind: "bonus",
+    id: "4",
+    type: "adminAdjustment",
     amount: 200,
     balanceAfter: 200,
-    description: "新用户注册赠送",
+    note: "演示账号积分",
     createdAt: new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString()
   }
 ];
+const mockTasks: GenerationTask[] = [];
 
-const delay = (ms = 650) => new Promise((resolve) => window.setTimeout(resolve, ms));
-const ok = <T>(data: T): ApiResponse<T> => ({ code: 0, message: "ok", data });
+const delay = (ms = 300) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const id = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+const createdAt = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+const categoryNames = Array.from(new Set(promptTemplates.map((template) => template.category)));
+const categoryIds = new Map(categoryNames.map((name, index) => [name, String(index + 1)]));
+
+const mockUser = (): ClientUser => ({
+  id: "1",
+  username: "user_8000_demo",
+  phone: "13800138000",
+  points: mockBalance,
+  status: "active",
+  createdAt
+});
+
+const mockTemplates: GenerationTemplate[] = promptTemplates.map((template, index) => ({
+  id: String(index + 1),
+  categoryId: categoryIds.get(template.category) || "1",
+  categoryName: template.category,
+  name: template.title,
+  description: template.description,
+  mode: template.mode === "image-to-image" ? "imageToImage" : "textToImage",
+  ...(template.mode === "image-to-image" ? { sourceImage: template.sourceImage || template.previewImage } : {}),
+  effectImage: template.previewImage,
+  prompt: template.prompt,
+  width: template.width || 1024,
+  height: template.height || 1024,
+  quality: template.quality || "auto",
+  sort: index + 1,
+  status: "published",
+  useCount: 0,
+  createdAt,
+  updatedAt: createdAt
+}));
+
+function paginate<T>(items: T[], page = 1, pageSize = 20): ClientPagination<T> {
+  const start = (page - 1) * pageSize;
+  return {
+    items: items.slice(start, start + pageSize),
+    total: items.length,
+    page,
+    pageSize
+  };
+}
 
 export const mockApi = {
-  async login(email: string): Promise<ApiResponse<UserSession>> {
-    await delay(450);
-    return ok({
-      accessToken: "mock_access_token",
-      user: {
-        id: "user_mock_001",
-        email,
-        nickname: email.split("@")[0] || "幻画用户"
+  async sendSms(_phone: string, _purpose: "register" | "passwordReset") {
+    await delay(250);
+    return { accepted: true as const, cooldownSeconds: 60, expiresInSeconds: 300 };
+  },
+
+  async login(phone: string, _password: string): Promise<ClientAuthResponse> {
+    await delay(400);
+    return {
+      user: { ...mockUser(), phone },
+      token: "mock_access_token",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+    };
+  },
+
+  async register(phone: string, _code: string, password: string) {
+    return this.login(phone, password);
+  },
+
+  async resetPassword(_phone: string, _code: string, _password: string) {
+    await delay(350);
+    return { success: true as const };
+  },
+
+  async capabilities(): Promise<GenerationSettings> {
+    await delay(120);
+    return {
+      textToImageCost: 10,
+      imageToImageCost: 15,
+      maxAttempts: 3,
+      uploadMaxBytes: 5 * 1024 * 1024,
+      supportedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
+      supportedQualities: ["auto", "low", "medium", "high"],
+      sizeRules: {
+        edgeStep: 16,
+        maxEdge: 3840,
+        maxAspectRatio: 3,
+        minPixels: 655360,
+        maxPixels: 8294400
       }
-    });
+    };
   },
 
-  async register(email: string): Promise<ApiResponse<UserSession>> {
-    return this.login(email);
+  async templateCategories(): Promise<{ items: TemplateCategory[] }> {
+    await delay(120);
+    return {
+      items: categoryNames.map((name, index) => ({
+        id: String(index + 1),
+        name,
+        sort: index + 1,
+        status: "active",
+        templateCount: mockTemplates.filter((template) => template.categoryName === name).length
+      }))
+    };
   },
 
-  async me(): Promise<ApiResponse<UserSession["user"]>> {
-    await delay(200);
-    return ok({ id: "user_mock_001", email: "demo@huanhua.ai", nickname: "幻画用户" });
-  },
-
-  async balance(): Promise<ApiResponse<CreditBalance>> {
+  async templates(options: {
+    page?: number;
+    pageSize?: number;
+    mode?: ClientGenerationMode;
+    categoryId?: string;
+  } = {}) {
     await delay(180);
-    return ok({ balance: mockBalance, frozen: 0, updatedAt: new Date().toISOString() });
+    const filtered = mockTemplates.filter(
+      (template) =>
+        (!options.mode || template.mode === options.mode) &&
+        (!options.categoryId || template.categoryId === options.categoryId)
+    );
+    return paginate(filtered, options.page, options.pageSize || 24);
   },
 
-  async transactions(limit = 50): Promise<ApiResponse<CreditTransaction[]>> {
-    await delay(240);
-    return ok(mockTransactions.slice(0, limit));
+  async template(templateId: string) {
+    await delay(100);
+    const template = mockTemplates.find((item) => item.id === templateId);
+    if (!template) throw new Error("模板不存在");
+    return template;
   },
 
-  async packages(): Promise<ApiResponse<CreditPackage[]>> {
-    await delay(220);
-    return ok([
-      { id: "starter", title: "灵感包", credits: 600, bonusCredits: 0, priceCents: 1900, currency: "CNY" },
-      { id: "creator", title: "创作包", credits: 1800, bonusCredits: 200, priceCents: 4900, currency: "CNY", recommended: true },
-      { id: "studio", title: "工作室包", credits: 5200, bonusCredits: 800, priceCents: 12900, currency: "CNY" }
-    ]);
+  async me() {
+    await delay(120);
+    return mockUser();
   },
 
-  async createOrder(packageId: string): Promise<ApiResponse<RechargeOrder>> {
-    const packages = (await this.packages()).data;
-    const selected = packages.find((item) => item.id === packageId) ?? packages[0];
-    await delay(360);
-    return ok({
-      id: id("order"),
-      packageId: selected.id,
-      amountCents: selected.priceCents,
-      credits: selected.credits + selected.bonusCredits,
-      status: "pending",
-      paymentUrl: `https://pay.example.com/huanhua-ai?order=${selected.id}`,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
-    });
+  async logout() {
+    await delay(80);
   },
 
-  async order(orderId: string): Promise<ApiResponse<RechargeOrder>> {
-    await delay(300);
-    return ok({
-      id: orderId,
-      packageId: "creator",
-      amountCents: 4900,
-      credits: 2000,
-      status: "pending",
-      paymentUrl: `https://pay.example.com/huanhua-ai?order=${orderId}`,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
-    });
-  },
-
-  async generate(params: ImageParams): Promise<ApiResponse<GenerateResponse>> {
-    await delay(1100);
-    const costCredits = Math.max(1, params.n) * 7;
-    if (mockBalance < costCredits) {
-      throw new Error("积分不足，请充值后继续生成。");
-    }
-    mockBalance -= costCredits;
-    const generationId = id("gen");
+  async redeemCard(_code: string): Promise<CardRedeemResult> {
+    await delay(400);
+    const points = 100;
+    mockBalance += points;
     mockTransactions.unshift({
-      id: id("credit"),
-      kind: "generation",
-      amount: -costCredits,
+      id: id("point"),
+      type: "cardRedeem",
+      amount: points,
       balanceAfter: mockBalance,
-      description: `图片生成 · ${params.n} 张`,
-      createdAt: new Date().toISOString(),
-      referenceId: generationId
+      note: "卡密兑换",
+      createdAt: new Date().toISOString()
     });
-    const [width, height] = params.size === "auto" ? [1024, 1024] : params.size.split("x").map(Number);
-    return ok({
-      generationId,
-      status: "succeeded",
-      costCredits,
-      balanceAfter: mockBalance,
-      created: Math.floor(Date.now() / 1000),
-      background: params.background === "auto" ? "opaque" : params.background,
-      outputFormat: params.outputFormat,
-      responseFormat: params.responseFormat,
-      quality: params.quality,
-      size: params.size,
-      images: Array.from({ length: params.n }, (_, index) => ({
-        id: id("img"),
-        remoteUrl: `${sampleImages[index % sampleImages.length]}&sig=${generationId}_${index}`,
-        width,
-        height
-      }))
-    });
+    return { points, balance: mockBalance };
   },
 
-  async generation(generationId: string): Promise<ApiResponse<GenerateResponse>> {
+  async points(page = 1, pageSize = 50) {
+    await delay(160);
+    return paginate(mockTransactions, page, pageSize);
+  },
+
+  async uploadImage(file: File): Promise<ClientAsset> {
     await delay(300);
-    return ok({
-      generationId,
+    return {
+      id: id("asset"),
+      kind: "input",
+      url: URL.createObjectURL(file),
+      mimeType: file.type,
+      size: file.size,
+      createdAt: new Date().toISOString()
+    };
+  },
+
+  async createTask(input: CreateGenerationTaskInput): Promise<GenerationTask> {
+    await delay(900);
+    const mode = input.mode || "textToImage";
+    const pointsCost = mode === "imageToImage" ? 15 : 10;
+    if (mockBalance < pointsCost) throw new Error("积分不足，请充值后继续生成。");
+    mockBalance -= pointsCost;
+
+    const taskId = id("task");
+    const task: GenerationTask = {
+      id: taskId,
+      requestId: id("request"),
+      mode,
+      prompt: input.prompt || "Mock prompt",
+      ...(input.templateId ? { templateId: input.templateId } : {}),
+      width: input.width || 1024,
+      height: input.height || 1024,
+      quality: input.quality || "auto",
+      pointsCost,
       status: "succeeded",
-      costCredits: 24,
+      attemptCount: 1,
+      outputAsset: {
+        id: id("output"),
+        kind: "output",
+        url: `${sampleImages[0]}&sig=${taskId}`,
+        mimeType: "image/jpeg",
+        size: 320000,
+        createdAt: new Date().toISOString()
+      },
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString()
+    };
+    mockTasks.unshift(task);
+    mockTransactions.unshift({
+      id: id("point"),
+      type: "taskCharge",
+      amount: -pointsCost,
       balanceAfter: mockBalance,
-      images: sampleImages.slice(0, 4).map((remoteUrl, index) => ({
-        id: id("img"),
-        remoteUrl,
-        width: 1024,
-        height: 1024 + index
-      }))
+      referenceId: task.id,
+      note: mode === "imageToImage" ? "图生图任务" : "文生图任务",
+      createdAt: task.createdAt
     });
+    return task;
+  },
+
+  async tasks(options: {
+    page?: number;
+    pageSize?: number;
+    status?: GenerationTaskStatus;
+    mode?: ClientGenerationMode;
+  } = {}) {
+    await delay(140);
+    const filtered = mockTasks.filter(
+      (task) => (!options.status || task.status === options.status) && (!options.mode || task.mode === options.mode)
+    );
+    return paginate(filtered, options.page, options.pageSize || 20);
+  },
+
+  async task(taskId: string) {
+    await delay(120);
+    const task = mockTasks.find((item) => item.id === taskId);
+    if (!task) throw new Error("任务不存在");
+    return task;
+  },
+
+  async cancelTask(taskId: string) {
+    await delay(120);
+    const task = mockTasks.find((item) => item.id === taskId);
+    if (!task) throw new Error("任务不存在");
+    if (task.status !== "pending") throw new Error("只有排队中的任务可以取消");
+    task.status = "cancelled";
+    return task;
   }
 };

@@ -1,93 +1,133 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
-import { ExternalLink, X } from "lucide-vue-next";
-import { openExternal } from "@/services/desktop";
+import { computed, onMounted, shallowRef, useTemplateRef } from "vue";
+import { KeyRound, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/app";
 
 const emit = defineEmits<{ close: [] }>();
 const app = useAppStore();
+const dialog = useTemplateRef<HTMLElement>("dialog");
+const code = shallowRef("");
+const loading = shallowRef(false);
+const error = shallowRef("");
+const success = shallowRef("");
+const normalizedCode = computed(() => code.value.toUpperCase().replace(/\s+/gu, ""));
 
 onMounted(() => {
-  void app.refreshPackages();
+  dialog.value?.focus();
 });
 
-async function buy(packageId: string) {
-  const order = await app.createRechargeOrder(packageId);
-  await openExternal(order.paymentUrl);
+async function redeem() {
+  loading.value = true;
+  error.value = "";
+  success.value = "";
+  try {
+    const result = await app.redeemCard(normalizedCode.value);
+    success.value = `已充值 ${result.points} 积分，当前余额 ${result.balance}`;
+    code.value = "";
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "卡密兑换失败";
+  } finally {
+    loading.value = false;
+  }
 }
 </script>
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <section class="modal recharge-modal">
-      <button class="icon-button modal-close" @click="emit('close')" aria-label="关闭">
+    <section
+      ref="dialog"
+      class="modal recharge-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="recharge-modal-title"
+      tabindex="-1"
+      @keydown.esc="emit('close')"
+    >
+      <button class="icon-button modal-close" type="button" aria-label="关闭" @click="emit('close')">
         <X :size="18" />
       </button>
-      <h2>积分充值</h2>
-      <p>选择套餐后将打开外部浏览器完成支付，支付完成后刷新积分。</p>
-
-      <div class="package-grid">
-        <button
-          v-for="item in app.packages"
-          :key="item.id"
-          class="package-option"
-          :class="{ recommended: item.recommended }"
-          @click="buy(item.id)"
-        >
-          <span>{{ item.title }}</span>
-          <strong>{{ item.credits + item.bonusCredits }} 积分</strong>
-          <small>¥{{ (item.priceCents / 100).toFixed(0) }}</small>
-          <ExternalLink :size="16" />
-        </button>
+      <div class="recharge-heading">
+        <div><KeyRound :size="20" /></div>
+        <div>
+          <h2 id="recharge-modal-title">卡密充值</h2>
+          <p>输入卡密兑换积分。</p>
+        </div>
       </div>
 
-      <button class="secondary-button" @click="app.refreshBalance">刷新积分</button>
+      <form class="recharge-form" @submit.prevent="redeem">
+        <label for="recharge-code">
+          卡密
+          <input
+            id="recharge-code"
+            v-model="code"
+            type="text"
+            maxlength="32"
+            autocomplete="off"
+            placeholder="请输入卡密"
+          />
+        </label>
+        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+        <p v-if="success" class="form-success" role="status">{{ success }}</p>
+        <button class="primary-button" type="submit" :disabled="loading || normalizedCode.length < 8">
+          {{ loading ? "兑换中..." : "兑换积分" }}
+        </button>
+      </form>
     </section>
   </div>
 </template>
 
 <style scoped lang="scss">
-.package-grid {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 16px;
+.recharge-modal {
+  width: min(440px, 100%);
+
+  &:focus {
+    outline: none;
+  }
 }
 
-.package-option {
-  position: relative;
-  min-height: 78px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 4px 12px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  text-align: left;
-  background: var(--surface-subtle);
+.recharge-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding-right: 42px;
 
-  &:hover {
-    border-color: var(--line-strong);
-    background: var(--surface-strong);
-  }
-
-  strong {
-    font-size: 18px;
-    font-weight: 650;
-  }
-
-  small {
+  > div:first-child {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--accent-border);
+    border-radius: 7px;
     color: var(--accent-strong);
-  }
-
-  svg {
-    grid-row: 1 / 3;
-    grid-column: 2;
-  }
-
-  &.recommended {
-    border-color: var(--accent-border);
     background: var(--accent-soft);
   }
+
+  h2 {
+    margin: 0;
+  }
+
+  p {
+    margin: 5px 0 18px;
+  }
+}
+
+.recharge-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-error,
+.form-success {
+  margin: 0;
+  font-size: 11px;
+}
+
+.form-error {
+  color: var(--danger) !important;
+}
+
+.form-success {
+  color: var(--success) !important;
 }
 </style>

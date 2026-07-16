@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Download, FolderOpen, Image, LoaderCircle, Maximize2, RotateCcw } from "lucide-vue-next";
+import { Ban, Download, FolderOpen, Image, LoaderCircle, Maximize2, RotateCcw } from "lucide-vue-next";
 import { openDirectory } from "@/services/desktop";
 import type { GeneratedImage, GenerationRecord } from "@/types";
 
@@ -8,10 +8,12 @@ const props = defineProps<{
   record: GenerationRecord | null;
   loading: boolean;
   saveDirectory: string;
+  canCancel: boolean;
 }>();
 
 const emit = defineEmits<{
   regenerate: [];
+  cancel: [];
 }>();
 
 const resultImages = computed(() => props.record?.images ?? []);
@@ -36,7 +38,12 @@ function imageFrameStyle(image: GeneratedImage) {
 
       <div v-if="loading" class="result-loading" role="status" aria-live="polite">
         <div class="image-skeleton" />
-        <span><LoaderCircle :size="18" /> 正在创作...</span>
+        <span>
+          <LoaderCircle :size="18" /> 正在创作...
+          <button v-if="canCancel" class="cancel-task-button" type="button" @click="emit('cancel')">
+            <Ban :size="14" /> 取消任务
+          </button>
+        </span>
       </div>
       <div v-else-if="resultImages.length" class="image-grid" :class="{ 'single-result': isSingleResult }">
         <figure
@@ -224,6 +231,18 @@ function imageFrameStyle(image: GeneratedImage) {
       animation: spin 0.9s linear infinite;
     }
   }
+}
+
+.cancel-task-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-strong);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 @media (max-width: 900px) {
