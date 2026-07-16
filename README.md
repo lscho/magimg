@@ -24,6 +24,12 @@ npm run tauri dev
 - `@tauri-apps/plugin-opener`：打开输出目录和外部充值支付链接。
 - `@tauri-apps/plugin-store`：以 JSON 形式保存设置、历史和登录缓存。
 
+## 项目文档
+
+- [液态玻璃设计规范](docs/design-system.md)：颜色、材质、排版、组件、响应式与验收标准。
+- [后端接口契约](docs/backend-api.md)：客户端所需接口、字段、错误码与联调优先级。
+- [AI 开发约束](AGENTS.md)：项目现状、工程边界、编码规范与完成定义。
+
 ## 接口模式
 
 复制 `.env.example` 为 `.env` 后可配置：
