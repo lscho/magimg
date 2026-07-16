@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { defaultParams } from "@/constants/defaults";
 import GeneratorPanel from "@/components/GeneratorPanel.vue";
@@ -12,12 +12,13 @@ const route = useRoute();
 const router = useRouter();
 const app = useAppStore();
 const params = ref<ImageParams>({ ...defaultParams });
-const currentRecord = ref<GenerationRecord | null>(null);
-const showTemplates = ref(false);
+const currentRecord = shallowRef<GenerationRecord | null>(null);
+const showTemplates = shallowRef(false);
 
 const mode = computed<GenerationMode>(() =>
   route.params.mode === "image-to-image" ? "image-to-image" : "text-to-image"
 );
+const visibleRecord = computed(() => currentRecord.value ?? app.visibleHistory[0] ?? null);
 
 watch(
   mode,
@@ -57,6 +58,12 @@ function applyTemplate(template: PromptTemplate) {
 
 <template>
   <div class="generate-layout">
+    <ResultGrid
+      :record="visibleRecord"
+      :loading="app.generating"
+      :save-directory="app.settings.saveDirectory"
+      @regenerate="generate"
+    />
     <GeneratorPanel
       v-model:params="params"
       :mode="mode"
@@ -64,12 +71,6 @@ function applyTemplate(template: PromptTemplate) {
       @clear="clearPrompt"
       @open-templates="showTemplates = true"
       @generate="generate"
-    />
-    <ResultGrid
-      :record="currentRecord || app.visibleHistory[0] || null"
-      :loading="app.generating"
-      :save-directory="app.settings.saveDirectory"
-      @regenerate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />
   </div>

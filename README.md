@@ -17,6 +17,8 @@ npm run dev
 npm run tauri dev
 ```
 
+macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩放按钮与应用标题位于同一顶部栏；浏览器预览不会模拟系统窗口按钮。
+
 当前项目使用 Tauri 插件：
 
 - `@tauri-apps/plugin-dialog`：选择保存目录和图生图参考图。
@@ -26,7 +28,7 @@ npm run tauri dev
 
 ## 项目文档
 
-- [液态玻璃设计规范](docs/design-system.md)：颜色、材质、排版、组件、响应式与验收标准。
+- [石墨工作台设计规范](docs/design-system.md)：颜色、材质、排版、组件、响应式与验收标准。
 - [后端接口契约](docs/backend-api.md)：客户端所需接口、字段、错误码与联调优先级。
 - [AI 开发约束](AGENTS.md)：项目现状、工程边界、编码规范与完成定义。
 

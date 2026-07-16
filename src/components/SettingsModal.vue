@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, useTemplateRef } from "vue";
-import { FolderOpen, Save, X } from "lucide-vue-next";
+import { FolderOpen, LogOut, Save, X } from "lucide-vue-next";
 import { chooseDirectory } from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
 import type { AppSettings } from "@/types";
@@ -21,6 +21,11 @@ async function pickDirectory() {
 
 async function save() {
   await app.saveSettings({ ...draft, defaultParams: { ...draft.defaultParams } });
+  emit("close");
+}
+
+async function logout() {
+  await app.logout();
   emit("close");
 }
 </script>
@@ -110,11 +115,17 @@ async function save() {
           </div>
 
           <footer class="settings-modal-footer">
-            <button class="ghost-button settings-cancel-button" type="button" @click="emit('close')">取消</button>
-            <button class="primary-small" type="submit">
-              <Save :size="16" />
-              保存设置
+            <button v-if="app.isAuthenticated" class="ghost-button danger settings-logout-button" type="button" @click="logout">
+              <LogOut :size="16" />
+              退出登录
             </button>
+            <div class="settings-modal-actions">
+              <button class="ghost-button settings-cancel-button" type="button" @click="emit('close')">取消</button>
+              <button class="primary-small" type="submit">
+                <Save :size="16" />
+                保存设置
+              </button>
+            </div>
           </footer>
         </form>
       </section>

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import { ArrowDownLeft, ArrowUpRight, Coins, RefreshCw, X } from "lucide-vue-next";
+import { ArrowDownLeft, ArrowUpRight, Coins, Plus, RefreshCw, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/app";
 import type { CreditTransactionKind } from "@/types";
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; recharge: [] }>();
 const app = useAppStore();
 
 const kindLabels: Record<CreditTransactionKind, string> = {
@@ -42,9 +42,15 @@ onMounted(() => {
           <span>当前可用积分</span>
           <strong>{{ app.balance.balance }}</strong>
         </div>
-        <button class="icon-button" title="刷新积分记录" aria-label="刷新积分记录" @click="app.refreshTransactions">
-          <RefreshCw :size="16" />
-        </button>
+        <div class="credit-log-summary-actions">
+          <button class="primary-small credit-recharge-button" type="button" @click="emit('recharge')">
+            <Plus :size="15" />
+            充值
+          </button>
+          <button class="icon-button" type="button" title="刷新积分记录" aria-label="刷新积分记录" @click="app.refreshTransactions">
+            <RefreshCw :size="16" />
+          </button>
+        </div>
       </div>
 
       <div class="credit-log-heading">

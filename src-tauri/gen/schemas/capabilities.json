@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default desktop permissions for 幻画 AI","local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:default","store:default","fs:default"]}}
+{"default":{"identifier":"default","description":"Default desktop permissions for 幻画 AI","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default","opener:default","store:default","fs:default"]}}

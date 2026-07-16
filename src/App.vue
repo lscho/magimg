@@ -1,17 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, shallowRef } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import {
-  ArrowRight,
+  Coins,
   History,
   ImagePlus,
   LayoutTemplate,
-  LogOut,
+  LogIn,
   Menu,
-  Plus,
   Settings,
   Sparkles,
-  UserRound,
   Wand2
 } from "lucide-vue-next";
 import LoginModal from "@/components/LoginModal.vue";
@@ -22,11 +20,11 @@ import { useAppStore } from "@/stores/app";
 
 const app = useAppStore();
 const route = useRoute();
-const showLogin = ref(false);
-const showRecharge = ref(false);
-const showCreditLog = ref(false);
-const showSettings = ref(false);
-const sidebarOpen = ref(false);
+const showLogin = shallowRef(false);
+const showRecharge = shallowRef(false);
+const showCreditLog = shallowRef(false);
+const showSettings = shallowRef(false);
+const sidebarOpen = shallowRef(false);
 
 onMounted(() => {
   void app.init();
@@ -42,100 +40,99 @@ function openSettings() {
   showSettings.value = true;
   closeSidebar();
 }
+
+function openRechargeFromCreditLog() {
+  showCreditLog.value = false;
+  showRecharge.value = true;
+}
 </script>
 
 <template>
   <div class="app-shell">
+    <header class="app-header" data-tauri-drag-region>
+      <button class="mobile-menu" type="button" aria-label="打开导航" @click="sidebarOpen = true">
+        <Menu :size="20" />
+      </button>
+      <div class="app-title" aria-label="幻画 AI">
+        <span class="app-title-mark" aria-hidden="true">幻</span>
+        <strong>幻画 AI</strong>
+      </div>
+    </header>
+
     <div class="workspace" :class="{ 'sidebar-is-open': sidebarOpen }">
-      <aside class="sidebar">
-        <div class="brand brand-compact">
-          <div class="brand-mark">
-            <Sparkles :size="22" />
-          </div>
-          <div>
-            <strong>幻画 AI</strong>
-            <span>创意图像工作台</span>
-          </div>
+      <aside class="sidebar" aria-label="主导航">
+        <div class="rail-brand" aria-hidden="true">
+          <Sparkles :size="21" />
         </div>
 
-        <nav class="main-nav">
-          <span class="nav-label">创作</span>
+        <nav class="main-nav" aria-label="创作导航">
           <RouterLink
             class="nav-item"
             :class="{ active: currentMode === 'text-to-image' }"
             to="/generate/text-to-image"
+            aria-label="文生图"
             @click="closeSidebar"
           >
             <Wand2 :size="19" />
-            文生图
+            <span class="rail-tooltip" aria-hidden="true">文生图</span>
           </RouterLink>
           <RouterLink
             class="nav-item"
             :class="{ active: currentMode === 'image-to-image' }"
             to="/generate/image-to-image"
+            aria-label="图生图"
             @click="closeSidebar"
           >
             <ImagePlus :size="19" />
-            图生图
+            <span class="rail-tooltip" aria-hidden="true">图生图</span>
           </RouterLink>
-          <span class="nav-label nav-label-spaced">工作区</span>
-          <RouterLink class="nav-item" to="/templates" @click="closeSidebar">
+          <RouterLink class="nav-item nav-item-spaced" to="/templates" aria-label="模板广场" @click="closeSidebar">
             <LayoutTemplate :size="19" />
-            模板广场
+            <span class="rail-tooltip" aria-hidden="true">模板广场</span>
           </RouterLink>
-          <RouterLink class="nav-item" to="/history" @click="closeSidebar">
+          <RouterLink class="nav-item" to="/history" aria-label="历史记录" @click="closeSidebar">
             <History :size="19" />
-            历史记录
+            <span class="rail-tooltip" aria-hidden="true">历史记录</span>
           </RouterLink>
         </nav>
 
         <div class="sidebar-footer">
-          <section class="credit-panel" :class="{ unauthenticated: !app.isAuthenticated }">
+          <template v-if="app.isAuthenticated">
+            <button
+              class="credit-balance-button"
+              type="button"
+              aria-label="积分记录"
+              @click="showCreditLog = true"
+            >
+              <Coins :size="17" />
+              <strong>{{ app.balance.balance }}</strong>
+              <span class="rail-tooltip" aria-hidden="true">积分记录</span>
+            </button>
             <button
               class="account-settings-button"
               type="button"
-              title="应用设置"
               aria-label="应用设置"
               @click="openSettings"
             >
               <Settings :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">应用设置</span>
             </button>
-            <template v-if="app.isAuthenticated">
-              <button class="credit-balance-button" type="button" @click="showCreditLog = true">
-                <strong>{{ app.balance.balance }}</strong>
-                <span>积分</span>
-              </button>
-              <button class="credit-action" type="button" title="获取积分" aria-label="获取积分" @click="showRecharge = true">
-                <Plus :size="16" />
-              </button>
-              <button class="credit-logout" type="button" title="退出登录" aria-label="退出登录" @click="app.logout">
-                <LogOut :size="15" />
-              </button>
-            </template>
-            <button v-else class="sidebar-login-link" type="button" @click="showLogin = true">
-              <UserRound :size="17" />
-              <span>登录</span>
-              <ArrowRight :size="15" />
-            </button>
-          </section>
+          </template>
+          <button v-else class="sidebar-login-link" type="button" aria-label="登录" @click="showLogin = true">
+            <LogIn :size="18" />
+            <span class="rail-tooltip" aria-hidden="true">登录</span>
+          </button>
         </div>
       </aside>
 
       <button v-if="sidebarOpen" class="sidebar-backdrop" aria-label="关闭导航" @click="closeSidebar" />
 
-      <main class="content">
-        <div class="mobile-toolbar">
-          <button class="mobile-menu" aria-label="打开导航" @click="sidebarOpen = true">
-            <Menu :size="20" />
-          </button>
-        </div>
-        <RouterView />
-      </main>
+      <main class="content"><RouterView /></main>
     </div>
 
     <LoginModal v-if="showLogin" @close="showLogin = false" />
     <RechargeModal v-if="showRecharge" @close="showRecharge = false" />
-    <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" />
+    <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" @recharge="openRechargeFromCreditLog" />
     <SettingsModal v-if="showSettings" @close="showSettings = false" />
   </div>
 </template>

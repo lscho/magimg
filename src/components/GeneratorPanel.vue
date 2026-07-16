@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { ImageUp, LayoutTemplate, Sparkles, Trash2, WandSparkles } from "lucide-vue-next";
 import { sizePresets } from "@/constants/defaults";
 import { chooseImageFile } from "@/services/desktop";
@@ -6,12 +7,11 @@ import type { GenerationMode, ImageParams, ImageSize, OutputFormat } from "@/typ
 
 const props = defineProps<{
   mode: GenerationMode;
-  params: ImageParams;
   loading: boolean;
 }>();
+const params = defineModel<ImageParams>("params", { required: true });
 
 const emit = defineEmits<{
-  "update:params": [params: ImageParams];
   generate: [];
   clear: [];
   openTemplates: [];
@@ -29,16 +29,18 @@ const qualityOptions: Array<{ value: ImageParams["quality"]; label: string }> = 
   { value: "medium", label: "标准" },
   { value: "high", label: "高清" }
 ];
+const modeTitle = computed(() => (props.mode === "image-to-image" ? "图生图" : "文生图"));
+
 function patch(partial: Partial<ImageParams>) {
   const next: ImageParams = {
-    ...props.params,
+    ...params.value,
     ...partial,
     model: "gpt-image-2",
     n: 1,
     background: "auto",
-    outputCompression: Math.min(100, Math.max(1, partial.outputCompression ?? props.params.outputCompression))
+    outputCompression: Math.min(100, Math.max(1, partial.outputCompression ?? params.value.outputCompression))
   };
-  emit("update:params", next);
+  params.value = next;
 }
 
 function handleOutputFormatChange(outputFormat: OutputFormat) {
@@ -56,16 +58,16 @@ async function pickReference() {
     <div class="panel-intro">
       <div>
         <span class="section-kicker"><Sparkles :size="13" /> CREATE</span>
-        <h2>描述你的画面</h2>
+        <h2>{{ modeTitle }}</h2>
       </div>
     </div>
 
     <div class="generator-scroll">
-      <div v-if="mode === 'image-to-image'" class="upload-zone" @click="pickReference">
+      <button v-if="mode === 'image-to-image'" class="upload-zone" type="button" @click="pickReference">
         <ImageUp :size="24" />
         <strong>{{ params.referenceImagePath ? "已选择参考图" : "上传参考图" }}</strong>
         <span>{{ params.referenceImagePath || "支持 PNG / JPG / WEBP" }}</span>
-      </div>
+      </button>
 
       <div class="field prompt-field">
         <span>
