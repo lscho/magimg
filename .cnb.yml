@@ -57,13 +57,21 @@ $:
             - 'sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${CNB_BRANCH#v}\"/" src-tauri/tauri.conf.json'
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
+          # aarch64-pc-windows-gnu 是 Rust Tier 3 目标，stable 工具链不提供其预编译
+          # rust-std（rustup 1.87.0 直接报 “toolchain does not support target
+          # 'aarch64-pc-windows-gnu'”）。不依赖“当日 nightly 是否发布了该目标预编译
+          # std”（不稳定），改用 nightly 的 rust-src 在编译时从源码构建该目标 std：
+          # 通过 rustup 环境变量锁定 nightly 工具链，并启用 unstable -Zbuild-std。
+          # 镜像中已 `rustup toolchain install nightly` 并 `rustup component add
+          # rust-src --toolchain nightly` 预装 rust-src。
           env:
+            RUSTUP_TOOLCHAIN: nightly
             CARGO_BUILD_TARGET: aarch64-pc-windows-gnu
+            CARGO_BUILD_STD: "std,panic_abort"
+            RUSTC_BOOTSTRAP: "1"
           script:
-            # aarch64-pc-windows-gnu 虽为 Rust Tier-3 目标，但 stable 工具链已提供其
-            # 预编译 rust-std。镜像中已通过 `rustup target add aarch64-pc-windows-gnu`
-            # 注册，因此直接交叉编译即可，无需 nightly 与 -Zbuild-std（后者依赖当日
-            # nightly 是否发布该目标 std，不稳定）。
+            # 使用全局 Tauri CLI（已在镜像安装，独立于 cargo 工具链），
+            # 上述环境变量会让其调用的 cargo 走 nightly + -Zbuild-std。
             - npm run tauri build -- --target aarch64-pc-windows-gnu --bundles nsis
         - name: upload
           script:
