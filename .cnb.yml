@@ -88,8 +88,8 @@ $:
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
           env:
-            CC: x86_64-apple-darwin11-clang
-            CXX: x86_64-apple-darwin11-clang++
+            CC: x86_64-apple-darwin20.4-clang
+            CXX: x86_64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
             - cd src-tauri
@@ -117,8 +117,8 @@ $:
             - grep '"version"' src-tauri/tauri.conf.json | head -1
         - name: build
           env:
-            CC: aarch64-apple-darwin11-clang
-            CXX: aarch64-apple-darwin11-clang++
+            CC: aarch64-apple-darwin20.4-clang
+            CXX: aarch64-apple-darwin20.4-clang++
             MACOSX_DEPLOYMENT_TARGET: "10.13"
           script:
             - cd src-tauri
