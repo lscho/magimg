@@ -60,9 +60,11 @@ $:
             CARGO_BUILD_TARGET: aarch64-pc-windows-gnu
           script:
             - cd src-tauri
-            # aarch64-pc-windows-gnu 是 Tier 3 目标，其预编译 rust-std
-            # 仅随 nightly 提供，需用 nightly 工具链构建。
-            - cargo +nightly tauri build --target aarch64-pc-windows-gnu --bundles nsis
+            # aarch64-pc-windows-gnu 是 Tier 3 目标，其预编译 rust-std 随 nightly
+            # 每日构建不稳定发布。改用 nightly 的 rust-src 直接编译该目标 std：
+            # -Zbuild-std。镜像中已通过 `rustup component add rust-src --toolchain nightly`
+            # 预装 rust-src。
+            - cargo +nightly -Zbuild-std=std,panic_abort tauri build --target aarch64-pc-windows-gnu --bundles nsis
         - name: upload
           script:
             - for f in src-tauri/target/aarch64-pc-windows-gnu/release/bundle/nsis/*; do echo "uploading $f"; cnb issues upload-file --file "$f"; done
@@ -131,4 +133,4 @@ $:
         - name: summary
           if: '[[ "$CNB_BRANCH" == v* ]]'
           script:
-            - echo 'All platform builds finished. Artifacts uploaded to issue #1.'
+            - echo "All platform builds finished. Artifacts uploaded to issue #1."

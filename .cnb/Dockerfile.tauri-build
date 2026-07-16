@@ -50,10 +50,14 @@ RUN npm install -g @tauri-apps/cli@^2
 RUN rustup target add x86_64-pc-windows-gnu
 
 # aarch64-pc-windows-gnu 是 Rust 的 Tier 3 目标，stable 工具链的预编译
-# rust-std 不包含该目标，需借助 nightly 工具链添加；构建 Windows ARM64
-# 时（.cnb.yml 的 win-aarch64 流水线）使用 cargo +nightly。
+# rust-std 不包含该目标。历史上需借助 nightly 的预编译 rust-std，但 nightly
+# 每日构建是否会发布某个 Tier 3 目标的预编译 std 并不稳定（如 2026-07-15 的
+# nightly 即未发布 aarch64-pc-windows-gnu 的 std，导致 `rustup target add` 失败、
+# 镜像构建中断）。更稳健的做法是从 nightly 的 rust-src 直接 `-Zbuild-std` 编译
+# 出该目标的 std，从而不再依赖“当日 nightly 是否发布了该目标预编译组件”。
+# 构建 Windows ARM64 时（.cnb.yml 的 win-aarch64 流水线）使用 `cargo +nightly -Zbuild-std`。
 RUN rustup toolchain install nightly --profile minimal \
-    && rustup target add --toolchain nightly aarch64-pc-windows-gnu
+    && rustup component add rust-src --toolchain nightly
 
 # macOS（stable 直接支持）
 RUN rustup target add x86_64-apple-darwin aarch64-apple-darwin
