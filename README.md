@@ -89,7 +89,7 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 
 GitHub Actions 正式构建不会读取本机 `.env.production`。仓库需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下值；工作流会固定使用真实 API 并启用 updater：
 
-- Repository variables：`VITE_API_BASE_URL`、`TAURI_SIGNING_PUBLIC_KEY`。`VITE_API_BASE_URL` 是正式 HTTPS API 地址，更新端点由发布脚本自动拼接；缺少这些变量时发布构建会直接失败。
+- Repository variables：`VITE_API_BASE_URL` 必须配置；`TAURI_SIGNING_PUBLIC_KEY` 可配置为 Repository Variable，也可放入同名 Repository Secret，工作流会优先读取 Variable。`VITE_API_BASE_URL` 是正式 HTTPS API 地址，更新端点由发布脚本自动拼接；缺少必要值时发布构建会直接失败。
 - Repository secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。Tauri updater 要求更新包签名校验，公钥必须与用于生成 `.sig` 的私钥配对。
 
 发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥只保存在 Actions Secrets 中，不能提交或上传为构建产物。
