@@ -8,6 +8,7 @@ function requiredEnvironment(name) {
 }
 
 const releaseVersion = requiredEnvironment("RELEASE_VERSION").replace(/^v/u, "");
+const apiBaseUrl = requiredEnvironment("VITE_API_BASE_URL");
 const updateEndpoint = requiredEnvironment("UPDATE_ENDPOINT");
 const publicKey = requiredEnvironment("TAURI_SIGNING_PUBLIC_KEY");
 const runnerTemp = requiredEnvironment("RUNNER_TEMP");
@@ -17,6 +18,8 @@ if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za
 }
 
 const endpointUrl = new URL(updateEndpoint);
+const apiBase = new URL(apiBaseUrl);
+if (apiBase.protocol !== "https:") throw new Error("VITE_API_BASE_URL must use HTTPS");
 if (endpointUrl.protocol !== "https:") throw new Error("UPDATE_ENDPOINT must use HTTPS");
 if (!updateEndpoint.includes("{{target}}")) throw new Error("UPDATE_ENDPOINT must include {{target}}");
 

@@ -37,15 +37,25 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 - [API 接入状态与差异](docs/client-api-integration-gaps.md)：已接入功能、跳过项和待确认事项。
 - [AI 开发约束](AGENTS.md)：项目现状、工程边界、编码规范与完成定义。
 
-## 接口模式
+## 环境变量
 
-复制 `.env.example` 为 `.env` 后可配置：
+开发和浏览器 Mock 预览使用根目录 `.env`，可参考 `.env.example`：
 
 ```bash
 VITE_API_BASE_URL=https://api.example.com
 VITE_ENABLE_UPDATER=false
 VITE_USE_MOCK_API=true
 ```
+
+正式客户端构建统一使用根目录 `.env.production`，可参考 `.env.production.example`：
+
+```bash
+VITE_API_BASE_URL=https://api.your-domain.com
+VITE_ENABLE_UPDATER=true
+VITE_USE_MOCK_API=false
+```
+
+`.env.production` 已加入 Git 忽略。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
 
 `VITE_USE_MOCK_API=true` 时，短信认证、模板、积分、图片上传和生成任务都使用本地 Mock，方便完整演示。切到真实后端时设置为 `false`。客户端会在 `VITE_API_BASE_URL` 后自动添加 `/api/client/v1`；该变量也可以直接填写包含基础路径的地址。
 
@@ -77,9 +87,9 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 - `huanhua-macos-x64`：macOS Intel 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
 - `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
 
-仓库需要配置以下 GitHub Actions 值：
+GitHub Actions 正式构建不会读取本机 `.env.production`。仓库需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下值；工作流会固定使用真实 API 并启用 updater：
 
-- Repository variables：`UPDATE_ENDPOINT`、`TAURI_SIGNING_PUBLIC_KEY`。`UPDATE_ENDPOINT` 必须是 HTTPS 地址并包含 `{{target}}`，例如 `https://api.example.com/api/client/v1/version/latest/tauri?platform={{target}}`。
+- Repository variables：`VITE_API_BASE_URL`、`UPDATE_ENDPOINT`、`TAURI_SIGNING_PUBLIC_KEY`。`VITE_API_BASE_URL` 是正式 HTTPS API 地址；`UPDATE_ENDPOINT` 必须是 HTTPS 地址并包含 `{{target}}`，例如 `https://api.example.com/api/client/v1/version/latest/tauri?platform={{target}}`。缺少这些变量时发布构建会直接失败。
 - Repository secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
 
 发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥只保存在 Actions Secrets 中，不能提交或上传为构建产物。
