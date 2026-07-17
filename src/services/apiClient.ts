@@ -1,4 +1,5 @@
 import { mockApi } from "@/services/mockApi";
+import { fetchHttp } from "@/services/desktop";
 import type {
   CardRedeemResult,
   ClientAsset,
@@ -101,9 +102,10 @@ export function resolveApiAssetUrl(path: string) {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { idempotencyKey, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
+  const requestUrl = buildApiUrl(path);
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(path), {
+    response = await fetchHttp(requestUrl, {
       ...fetchOptions,
       headers: {
         ...(!isFormData && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
@@ -112,7 +114,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
         ...fetchOptions.headers
       }
     });
-  } catch {
+  } catch (exception) {
+    console.error("API request failed", {
+      url: requestUrl,
+      method: fetchOptions.method || "GET",
+      exception
+    });
     throw new ApiError("无法连接服务，请检查网络或接口地址。", 0);
   }
 

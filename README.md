@@ -23,7 +23,7 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 
 - `@tauri-apps/plugin-dialog`：选择保存目录、图生图参考图和生成结果的另存为位置。
 - `@tauri-apps/plugin-fs`：保存生成图片到本地。
-- `@tauri-apps/plugin-http`：在桌面端读取远程图片字节，避免 WebView 跨域限制影响保存。
+- `@tauri-apps/plugin-http`：在桌面端发送 API 请求和读取远程图片字节，绕过 WebView CORS 限制。
 - `@tauri-apps/plugin-os`：识别 Windows/macOS 与 CPU 架构，映射客户端更新平台。
 - `@tauri-apps/plugin-opener`：打开输出目录和外部充值支付链接。
 - `@tauri-apps/plugin-process`：更新安装完成后重新启动客户端。
@@ -67,7 +67,7 @@ VITE_USE_MOCK_API=false
 
 结果区的下载按钮在桌面端会打开系统“另存为”对话框；浏览器预览使用浏览器下载。设置了默认保存目录后，结果区会显示打开文件夹按钮。创作历史支持点击作品多选，并在底部批量删除或下载；桌面端通过原生 HTTP 客户端读取远程图片并批量保存到所选目录，浏览器预览则使用浏览器的多文件下载。
 
-开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用直接请求该地址，后端必须允许应用 WebView 的跨域请求。
+开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用通过原生 HTTP 插件请求该地址，不受 WebView CORS 限制；浏览器直接访问正式 API 时，后端仍需配置正常的 CORS 响应头。
 
 正式桌面构建设置 `VITE_ENABLE_UPDATER=true` 后，客户端启动时会通过签名更新端点检查新版本。普通更新由用户确认，强制更新会阻断使用；更新包安装完成后客户端立即重启。浏览器预览和未启用 updater 的本地构建不会发起更新请求。发布脚本根据构建时的 `VITE_API_BASE_URL` 生成 `/api/client/v1/version/latest/tauri?platform={{target}}`，生成结果写入 Tauri 构建配置，不跟随设置中可修改的 `apiBaseUrl`。
 

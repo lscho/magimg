@@ -9,6 +9,10 @@ import type { GeneratedImage, SelectedImageFile } from "@/types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
+export function fetchHttp(input: URL | Request | string, init?: RequestInit): Promise<Response> {
+  return isTauri ? tauriFetch(input, init) : window.fetch(input, init);
+}
+
 export function hasWindowsWindowControls(): boolean {
   return isTauri && platform() === "windows";
 }
@@ -150,7 +154,7 @@ async function remoteImageBytes(url: string) {
 
   let response: Response;
   try {
-    response = await (isTauri ? tauriFetch(resolvedUrl) : window.fetch(resolvedUrl));
+    response = await fetchHttp(resolvedUrl);
   } catch (exception) {
     throw new Error("图片加载失败，请检查网络连接后重试。", { cause: exception });
   }
