@@ -69,7 +69,7 @@ VITE_USE_MOCK_API=false
 
 开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用直接请求该地址，后端必须允许应用 WebView 的跨域请求。
 
-正式桌面构建设置 `VITE_ENABLE_UPDATER=true` 后，客户端启动时会通过独立的签名更新端点检查新版本。普通更新由用户确认，强制更新会阻断使用；更新包安装完成后客户端立即重启。浏览器预览和未启用 updater 的本地构建不会发起更新请求。更新端点由 Tauri 构建配置注入，不跟随设置中的 `apiBaseUrl`。
+正式桌面构建设置 `VITE_ENABLE_UPDATER=true` 后，客户端启动时会通过签名更新端点检查新版本。普通更新由用户确认，强制更新会阻断使用；更新包安装完成后客户端立即重启。浏览器预览和未启用 updater 的本地构建不会发起更新请求。发布脚本根据构建时的 `VITE_API_BASE_URL` 生成 `/api/client/v1/version/latest/tauri?platform={{target}}`，生成结果写入 Tauri 构建配置，不跟随设置中可修改的 `apiBaseUrl`。
 
 ## 验证命令
 
@@ -89,8 +89,8 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 
 GitHub Actions 正式构建不会读取本机 `.env.production`。仓库需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下值；工作流会固定使用真实 API 并启用 updater：
 
-- Repository variables：`VITE_API_BASE_URL`、`UPDATE_ENDPOINT`、`TAURI_SIGNING_PUBLIC_KEY`。`VITE_API_BASE_URL` 是正式 HTTPS API 地址；`UPDATE_ENDPOINT` 必须是 HTTPS 地址并包含 `{{target}}`，例如 `https://api.example.com/api/client/v1/version/latest/tauri?platform={{target}}`。缺少这些变量时发布构建会直接失败。
-- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+- Repository variables：`VITE_API_BASE_URL`、`TAURI_SIGNING_PUBLIC_KEY`。`VITE_API_BASE_URL` 是正式 HTTPS API 地址，更新端点由发布脚本自动拼接；缺少这些变量时发布构建会直接失败。
+- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。Tauri updater 要求更新包签名校验，公钥必须与用于生成 `.sig` 的私钥配对。
 
 发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥只保存在 Actions Secrets 中，不能提交或上传为构建产物。
 
