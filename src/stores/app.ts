@@ -265,9 +265,15 @@ export const useAppStore = defineStore("app", () => {
       localDb.readSession()
     ]);
     const savedPrompt = savedSettings.defaultParams?.prompt;
+    const savedApiBaseUrl = savedSettings.apiBaseUrl?.trim().replace(/\/+$/u, "");
+    const apiBaseUrl =
+      !savedApiBaseUrl || savedApiBaseUrl === "https://api.example.com"
+        ? defaultSettings.apiBaseUrl
+        : savedApiBaseUrl;
     settings.value = {
       ...defaultSettings,
       ...savedSettings,
+      apiBaseUrl,
       defaultParams: {
         ...defaultParams,
         ...savedSettings.defaultParams,

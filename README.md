@@ -17,7 +17,7 @@ npm run dev
 npm run tauri dev
 ```
 
-macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩放按钮与应用标题位于同一顶部栏；浏览器预览不会模拟系统窗口按钮。
+macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩放按钮与应用标题位于同一顶部栏。Windows 桌面窗口隐藏原生标题栏和左上角产品图标、名称，在应用顶部栏右侧提供最小化、最大化/还原和关闭按钮；标题栏仍支持拖动、双击最大化和系统边缘吸附，并禁用 WebView 原生右键菜单。浏览器预览不会模拟系统窗口按钮。
 
 当前项目使用 Tauri 插件：
 
@@ -55,7 +55,7 @@ VITE_ENABLE_UPDATER=true
 VITE_USE_MOCK_API=false
 ```
 
-`.env.production` 已加入 Git 忽略。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
+`.env.production` 会随仓库进入 GitHub Actions。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件；构建会校验正式 API 必须使用 HTTPS，并确认 `VITE_USE_MOCK_API=false`。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
 
 `VITE_USE_MOCK_API=true` 时，短信认证、模板、积分、图片上传和生成任务都使用本地 Mock，方便完整演示。切到真实后端时设置为 `false`。客户端会在 `VITE_API_BASE_URL` 后自动添加 `/api/client/v1`；该变量也可以直接填写包含基础路径的地址。
 
@@ -87,11 +87,11 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 - `huanhua-macos-x64`：macOS Intel 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
 - `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
 
-GitHub Actions 正式构建不会读取本机 `.env.production`。仓库需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下值；工作流会固定使用真实 API 并启用 updater：
+GitHub Actions 会直接读取仓库中的 `.env.production`，并用同一份 `VITE_API_BASE_URL` 生成客户端 API 和 updater 地址。修改正式接口配置后，需要先提交该文件再创建新版本标签。仓库还需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下签名值：
 
-- Repository variables：`VITE_API_BASE_URL` 必须配置；`TAURI_SIGNING_PUBLIC_KEY` 可配置为 Repository Variable，也可放入同名 Repository Secret，工作流会优先读取 Variable。`VITE_API_BASE_URL` 是正式 HTTPS API 地址，更新端点由发布脚本自动拼接；缺少必要值时发布构建会直接失败。
-- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。Tauri updater 要求更新包签名校验，公钥必须与用于生成 `.sig` 的私钥配对。
+- Repository variables：`TAURI_SIGNING_PUBLIC_KEY` 可配置为 Repository Variable，也可放入同名 Repository Secret，工作流会优先读取 Variable。macOS 正式分发还必须配置 `APPLE_SIGNING_IDENTITY`、`APPLE_API_ISSUER` 和 `APPLE_API_KEY`。`APPLE_SIGNING_IDENTITY` 是完整的 `Developer ID Application: 名称 (TEAM_ID)`，另外两项分别是 App Store Connect API 的 Issuer ID 和 Key ID。
+- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。macOS 签名和公证还必须配置 Base64 编码的 `APPLE_CERTIFICATE`、证书导出密码 `APPLE_CERTIFICATE_PASSWORD`，以及 Base64 编码的 App Store Connect `.p8` 私钥 `APPLE_API_KEY_P8`。
 
-发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥只保存在 Actions Secrets 中，不能提交或上传为构建产物。
+发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥、Apple `.p12` 和 App Store Connect `.p8` 只保存在 Actions Secrets 中，不能提交或上传为构建产物。
 
-标签触发成功后，工作流还会自动创建或更新同名 GitHub Release，并把四个平台的安装包作为 Release 附件上传；手动触发只生成保留 14 天的 Artifact。当前工作流未配置 Windows 代码签名或 Apple Developer 签名、公证，直接分发时系统可能显示安全提示。
+标签触发成功后，工作流还会自动创建或更新同名 GitHub Release，并把四个平台的安装包作为 Release 附件上传；手动触发只生成保留 14 天的 Artifact。macOS 构建会导入 Developer ID Application 证书，通过 App Store Connect API 完成公证并由 Tauri staple；Windows 当前仍未配置代码签名，直接分发时系统可能显示安全提示。

@@ -2,8 +2,9 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
+  if (command === "build" && mode === "production") validateProductionEnv(env);
   const apiTarget = apiOrigin(env.VITE_API_BASE_URL);
   const proxy = apiTarget
     ? {
@@ -33,6 +34,24 @@ export default defineConfig(({ mode }) => {
     }
   };
 });
+
+function validateProductionEnv(env: Record<string, string>) {
+  const apiBaseUrl = env.VITE_API_BASE_URL?.trim();
+  if (!apiBaseUrl) throw new Error(".env.production 缺少 VITE_API_BASE_URL");
+
+  let parsedApiBaseUrl: URL;
+  try {
+    parsedApiBaseUrl = new URL(apiBaseUrl);
+  } catch {
+    throw new Error(".env.production 中的 VITE_API_BASE_URL 不是有效 URL");
+  }
+  if (parsedApiBaseUrl.protocol !== "https:") {
+    throw new Error(".env.production 中的 VITE_API_BASE_URL 必须使用 HTTPS");
+  }
+  if (env.VITE_USE_MOCK_API !== "false") {
+    throw new Error(".env.production 中的 VITE_USE_MOCK_API 必须设为 false");
+  }
+}
 
 function apiOrigin(value?: string) {
   if (!value) return undefined;

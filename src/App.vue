@@ -17,6 +17,7 @@ import RechargeModal from "@/components/RechargeModal.vue";
 import CreditLogModal from "@/components/CreditLogModal.vue";
 import SettingsModal from "@/components/SettingsModal.vue";
 import UpdateModal from "@/components/UpdateModal.vue";
+import WindowControls from "@/components/WindowControls.vue";
 import { useAppUpdater } from "@/composables/useAppUpdater";
 import { useAppStore } from "@/stores/app";
 
@@ -95,6 +96,7 @@ function openRechargeFromCreditLog() {
         <span>积分</span>
         <strong>{{ formattedBalance }}</strong>
       </button>
+      <WindowControls />
     </header>
 
     <div class="workspace" :class="{ 'sidebar-is-open': sidebarOpen }">

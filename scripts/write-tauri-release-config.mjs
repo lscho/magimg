@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadEnv } from "vite";
 
 function requiredEnvironment(name) {
   const value = process.env[name]?.trim();
@@ -8,9 +9,12 @@ function requiredEnvironment(name) {
 }
 
 const releaseVersion = requiredEnvironment("RELEASE_VERSION").replace(/^v/u, "");
-const apiBaseUrl = requiredEnvironment("VITE_API_BASE_URL");
+const productionEnv = loadEnv("production", process.cwd(), "VITE_");
+const apiBaseUrl = productionEnv.VITE_API_BASE_URL?.trim();
 const publicKey = requiredEnvironment("TAURI_SIGNING_PUBLIC_KEY");
 const runnerTemp = requiredEnvironment("RUNNER_TEMP");
+
+if (!apiBaseUrl) throw new Error("Missing VITE_API_BASE_URL in .env.production");
 
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(releaseVersion)) {
   throw new Error(`Invalid semantic version: ${releaseVersion}`);

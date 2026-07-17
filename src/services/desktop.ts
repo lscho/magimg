@@ -1,10 +1,49 @@
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { platform } from "@tauri-apps/plugin-os";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type { GeneratedImage, SelectedImageFile } from "@/types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+
+export function hasWindowsWindowControls(): boolean {
+  return isTauri && platform() === "windows";
+}
+
+export function disableWindowsContextMenu(): void {
+  if (!hasWindowsWindowControls()) return;
+  document.addEventListener("contextmenu", (event) => event.preventDefault());
+}
+
+export async function minimizeAppWindow(): Promise<void> {
+  if (!hasWindowsWindowControls()) return;
+  await getCurrentWindow().minimize();
+}
+
+export async function toggleAppWindowMaximized(): Promise<boolean> {
+  if (!hasWindowsWindowControls()) return false;
+  const appWindow = getCurrentWindow();
+  await appWindow.toggleMaximize();
+  return appWindow.isMaximized();
+}
+
+export async function isAppWindowMaximized(): Promise<boolean> {
+  if (!hasWindowsWindowControls()) return false;
+  return getCurrentWindow().isMaximized();
+}
+
+export async function closeAppWindow(): Promise<void> {
+  if (!hasWindowsWindowControls()) return;
+  await getCurrentWindow().close();
+}
+
+export async function onAppWindowResized(listener: () => void): Promise<UnlistenFn> {
+  if (!hasWindowsWindowControls()) return () => undefined;
+  return getCurrentWindow().onResized(() => listener());
+}
 
 export async function chooseDirectory(): Promise<string | null> {
   if (!isTauri) return "浏览器预览模式/幻画AI输出";

@@ -9,6 +9,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|_app| {
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+
+                let window = _app
+                    .get_webview_window("main")
+                    .expect("main window should be available");
+                window.set_decorations(false)?;
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running huanhua ai");
 }
