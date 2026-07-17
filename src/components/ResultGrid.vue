@@ -7,7 +7,8 @@ import {
   Image,
   LoaderCircle,
   Maximize2,
-  Pencil
+  Pencil,
+  RotateCcw
 } from "lucide-vue-next";
 import { openDirectory, saveRemoteImageAs } from "@/services/desktop";
 import type { GeneratedImage, GenerationRecord } from "@/types";
@@ -17,16 +18,24 @@ const props = defineProps<{
   loading: boolean;
   saveDirectory: string;
   canCancel: boolean;
+  recoverableTask: GenerationRecord | null;
 }>();
 
 const emit = defineEmits<{
   cancel: [];
+  restoreTask: [];
 }>();
 
 const resultImages = computed(() => props.record?.images ?? []);
 const isSingleResult = computed(() => resultImages.value.length === 1);
 const primaryImage = computed(() => resultImages.value[0] ?? null);
 const hasSaveDirectory = computed(() => Boolean(props.saveDirectory.trim()));
+const recoverableTaskLabel = computed(() => {
+  if (!props.recoverableTask) return "";
+  const modeLabel = props.recoverableTask.mode === "image-to-image" ? "图生图" : "文生图";
+  const statusLabel = props.recoverableTask.status === "queued" ? "排队中" : "生成中";
+  return `${modeLabel} · ${statusLabel}`;
+});
 const saving = shallowRef(false);
 const actionError = shallowRef("");
 
@@ -64,6 +73,21 @@ async function openSaveDirectory() {
 <template>
   <section class="result-panel">
     <div class="result-stage">
+      <button
+        v-if="recoverableTask"
+        class="task-recovery-button"
+        type="button"
+        :aria-label="`恢复${recoverableTaskLabel}任务`"
+        title="恢复正在进行的任务"
+        @click="emit('restoreTask')"
+      >
+        <LoaderCircle class="task-recovery-spinner" :size="15" aria-hidden="true" />
+        <span>
+          <small>正在进行的任务</small>
+          <strong>{{ recoverableTaskLabel }}</strong>
+        </span>
+        <RotateCcw :size="14" aria-hidden="true" />
+      </button>
       <div v-if="loading" class="result-loading" role="status" aria-live="polite">
         <div class="image-skeleton" />
         <span>
@@ -157,6 +181,70 @@ async function openSaveDirectory() {
 
 .result-tool {
   color: var(--muted);
+}
+
+.task-recovery-button {
+  position: absolute;
+  z-index: 6;
+  top: 24px;
+  right: 24px;
+  min-width: 168px;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--soft);
+  background: rgba(21, 29, 39, 0.94);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  text-align: left;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--text);
+    background: var(--surface-strong);
+  }
+
+  > span {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  small,
+  strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 600;
+  }
+
+  strong {
+    font-size: 11px;
+    font-weight: 680;
+  }
+
+  > svg:last-child {
+    color: var(--accent-strong);
+  }
+}
+
+.task-recovery-spinner {
+  color: var(--accent);
+  animation: spin 0.9s linear infinite;
 }
 
 .result-toolbar {

@@ -63,32 +63,34 @@ const creditsTitle = computed(() => {
       <span v-if="selected" class="history-selected-mark" aria-hidden="true">
         <Check :size="15" :stroke-width="2.5" />
       </span>
+      <span class="history-status history-status-overlay" :class="statusDetail.className">
+        <i aria-hidden="true"></i>{{ statusDetail.label }}
+      </span>
       <span class="history-size-tag">{{ record.params.size }}</span>
     </button>
     <div v-else class="history-task-media">
       <div class="history-task-placeholder">
         <ImageOff :size="24" aria-hidden="true" />
-        <span>{{ statusDetail.label }}</span>
       </div>
+      <span class="history-status history-status-overlay" :class="statusDetail.className">
+        <i aria-hidden="true"></i>{{ statusDetail.label }}
+      </span>
       <span class="history-size-tag">{{ record.params.size }}</span>
     </div>
 
     <div class="history-task-content">
       <h2 :title="record.params.prompt">{{ record.params.prompt }}</h2>
 
-      <div class="history-task-status">
-        <span class="history-status" :class="statusDetail.className">
-          <i aria-hidden="true"></i>{{ statusDetail.label }}
-        </span>
+      <div class="history-task-meta">
         <span class="history-meta credits-value" :title="creditsTitle">
-          <Coins :size="12" aria-hidden="true" />{{ creditsLabel }}
+          <Coins :size="14" aria-hidden="true" />{{ creditsLabel }}
         </span>
         <time
           class="history-meta"
           :datetime="record.createdAt"
           :title="new Date(record.createdAt).toLocaleString('zh-CN')"
         >
-          <CalendarDays :size="12" aria-hidden="true" />
+          <CalendarDays :size="14" aria-hidden="true" />
           {{ dateFormatter.format(new Date(record.createdAt)) }}
         </time>
       </div>
@@ -190,6 +192,22 @@ const creditsTitle = computed(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
 }
 
+.history-status-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  background: rgba(8, 11, 16, 0.84);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .history-task-content {
   display: grid;
   gap: 10px;
@@ -209,12 +227,12 @@ const creditsTitle = computed(() => {
   -webkit-line-clamp: 2;
 }
 
-.history-task-status {
+.history-task-meta {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
@@ -260,7 +278,7 @@ const creditsTitle = computed(() => {
   gap: 4px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;

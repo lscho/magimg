@@ -3,13 +3,13 @@ import { computed, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { defaultParams } from "@/constants/defaults";
 import GeneratorPanel from "@/components/GeneratorPanel.vue";
+import LoginModal from "@/components/LoginModal.vue";
 import ResultGrid from "@/components/ResultGrid.vue";
 import PromptTemplateModal from "@/components/PromptTemplateModal.vue";
 import { isMockApi } from "@/services/apiClient";
 import { useAppStore } from "@/stores/app";
 import type {
   GenerationMode,
-  GenerationRecord,
   ImageParams,
   PromptTemplate,
   SelectedImageFile
@@ -19,19 +19,24 @@ const route = useRoute();
 const router = useRouter();
 const app = useAppStore();
 const params = ref<ImageParams>({ ...defaultParams });
-const currentRecord = shallowRef<GenerationRecord | null>(null);
 const referenceImage = shallowRef<SelectedImageFile | null>(null);
 const showTemplates = shallowRef(false);
+const showLogin = shallowRef(false);
+const taskAttached = shallowRef(false);
 
 const mode = computed<GenerationMode>(() =>
   route.params.mode === "image-to-image" ? "image-to-image" : "text-to-image"
 );
 const visibleRecord = computed(
   () =>
-    (currentRecord.value?.mode === mode.value ? currentRecord.value : null) ??
-    app.visibleHistory.find((record) => record.mode === mode.value) ??
-    null
+    taskAttached.value && app.activeGeneration?.mode === mode.value
+      ? app.activeGeneration
+      : null
 );
+const recoverableTask = computed(() =>
+  taskAttached.value ? null : app.recoverableGeneration
+);
+const previewLoading = computed(() => taskAttached.value && app.generating);
 const hasResult = computed(
   () => visibleRecord.value?.status === "succeeded" && visibleRecord.value.images.length > 0
 );
@@ -47,15 +52,11 @@ const insufficientCredits = computed(
 );
 
 watch(
-  mode,
-  (nextMode) => {
-    app.activeMode = nextMode;
-    const template = app.consumeTemplate(nextMode);
-    if (template) {
-      applyTemplateParams(template);
-    } else {
-      params.value = { ...params.value, templateId: undefined };
-    }
+  () => ({ mode: mode.value, initialized: app.initialized }),
+  (next, previous) => {
+    if (!next.initialized) return;
+    if (previous?.initialized && previous.mode === next.mode) return;
+    resetWorkspace(next.mode);
   },
   { immediate: true }
 );
@@ -83,11 +84,53 @@ function clearPrompt() {
 }
 
 async function generate() {
+  if (!app.isAuthenticated) {
+    showLogin.value = true;
+    return;
+  }
+  taskAttached.value = true;
   try {
-    currentRecord.value = await app.generate(mode.value, params.value, referenceImage.value);
+    await app.generate(mode.value, params.value, referenceImage.value);
   } catch {
     // The store exposes the user-facing error in the generator panel.
   }
+}
+
+function workspaceParams() {
+  const configured = app.initialized ? app.settings.defaultParams : defaultParams;
+  return {
+    ...configured,
+    model: "gpt-image-2" as const,
+    n: 1,
+    background: "auto" as const,
+    referenceImagePath: undefined,
+    templateId: undefined
+  };
+}
+
+function resetWorkspace(nextMode: GenerationMode) {
+  app.activeMode = nextMode;
+  params.value = workspaceParams();
+  referenceImage.value = null;
+  taskAttached.value = false;
+  showTemplates.value = false;
+  app.clearGenerationError();
+
+  const template = app.consumeTemplate(nextMode);
+  if (template) applyTemplateParams(template);
+}
+
+async function restoreTask() {
+  const task = app.recoverableGeneration;
+  if (!task) return;
+  if (mode.value !== task.mode) await router.push(`/generate/${task.mode}`);
+  params.value = {
+    ...task.params,
+    referenceImagePath: undefined
+  };
+  referenceImage.value = null;
+  taskAttached.value = true;
+  app.clearGenerationError();
 }
 
 async function cancelGeneration() {
@@ -119,10 +162,12 @@ function applyTemplate(template: PromptTemplate) {
   <div class="generate-layout">
     <ResultGrid
       :record="visibleRecord"
-      :loading="app.generating"
+      :loading="previewLoading"
       :save-directory="app.settings.saveDirectory"
-      :can-cancel="app.currentTaskStatus === 'pending'"
+      :can-cancel="taskAttached && app.currentTaskStatus === 'pending'"
+      :recoverable-task="recoverableTask"
       @cancel="cancelGeneration"
+      @restore-task="restoreTask"
     />
     <GeneratorPanel
       v-model:params="params"
@@ -132,7 +177,7 @@ function applyTemplate(template: PromptTemplate) {
       :balance="app.balance.balance"
       :has-result="hasResult"
       :insufficient-credits="insufficientCredits"
-      :error="app.error"
+      :error="taskAttached ? app.error : ''"
       :show-output-options="isMockApi"
       :max-prompt-length="4000"
       :supported-qualities="app.capabilities.supportedQualities"
@@ -144,6 +189,7 @@ function applyTemplate(template: PromptTemplate) {
       @generate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />
+    <LoginModal v-if="showLogin" context="generation" @close="showLogin = false" />
   </div>
 </template>
 

@@ -23,8 +23,12 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 
 - `@tauri-apps/plugin-dialog`：选择保存目录、图生图参考图和生成结果的另存为位置。
 - `@tauri-apps/plugin-fs`：保存生成图片到本地。
+- `@tauri-apps/plugin-http`：在桌面端读取远程图片字节，避免 WebView 跨域限制影响保存。
+- `@tauri-apps/plugin-os`：识别 Windows/macOS 与 CPU 架构，映射客户端更新平台。
 - `@tauri-apps/plugin-opener`：打开输出目录和外部充值支付链接。
+- `@tauri-apps/plugin-process`：更新安装完成后重新启动客户端。
 - `@tauri-apps/plugin-store`：以 JSON 形式保存设置、历史和登录缓存。
+- `@tauri-apps/plugin-updater`：检查、校验、下载并安装签名更新包。
 
 ## 项目文档
 
@@ -39,6 +43,7 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 
 ```bash
 VITE_API_BASE_URL=https://api.example.com
+VITE_ENABLE_UPDATER=false
 VITE_USE_MOCK_API=true
 ```
 
@@ -48,9 +53,13 @@ VITE_USE_MOCK_API=true
 
 浏览器预览使用 `localStorage` 保存登录会话、设置和历史，刷新页面后会恢复登录状态；退出登录或服务端返回 401 时会清除本地会话。
 
-结果区的下载按钮在桌面端会打开系统“另存为”对话框；浏览器预览使用浏览器下载。设置了默认保存目录后，结果区会显示打开文件夹按钮。创作历史支持点击作品多选，并在底部批量删除或下载；桌面端批量下载会先选择保存目录，浏览器预览则使用浏览器的多文件下载。
+文生图与图生图菜单每次切换都会新建空白工作区，并恢复用户设置的默认参数；提示词只有在用户设置默认提示词或主动套用模板时才会自动填入。生成期间切换菜单不会中断任务，预览区右上角会显示最近一个进行中任务，点击后可恢复查看；重新打开客户端时也会从服务端找回该任务并继续查询状态。未登录点击生成会直接打开登录窗口，登录成功后仍需由用户再次确认生成。
+
+结果区的下载按钮在桌面端会打开系统“另存为”对话框；浏览器预览使用浏览器下载。设置了默认保存目录后，结果区会显示打开文件夹按钮。创作历史支持点击作品多选，并在底部批量删除或下载；桌面端通过原生 HTTP 客户端读取远程图片并批量保存到所选目录，浏览器预览则使用浏览器的多文件下载。
 
 开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用直接请求该地址，后端必须允许应用 WebView 的跨域请求。
+
+正式桌面构建设置 `VITE_ENABLE_UPDATER=true` 后，客户端启动时会通过独立的签名更新端点检查新版本。普通更新由用户确认，强制更新会阻断使用；更新包安装完成后客户端立即重启。浏览器预览和未启用 updater 的本地构建不会发起更新请求。更新端点由 Tauri 构建配置注入，不跟随设置中的 `apiBaseUrl`。
 
 ## 验证命令
 
@@ -61,11 +70,18 @@ npm run build
 
 ## 桌面端自动打包
 
-GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*` 版本标签时自动运行，也可以在 Actions 页面手动触发。每次构建会分别上传以下 Artifact：
+GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*` 版本标签时自动运行，也可以在 Actions 页面输入 SemVer 手动触发。标签中的版本号会写入 Tauri 应用版本。每次构建会分别上传以下 Artifact：
 
-- `huanhua-windows-x64`：Windows x64 NSIS 安装程序（`.exe`）。
-- `huanhua-windows-arm64`：Windows ARM64 NSIS 安装程序（`.exe`）。
-- `huanhua-macos-x64`：macOS Intel 磁盘映像（`.dmg`）。
-- `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像（`.dmg`）。
+- `huanhua-windows-x64`：Windows x64 NSIS 安装程序、`.nsis.zip` updater 包和 `.sig`。
+- `huanhua-windows-arm64`：Windows ARM64 NSIS 安装程序、`.nsis.zip` updater 包和 `.sig`。
+- `huanhua-macos-x64`：macOS Intel 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
+- `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
+
+仓库需要配置以下 GitHub Actions 值：
+
+- Repository variables：`UPDATE_ENDPOINT`、`TAURI_SIGNING_PUBLIC_KEY`。`UPDATE_ENDPOINT` 必须是 HTTPS 地址并包含 `{{target}}`，例如 `https://api.example.com/api/client/v1/version/latest/tauri?platform={{target}}`。
+- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+
+发布时将 `.exe`/`.dmg` 登记到普通安装包接口，将 `.nsis.zip`/`.app.tar.gz` 及对应 `.sig` 内容登记到 Tauri 更新接口。updater 私钥只保存在 Actions Secrets 中，不能提交或上传为构建产物。
 
 标签触发成功后，工作流还会自动创建或更新同名 GitHub Release，并把四个平台的安装包作为 Release 附件上传；手动触发只生成保留 14 天的 Artifact。当前工作流未配置 Windows 代码签名或 Apple Developer 签名、公证，直接分发时系统可能显示安全提示。

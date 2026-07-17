@@ -5,11 +5,14 @@ import { useAppStore } from "@/stores/app";
 
 type AuthMode = "login" | "register" | "reset";
 
+const props = defineProps<{
+  context?: "generation";
+}>();
 const emit = defineEmits<{ close: [] }>();
 const app = useAppStore();
 const dialog = useTemplateRef<HTMLElement>("dialog");
-const phone = shallowRef("13800138000");
-const password = shallowRef("12345678");
+const phone = shallowRef("");
+const password = shallowRef("");
 const code = shallowRef("");
 const mode = shallowRef<AuthMode>("login");
 const loading = shallowRef(false);
@@ -25,6 +28,9 @@ const title = computed(() => {
   return "登录幻画 AI";
 });
 const needsCode = computed(() => mode.value !== "login");
+const description = computed(() =>
+  props.context === "generation" ? "登录后才能开始生成图片。" : "使用中国大陆手机号继续。"
+);
 const submitLabel = computed(() => {
   if (loading.value) return "处理中...";
   if (mode.value === "register") return "注册并登录";
@@ -119,7 +125,7 @@ async function submit() {
           <X :size="18" />
         </button>
         <h2 id="auth-modal-title">{{ title }}</h2>
-        <p>使用中国大陆手机号继续。</p>
+        <p>{{ description }}</p>
 
         <form class="auth-form" @submit.prevent="submit">
           <label>

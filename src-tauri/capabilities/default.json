@@ -7,8 +7,22 @@
     "core:default",
     "core:window:allow-start-dragging",
     "dialog:default",
+    "os:allow-arch",
+    "os:allow-platform",
     "opener:default",
+    "process:allow-restart",
     "store:default",
-    "fs:default"
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "fs:default",
+    "fs:allow-mkdir",
+    "fs:allow-write-file",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://*:*" },
+        { "url": "https://*:*" }
+      ]
+    }
   ]
 }

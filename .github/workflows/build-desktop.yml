@@ -2,6 +2,11 @@ name: Build desktop apps
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer version to build, for example 1.2.3
+        required: true
+        type: string
   push:
     tags:
       - "v*"
@@ -27,25 +32,37 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: huanhua-windows-x64
             bundles: nsis
-            upload_path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            upload_path: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig
           - name: Windows ARM64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
             artifact: huanhua-windows-arm64
             bundles: nsis
-            upload_path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            upload_path: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.sig
           - name: macOS Intel
             runner: macos-15-intel
             target: x86_64-apple-darwin
             artifact: huanhua-macos-x64
             bundles: dmg
-            upload_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            upload_path: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.sig
           - name: macOS Apple Silicon
             runner: macos-15
             target: aarch64-apple-darwin
             artifact: huanhua-macos-arm64
             bundles: dmg
-            upload_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            upload_path: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig
 
     steps:
       - name: Check out repository
@@ -70,8 +87,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Prepare signed updater configuration
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          UPDATE_ENDPOINT: ${{ vars.UPDATE_ENDPOINT }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+        run: node scripts/write-tauri-release-config.mjs
+
       - name: Build Tauri bundles
-        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        shell: bash
+        env:
+          VITE_ENABLE_UPDATER: "true"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config "$RUNNER_TEMP/huanhua-release/tauri.release.conf.json"
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
@@ -98,10 +128,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mapfile -d '' release_files < <(find release-artifacts -type f -print0)
+          if [ "${#release_files[@]}" -eq 0 ]; then
+            echo "No release files found" >&2
+            exit 1
+          fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-artifacts/*/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$GITHUB_REF_NAME" "${release_files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" release-artifacts/*/* \
+            gh release create "$GITHUB_REF_NAME" "${release_files[@]}" \
               --generate-notes \
               --title "幻画 AI $GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY"

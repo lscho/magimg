@@ -1,5 +1,6 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type { GeneratedImage, SelectedImageFile } from "@/types";
 
@@ -98,9 +99,32 @@ function imageFilter(mimeType?: string) {
 }
 
 async function remoteImageBytes(url: string) {
-  const response = await fetch(url);
+  let resolvedUrl: URL;
+  try {
+    resolvedUrl = new URL(url, window.location.href);
+  } catch {
+    throw new Error("图片地址无效，无法下载。");
+  }
+  if (resolvedUrl.protocol !== "http:" && resolvedUrl.protocol !== "https:") {
+    throw new Error("仅支持下载 HTTP 或 HTTPS 图片。");
+  }
+
+  let response: Response;
+  try {
+    response = await (isTauri ? tauriFetch(resolvedUrl) : window.fetch(resolvedUrl));
+  } catch (exception) {
+    throw new Error("图片加载失败，请检查网络连接后重试。", { cause: exception });
+  }
   if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
   return new Uint8Array(await response.arrayBuffer());
+}
+
+async function writeImageFile(path: string, bytes: Uint8Array) {
+  try {
+    await writeFile(path, bytes);
+  } catch (exception) {
+    throw new Error("无法写入所选目录，请确认目录可写后重试。", { cause: exception });
+  }
 }
 
 function safeImageFilename(suggestedName: string, mimeType?: string) {
@@ -135,7 +159,7 @@ export async function saveRemoteImageAs(
   });
   if (!path) return null;
 
-  await writeFile(path, await remoteImageBytes(url));
+  await writeImageFile(path, await remoteImageBytes(url));
   return path;
 }
 
@@ -180,7 +204,7 @@ export async function saveRemoteImagesToDirectory(
   await mkdir(directory, { recursive: true }).catch(() => undefined);
   for (const { image, suggestedName } of downloads) {
     const filename = safeImageFilename(suggestedName, image.mimeType);
-    await writeFile(`${directory}/${filename}`, await remoteImageBytes(image.remoteUrl));
+    await writeImageFile(`${directory}/${filename}`, await remoteImageBytes(image.remoteUrl));
   }
   return { savedCount: downloads.length, directory, cancelled: false };
 }
@@ -190,6 +214,6 @@ export async function saveRemoteImage(url: string, directory: string, filename: 
 
   await mkdir(directory, { recursive: true }).catch(() => undefined);
   const path = `${directory}/${filename}`;
-  await writeFile(path, await remoteImageBytes(url));
+  await writeImageFile(path, await remoteImageBytes(url));
   return path;
 }

@@ -16,9 +16,26 @@ import LoginModal from "@/components/LoginModal.vue";
 import RechargeModal from "@/components/RechargeModal.vue";
 import CreditLogModal from "@/components/CreditLogModal.vue";
 import SettingsModal from "@/components/SettingsModal.vue";
+import UpdateModal from "@/components/UpdateModal.vue";
+import { useAppUpdater } from "@/composables/useAppUpdater";
 import { useAppStore } from "@/stores/app";
 
 const app = useAppStore();
+const {
+  status: updateStatus,
+  info: updateInfo,
+  isVisible: showUpdate,
+  canDismiss: canDismissUpdate,
+  downloadedBytes: updateDownloadedBytes,
+  totalBytes: updateTotalBytes,
+  progressPercent: updateProgressPercent,
+  errorMessage: updateErrorMessage,
+  installed: updateInstalled,
+  checkForUpdates,
+  dismiss: dismissUpdate,
+  installAndRestart,
+  retryRestart
+} = useAppUpdater();
 const route = useRoute();
 const showLogin = shallowRef(false);
 const showRecharge = shallowRef(false);
@@ -29,6 +46,7 @@ const formattedBalance = computed(() => new Intl.NumberFormat("zh-CN").format(ap
 
 onMounted(() => {
   void app.init();
+  void checkForUpdates();
 });
 
 const currentMode = computed(() => route.params.mode);
@@ -140,6 +158,20 @@ function openRechargeFromCreditLog() {
     <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" @recharge="openRechargeFromCreditLog" />
     <RechargeModal v-if="showRecharge" @close="showRecharge = false" />
     <SettingsModal v-if="showSettings" @close="showSettings = false" />
+    <UpdateModal
+      v-if="showUpdate && updateInfo"
+      :info="updateInfo"
+      :status="updateStatus"
+      :can-dismiss="canDismissUpdate"
+      :downloaded-bytes="updateDownloadedBytes"
+      :total-bytes="updateTotalBytes"
+      :progress-percent="updateProgressPercent"
+      :error-message="updateErrorMessage"
+      :installed="updateInstalled"
+      @dismiss="dismissUpdate"
+      @install="installAndRestart"
+      @restart="retryRestart"
+    />
   </div>
 </template>
 
@@ -201,15 +233,16 @@ function openRechargeFromCreditLog() {
   align-items: center;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid rgba(228, 160, 107, 0.34);
+  border: 1px solid transparent;
   border-radius: 7px;
   color: var(--warm);
-  background: rgba(228, 160, 107, 0.08);
+  background: transparent;
   transition:
     border-color 0.18s ease,
     background 0.18s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-visible {
     border-color: rgba(228, 160, 107, 0.58);
     background: rgba(228, 160, 107, 0.13);
   }

@@ -84,6 +84,30 @@ function paginate<T>(items: T[], page = 1, pageSize = 20): ClientPagination<T> {
   };
 }
 
+function advanceMockTask(task: GenerationTask) {
+  if (task.status !== "pending" && task.status !== "processing") return task;
+  const elapsed = Date.now() - new Date(task.createdAt).getTime();
+  if (elapsed >= 8000) {
+    task.status = "succeeded";
+    task.attemptCount = 1;
+    task.startedAt ||= new Date(new Date(task.createdAt).getTime() + 1800).toISOString();
+    task.finishedAt = new Date().toISOString();
+    task.outputAsset = {
+      id: `output_${task.id}`,
+      kind: "output",
+      url: `${sampleImages[0]}&sig=${task.id}`,
+      mimeType: "image/jpeg",
+      size: 320000,
+      createdAt: task.finishedAt
+    };
+  } else if (elapsed >= 1800) {
+    task.status = "processing";
+    task.attemptCount = 1;
+    task.startedAt ||= new Date().toISOString();
+  }
+  return task;
+}
+
 export const mockApi = {
   async sendSms(_phone: string, _purpose: "register" | "passwordReset") {
     await delay(250);
@@ -222,19 +246,9 @@ export const mockApi = {
       height: input.height || 1024,
       quality: input.quality || "auto",
       pointsCost,
-      status: "succeeded",
-      attemptCount: 1,
-      outputAsset: {
-        id: id("output"),
-        kind: "output",
-        url: `${sampleImages[0]}&sig=${taskId}`,
-        mimeType: "image/jpeg",
-        size: 320000,
-        createdAt: new Date().toISOString()
-      },
-      createdAt: new Date().toISOString(),
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString()
+      status: "pending",
+      attemptCount: 0,
+      createdAt: new Date().toISOString()
     };
     mockTasks.unshift(task);
     mockTransactions.unshift({
@@ -256,6 +270,7 @@ export const mockApi = {
     mode?: ClientGenerationMode;
   } = {}) {
     await delay(140);
+    mockTasks.forEach(advanceMockTask);
     const filtered = mockTasks.filter(
       (task) => (!options.status || task.status === options.status) && (!options.mode || task.mode === options.mode)
     );
@@ -266,15 +281,17 @@ export const mockApi = {
     await delay(120);
     const task = mockTasks.find((item) => item.id === taskId);
     if (!task) throw new Error("任务不存在");
-    return task;
+    return advanceMockTask(task);
   },
 
   async cancelTask(taskId: string) {
     await delay(120);
     const task = mockTasks.find((item) => item.id === taskId);
     if (!task) throw new Error("任务不存在");
+    advanceMockTask(task);
     if (task.status !== "pending") throw new Error("只有排队中的任务可以取消");
     task.status = "cancelled";
+    task.finishedAt = new Date().toISOString();
     return task;
   }
 };

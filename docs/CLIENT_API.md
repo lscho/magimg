@@ -49,6 +49,8 @@
 | `GET` | `/template-categories` | 已启用模板分类（含可见模板计数） |
 | `GET` | `/templates` | 已发布模板分页列表 |
 | `GET` | `/templates/:id` | 已发布模板详情 |
+| `GET` | `/version/latest` | 指定平台的最新普通安装包 |
+| `GET` | `/version/latest/tauri` | 指定平台的最新 Tauri 签名更新包 |
 
 **鉴权接口（需 `Authorization: Bearer <token>`）**
 
@@ -322,6 +324,73 @@ Authorization: Bearer <client-token>
 **成功响应（200）**：`GenerationTemplate`（见第 5 节）。
 
 **错误码**：404 `模板不存在`（模板不可见或所属分类未启用）。
+
+---
+
+### 3.9 `GET /version/latest`
+
+查询指定平台最新发布的普通客户端安装包。无需登录；同一平台取 `status=99` 且 `publishTime` 最大的记录，发布新版本不会自动下线旧版本。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `platform` | string | 是 | `windows-x86` / `windows-arm` / `macos-x86` / `macos-arm` |
+
+**成功响应（200）**：`LatestVersion`
+
+```json
+{
+  "platform": "windows-x86",
+  "version": "1.2.3",
+  "downloadUrl": "/uploads/installers/huanhua-win-x86-1.2.3.exe",
+  "fileName": "huanhua-win-x86-1.2.3.exe",
+  "fileSize": 87456921,
+  "changelog": "修复导出崩溃；优化显存占用",
+  "isForceUpdate": false,
+  "publishTime": "2026-07-16T08:30:00.000Z"
+}
+```
+
+`downloadUrl` 指向供用户手动安装的 `.exe` 或 `.dmg`，不能作为 Tauri updater 包使用。
+
+**错误码**：400 `客户端平台无效`；404 `该平台暂无已发布版本`。
+
+---
+
+### 3.10 `GET /version/latest/tauri`
+
+查询指定平台最新发布的 Tauri 签名更新包，供桌面客户端自动更新。无需登录，发布记录选择规则与 3.9 一致。
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `platform` | string | 是 | `windows-x86` / `windows-arm` / `macos-x86` / `macos-arm` |
+
+**成功响应（200）**：Tauri updater metadata
+
+```json
+{
+  "platform": "macos-arm",
+  "version": "1.2.3",
+  "url": "https://api.example.com/uploads/installers/huanhua-macos-arm.app.tar.gz",
+  "signature": "dW50cnVzdGVkIGNvbW1lbnQ6...",
+  "fileName": "huanhua-macos-arm.app.tar.gz",
+  "fileSize": 87456921,
+  "notes": "修复导出崩溃；优化显存占用",
+  "pub_date": "2026-07-16T08:30:00.000Z",
+  "isForceUpdate": false
+}
+```
+
+- `version` 必须是合法 SemVer。
+- `url` 必须是绝对 HTTPS 地址。Windows 指向 `.nsis.zip`，macOS 指向 `.app.tar.gz`，不能指向普通 `.exe` 或 `.dmg`。
+- `signature` 是同名 `.sig` 文件的完整文本内容，由 Tauri updater 公钥验证。
+- `fileSize` 是 updater 包大小，用于下载进度；`notes` 作为更新日志；`isForceUpdate=true` 时客户端阻断使用直至更新完成。
+- 没有已发布版本时返回 204，无响应体。客户端版本不低于返回版本时，由 Tauri updater 本地比较并视为无更新。
+
+**错误码**：400 `客户端平台无效`；503 `更新服务暂不可用`（更新包或签名配置不完整）。
 
 ---
 
@@ -683,6 +752,7 @@ interface CardRedeemResult {
 | 400 | `请选择图片` | uploads/images |
 | 400 | `任务状态无效` | tasks (GET, status 非法) |
 | 400 | `生成模式无效` | tasks (GET/POST, mode 非法) / templates (GET, mode 非法) |
+| 400 | `客户端平台无效` | version/latest / version/latest/tauri |
 | 400 | `分类 ID格式无效` | templates (GET, categoryId 非法) |
 | 401 | `请先登录` | 所有鉴权接口（缺 token） |
 | 401 | `登录已过期` | 所有鉴权接口（会话失效） |
@@ -701,6 +771,7 @@ interface CardRedeemResult {
 | 502 | `短信发送失败，请稍后再试` | sms/send（运营商拒绝） |
 | 503 | `短信服务暂不可用，请稍后再试` | sms/send（未配置/故障） |
 | 503 | `生成服务尚未配置` | tasks (POST) |
+| 503 | `更新服务暂不可用` | version/latest/tauri |
 
 ---
 

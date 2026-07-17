@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
-import { defaultParams, defaultSettings } from "@/constants/defaults";
+import { defaultParams, defaultSettings, legacySamplePrompt } from "@/constants/defaults";
 import {
   ApiError,
   apiClient,
@@ -74,6 +74,15 @@ function toGenerationMode(mode: ClientGenerationMode): GenerationMode {
 
 function toGenerationStatus(status: GenerationTask["status"]): GenerationStatus {
   return status === "pending" ? "queued" : status;
+}
+
+function isGenerationInProgress(record: GenerationRecord | null) {
+  return record?.status === "queued" || record?.status === "processing";
+}
+
+function toTaskStatus(status?: GenerationStatus): GenerationTask["status"] | null {
+  if (!status) return null;
+  return status === "queued" ? "pending" : status;
 }
 
 function toSession(response: ClientAuthResponse): UserSession {
@@ -207,13 +216,22 @@ export const useAppStore = defineStore("app", () => {
   const templatesError = shallowRef("");
   const activeMode = shallowRef<GenerationMode>("text-to-image");
   const pendingTemplate = ref<PromptTemplate | null>(null);
-  const generating = shallowRef(false);
-  const currentTaskId = shallowRef<string | null>(null);
-  const currentTaskStatus = shallowRef<GenerationTask["status"] | null>(null);
+  const creatingGeneration = shallowRef(false);
+  const activeGeneration = ref<GenerationRecord | null>(null);
   const error = shallowRef("");
   const generationErrorKind = shallowRef<GenerationErrorKind>("none");
+  let generationMonitorVersion = 0;
+  let monitoredTaskId: string | null = null;
+  let monitoredTaskPromise: Promise<GenerationRecord> | null = null;
 
   const isAuthenticated = computed(() => Boolean(session.value));
+  const generating = computed(
+    () => creatingGeneration.value || isGenerationInProgress(activeGeneration.value)
+  );
+  const currentTaskStatus = computed(() => toTaskStatus(activeGeneration.value?.status));
+  const recoverableGeneration = computed(() =>
+    isGenerationInProgress(activeGeneration.value) ? activeGeneration.value : null
+  );
   const visibleHistory = computed(() => {
     const records = new Map<string, GenerationRecord>();
     const hiddenIds = new Set(hiddenHistoryIds.value);
@@ -227,6 +245,9 @@ export const useAppStore = defineStore("app", () => {
   });
 
   async function clearSession() {
+    stopGenerationMonitor();
+    creatingGeneration.value = false;
+    activeGeneration.value = null;
     session.value = null;
     balance.value = { balance: 0, frozen: 0, updatedAt: new Date().toISOString() };
     transactions.value = [];
@@ -243,12 +264,14 @@ export const useAppStore = defineStore("app", () => {
       localDb.readHiddenHistoryIds(),
       localDb.readSession()
     ]);
+    const savedPrompt = savedSettings.defaultParams?.prompt;
     settings.value = {
       ...defaultSettings,
       ...savedSettings,
       defaultParams: {
         ...defaultParams,
         ...savedSettings.defaultParams,
+        prompt: savedPrompt === legacySamplePrompt ? "" : savedPrompt ?? defaultParams.prompt,
         model: "gpt-image-2",
         outputCompression: Math.min(100, Math.max(1, savedSettings.defaultParams?.outputCompression ?? 85))
       }
@@ -415,6 +438,18 @@ export const useAppStore = defineStore("app", () => {
         allTasks.push(...response.items);
       }
       serverHistory.value = allTasks.map((task) => taskToRecord(task, balance.value.balance));
+      const latestInProgressTask = allTasks.find(
+        (task) => task.status === "pending" || task.status === "processing"
+      );
+      if (latestInProgressTask) {
+        const recoveredRecord = setActiveGeneration(latestInProgressTask);
+        void monitorGenerationTask(latestInProgressTask.id, recoveredRecord.params).catch((exception) => {
+          if (activeGeneration.value?.generationId === latestInProgressTask.id) {
+            activeGeneration.value = null;
+          }
+          console.warn("进行中任务恢复失败", exception);
+        });
+      }
     } catch (exception) {
       console.warn("服务端任务历史加载失败", exception);
     }
@@ -446,6 +481,123 @@ export const useAppStore = defineStore("app", () => {
     await localDb.writeHistory(history.value);
   }
 
+  function upsertServerHistory(record: GenerationRecord) {
+    serverHistory.value = [
+      record,
+      ...serverHistory.value.filter((item) => item.generationId !== record.generationId)
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  function stopGenerationMonitor() {
+    generationMonitorVersion += 1;
+    monitoredTaskId = null;
+    monitoredTaskPromise = null;
+  }
+
+  function setActiveGeneration(task: GenerationTask, params?: ImageParams) {
+    const existingParams =
+      activeGeneration.value?.generationId === task.id ? activeGeneration.value.params : undefined;
+    const resolvedParams = params ?? existingParams ?? taskParams(task);
+    const record: GenerationRecord = {
+      ...taskToRecord(task, balance.value.balance),
+      params: {
+        ...resolvedParams,
+        prompt: task.prompt,
+        size: `${task.width}x${task.height}` as ImageParams["size"],
+        quality: task.quality,
+        templateId: task.templateId
+      }
+    };
+    activeGeneration.value = record;
+    upsertServerHistory(record);
+    return record;
+  }
+
+  async function finalizeGenerationTask(task: GenerationTask, params?: ImageParams) {
+    let record = setActiveGeneration(task, params);
+    if (task.status === "succeeded" && task.outputAsset) {
+      const savedRecord = history.value.find(
+        (item) => item.generationId === task.id && item.status === "succeeded"
+      );
+      if (savedRecord) {
+        record = { ...record, images: savedRecord.images };
+      } else if (settings.value.autoSave) {
+        record = {
+          ...record,
+          images: await Promise.all(
+            record.images.map(async (image, index) => ({
+              ...image,
+              localPath: await saveRemoteImage(
+                image.remoteUrl,
+                settings.value.saveDirectory,
+                `${task.id}_${index + 1}.${extensionForMime(image.mimeType)}`
+              ).catch(() => undefined)
+            }))
+          )
+        };
+      }
+      activeGeneration.value = record;
+      upsertServerHistory(record);
+      await addHistory(record);
+    }
+    await Promise.allSettled([refreshProfile(), refreshTransactions()]);
+    return record;
+  }
+
+  async function runGenerationMonitor(
+    taskId: string,
+    params: ImageParams,
+    monitorVersion: number
+  ): Promise<GenerationRecord> {
+    while (monitorVersion === generationMonitorVersion) {
+      const current = activeGeneration.value;
+      if (current?.generationId === taskId && !isGenerationInProgress(current)) return current;
+      if (!session.value) throw new Error("登录已过期，请重新登录。");
+
+      await wait(2000);
+      if (monitorVersion !== generationMonitorVersion) throw new Error("任务监控已停止。");
+
+      let task: GenerationTask;
+      try {
+        task = await apiClient.task(taskId);
+      } catch (exception) {
+        const isFatalApiError =
+          exception instanceof ApiError &&
+          (exception.statusCode === 401 || exception.statusCode === 404);
+        if (isFatalApiError || !session.value) {
+          if (activeGeneration.value?.generationId === taskId) activeGeneration.value = null;
+          throw exception;
+        }
+        console.warn("生成任务状态查询失败，将继续重试", exception);
+        continue;
+      }
+
+      const record = setActiveGeneration(task, params);
+      if (!isGenerationInProgress(record)) {
+        return await finalizeGenerationTask(task, params);
+      }
+    }
+    throw new Error("任务监控已停止。");
+  }
+
+  function monitorGenerationTask(taskId: string, params: ImageParams) {
+    if (monitoredTaskId === taskId && monitoredTaskPromise) return monitoredTaskPromise;
+
+    const monitorVersion = ++generationMonitorVersion;
+    monitoredTaskId = taskId;
+    const taskPromise = runGenerationMonitor(taskId, params, monitorVersion);
+    monitoredTaskPromise = taskPromise;
+    void taskPromise
+      .finally(() => {
+        if (generationMonitorVersion === monitorVersion) {
+          monitoredTaskId = null;
+          monitoredTaskPromise = null;
+        }
+      })
+      .catch(() => undefined);
+    return taskPromise;
+  }
+
   async function removeHistory(generationIds: string[]) {
     const ids = new Set(generationIds);
     if (!ids.size) return;
@@ -468,13 +620,15 @@ export const useAppStore = defineStore("app", () => {
     params: ImageParams,
     referenceImage: SelectedImageFile | null = null
   ) {
-    generating.value = true;
     error.value = "";
     generationErrorKind.value = "none";
-    currentTaskId.value = null;
-    currentTaskStatus.value = null;
     try {
       if (!session.value) throw new Error("请先登录后再生成图片。");
+      if (generating.value) throw new Error("已有任务正在生成，请先恢复当前任务。");
+
+      stopGenerationMonitor();
+      activeGeneration.value = null;
+      creatingGeneration.value = true;
 
       const fixedParams: ImageParams = {
         ...params,
@@ -512,40 +666,20 @@ export const useAppStore = defineStore("app", () => {
             ? fixedParams.quality
             : capabilities.value.supportedQualities[0] || "auto"
       };
-      let task = await apiClient.createTask(taskInput);
-      currentTaskId.value = task.id;
-      currentTaskStatus.value = task.status;
-      await refreshProfile();
+      const task = await apiClient.createTask(taskInput);
+      const activeRecord = setActiveGeneration(task, fixedParams);
+      creatingGeneration.value = false;
+      await Promise.allSettled([refreshProfile()]);
 
-      for (let attempt = 0; task.status === "pending" || task.status === "processing"; attempt += 1) {
-        if (attempt >= 150) throw new Error("生成任务等待超时，请稍后在历史记录中查看。");
-        await wait(2000);
-        task = await apiClient.task(task.id);
-        currentTaskStatus.value = task.status;
+      const completedRecord = isGenerationInProgress(activeRecord)
+        ? await monitorGenerationTask(task.id, fixedParams)
+        : await finalizeGenerationTask(task, fixedParams);
+      if (completedRecord.status === "cancelled") {
+        throw new Error("生成任务已取消，积分已退回。");
       }
-
-      if (task.status === "cancelled") throw new Error("生成任务已取消，积分已退回。");
-      if (task.status !== "succeeded" || !task.outputAsset) {
-        throw new Error(task.errorMessage || "生成失败，积分已退回。");
+      if (completedRecord.status !== "succeeded" || !completedRecord.images.length) {
+        throw new Error(completedRecord.errorMessage || "生成失败，积分已退回。");
       }
-
-      const record = taskToRecord(task, balance.value.balance);
-      const images = settings.value.autoSave
-        ? await Promise.all(
-            record.images.map(async (image, index) => ({
-              ...image,
-              localPath: await saveRemoteImage(
-                image.remoteUrl,
-                settings.value.saveDirectory,
-                `${task.id}_${index + 1}.${extensionForMime(image.mimeType)}`
-              ).catch(() => undefined)
-            }))
-          )
-        : record.images;
-      const completedRecord = { ...record, params: fixedParams, images };
-
-      await addHistory(completedRecord);
-      await Promise.all([refreshProfile(), refreshTransactions(), refreshTaskHistory()]);
       return completedRecord;
     } catch (exception) {
       const details = generationErrorDetails(exception);
@@ -555,17 +689,16 @@ export const useAppStore = defineStore("app", () => {
       void refreshTransactions();
       throw exception;
     } finally {
-      generating.value = false;
-      currentTaskId.value = null;
-      currentTaskStatus.value = null;
+      creatingGeneration.value = false;
     }
   }
 
   async function cancelCurrentGeneration() {
-    if (!currentTaskId.value || currentTaskStatus.value !== "pending") return;
+    const current = activeGeneration.value;
+    if (!current || current.status !== "queued") return;
     try {
-      const task = await apiClient.cancelTask(currentTaskId.value);
-      currentTaskStatus.value = task.status;
+      const task = await apiClient.cancelTask(current.generationId);
+      setActiveGeneration(task, current.params);
       await Promise.all([refreshProfile(), refreshTransactions(), refreshTaskHistory()]);
     } catch (exception) {
       error.value = exception instanceof Error ? exception.message : "取消任务失败。";
@@ -617,6 +750,9 @@ export const useAppStore = defineStore("app", () => {
     templatesError,
     activeMode,
     pendingTemplate,
+    creatingGeneration,
+    activeGeneration,
+    recoverableGeneration,
     generating,
     currentTaskStatus,
     error,
