@@ -352,7 +352,7 @@ Authorization: Bearer <client-token>
 }
 ```
 
-`downloadUrl` 指向供用户手动安装的 `.exe` 或 `.dmg`，不能作为 Tauri updater 包使用。
+`downloadUrl` 指向供用户手动安装的 `.exe` 或 `.dmg`。Tauri v2 在 Windows 上直接使用签名后的 NSIS `.exe` 作为 updater，因此 Windows 的普通下载和 updater 可以指向同一文件；macOS 的 `.dmg` 不能替代 `.app.tar.gz` updater 包。
 
 **错误码**：400 `客户端平台无效`；404 `该平台暂无已发布版本`。
 
@@ -374,8 +374,8 @@ Authorization: Bearer <client-token>
 
 | 客户端系统 | `platform` | updater 文件 |
 | --- | --- | --- |
-| Windows x64 | `windows-x86` | `.nsis.zip` |
-| Windows ARM64 | `windows-arm` | `.nsis.zip` |
+| Windows x64 | `windows-x86` | NSIS `.exe` |
+| Windows ARM64 | `windows-arm` | NSIS `.exe` |
 | macOS Intel | `macos-x86` | `.app.tar.gz` |
 | macOS Apple Silicon | `macos-arm` | `.app.tar.gz` |
 
@@ -414,7 +414,7 @@ Cache-Control: no-store
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `version` | string | 是 | 合法 SemVer，例如 `1.2.3`；不能包含前缀 `v` |
-| `url` | string | 是 | updater 包的绝对 HTTPS 地址；Windows 为 `.nsis.zip`，macOS 为 `.app.tar.gz` |
+| `url` | string | 是 | updater 文件的绝对 HTTPS 地址；Windows 为签名后的 NSIS `.exe`，macOS 为 `.app.tar.gz` |
 | `signature` | string | 是 | 与 `url` 文件匹配的 `.sig` 完整文本，不能返回签名文件 URL |
 | `notes` | string | 否 | 更新说明；客户端原样作为纯文本显示 |
 | `pub_date` | string | 否 | RFC 3339 时间，例如 `2026-07-16T08:30:00.000Z` |

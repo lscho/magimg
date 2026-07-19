@@ -8,12 +8,12 @@
 
 | 平台 | 普通安装包 | Tauri updater 包 | updater 签名 |
 | --- | --- | --- | --- |
-| `windows-x86` | `.exe` | `.nsis.zip` | `.nsis.zip.sig` |
-| `windows-arm` | `.exe` | `.nsis.zip` | `.nsis.zip.sig` |
+| `windows-x86` | `.exe` | 同一个 NSIS `.exe` | `.exe.sig` |
+| `windows-arm` | `.exe` | 同一个 NSIS `.exe` | `.exe.sig` |
 | `macos-x86` | `.dmg` | `.app.tar.gz` | `.app.tar.gz.sig` |
 | `macos-arm` | `.dmg` | `.app.tar.gz` | `.app.tar.gz.sig` |
 
-`.exe` 和 `.dmg` 用于官网或后台提供的手动下载；`.nsis.zip`、`.app.tar.gz` 和对应 `.sig` 用于客户端自动更新。两类文件不能互换。
+Windows 的 NSIS `.exe` 同时用于官网手动下载和 Tauri v2 自动更新，updater 使用同名 `.exe.sig` 验签。macOS 的 `.dmg` 用于手动安装，`.app.tar.gz` 和对应 `.sig` 用于自动更新，两者不能互换。
 
 ## 2. 一次性配置
 
@@ -71,11 +71,11 @@ GitHub 仓库还需要配置：
         "sourceUrl": "https://github.com/owner/huanhua/releases/download/v1.2.3/huanhua_1.2.3_x64-setup.exe"
       },
       "updater": {
-        "fileName": "huanhua_1.2.3_x64-setup.nsis.zip",
-        "fileSize": 86123456,
+        "fileName": "huanhua_1.2.3_x64-setup.exe",
+        "fileSize": 87456921,
         "sha256": "64 位十六进制 SHA-256",
-        "sourceUrl": "https://github.com/owner/huanhua/releases/download/v1.2.3/huanhua_1.2.3_x64-setup.nsis.zip",
-        "signatureFileName": "huanhua_1.2.3_x64-setup.nsis.zip.sig",
+        "sourceUrl": "https://github.com/owner/huanhua/releases/download/v1.2.3/huanhua_1.2.3_x64-setup.exe",
+        "signatureFileName": "huanhua_1.2.3_x64-setup.exe.sig",
         "signature": "同名 .sig 文件的完整文本"
       }
     }
@@ -106,7 +106,7 @@ GitHub 仓库还需要配置：
 | `version` | 不带 `v` 的 SemVer |
 | `installerUrl` | `.exe` 或 `.dmg` 的公开地址 |
 | `installerFileName` / `installerFileSize` / `installerSha256` | 普通安装包校验信息 |
-| `updaterUrl` | `.nsis.zip` 或 `.app.tar.gz` 的公开地址 |
+| `updaterUrl` | Windows NSIS `.exe` 或 macOS `.app.tar.gz` 的公开地址 |
 | `updaterFileName` / `updaterFileSize` / `updaterSha256` | updater 包校验信息 |
 | `updaterSignature` | `.sig` 完整文本 |
 | `changelog` | 更新说明 |
@@ -126,7 +126,7 @@ GitHub 仓库还需要配置：
 - 四个平台均有普通安装包、updater 包和匹配签名。
 - updater 文件没有经过二次压缩或内容修改。
 - 下载 URL 无需 Cookie、Token 或登录，能从公网稳定访问。
-- Windows URL 指向 `.nsis.zip`，macOS URL 指向 `.app.tar.gz`。
+- Windows URL 指向已签名的 NSIS `.exe`，macOS URL 指向 `.app.tar.gz`。
 - `/version/latest/tauri` 返回原始 JSON，不套 `{ "data": ... }`。
 - 无已发布版本时返回 `204 No Content`，不能返回 `404`。
 

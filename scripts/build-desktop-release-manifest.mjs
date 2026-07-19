@@ -15,13 +15,15 @@ const PLATFORM_ARTIFACTS = [
     platform: "windows-x86",
     artifactDirectory: "huanhua-windows-x64",
     installerSuffix: ".exe",
-    updaterSuffix: ".nsis.zip"
+    updaterSuffix: ".exe",
+    updaterUsesInstaller: true
   },
   {
     platform: "windows-arm",
     artifactDirectory: "huanhua-windows-arm64",
     installerSuffix: ".exe",
-    updaterSuffix: ".nsis.zip"
+    updaterSuffix: ".exe",
+    updaterUsesInstaller: true
   },
   {
     platform: "macos-x86",
@@ -110,17 +112,19 @@ const platforms = [];
 for (const definition of PLATFORM_ARTIFACTS) {
   const directory = join(artifactsDirectory, definition.artifactDirectory);
   const files = filesUnder(directory);
-  const updaterPath = exactlyOne(
-    files,
-    (path) => basename(path).endsWith(definition.updaterSuffix),
-    `${definition.platform} updater package (${definition.updaterSuffix})`
-  );
-  const updaterFileName = basename(updaterPath);
   const installerPath = exactlyOne(
     files,
     (path) => basename(path).endsWith(definition.installerSuffix),
     `${definition.platform} installer (${definition.installerSuffix})`
   );
+  const updaterPath = definition.updaterUsesInstaller
+    ? installerPath
+    : exactlyOne(
+        files,
+        (path) => basename(path).endsWith(definition.updaterSuffix),
+        `${definition.platform} updater package (${definition.updaterSuffix})`
+      );
+  const updaterFileName = basename(updaterPath);
   const signaturePath = exactlyOne(
     files,
     (path) => basename(path) === `${updaterFileName}.sig`,
@@ -129,7 +133,7 @@ for (const definition of PLATFORM_ARTIFACTS) {
   const signature = readFileSync(signaturePath, "utf8").trim();
   if (!signature) throw new Error(`Updater signature is empty: ${signaturePath}`);
 
-  for (const path of [installerPath, updaterPath, signaturePath]) {
+  for (const path of new Set([installerPath, updaterPath, signaturePath])) {
     const fileName = basename(path);
     if (usedAssetNames.has(fileName)) throw new Error(`Duplicate GitHub Release asset name: ${fileName}`);
     usedAssetNames.add(fileName);
