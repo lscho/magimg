@@ -1,14 +1,5 @@
 import type { AppSettings, ImageParams } from "@/types";
 
-export const legacySamplePrompt = "A cinematic fantasy castle on a lake at sunset";
-
-export const sampleImages = [
-  "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1400&q=85",
-  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1400&q=85",
-  "https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1400&q=85",
-  "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1400&q=85"
-];
-
 export const defaultParams: ImageParams = {
   prompt: "",
   model: "gpt-image-2",

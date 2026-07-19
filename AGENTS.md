@@ -11,7 +11,7 @@
 - 登录、注册、积分余额、积分日志和充值套餐。
 - 本地历史、设置持久化、输出目录选择和自动保存。
 - Tauri 签名更新检查、普通/强制更新提示、安装后自动重启。
-- 浏览器 Mock 预览与 Tauri 桌面运行两种环境。
+- 浏览器预览与 Tauri 桌面运行两种环境，均连接正式 API。
 
 界面语言为简体中文。除协议字段、代码标识和必要英文标签外，新增用户文案应使用简洁中文。
 
@@ -30,8 +30,8 @@
 ```text
 src/
   components/       可复用功能组件和弹窗
-  constants/        默认参数与提示词模板
-  services/         API、Mock、Tauri 桥接、本地存储
+  constants/        默认生成参数
+  services/         API、Tauri 桥接、本地存储
   stores/           Pinia 全局状态
   styles/           全局布局与设计主题
   views/            路由级编排组件
@@ -43,7 +43,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 
 代理必须基于以下现状工作，不得把占位能力描述为已完成：
 
-- 默认启用 Mock API；仅当 `VITE_USE_MOCK_API=false` 时请求真实后端。
+- 客户端仅请求正式 API，不提供本地 Mock 模式。
 - 真实客户端接口以 `docs/CLIENT_API.md` 为准，旧 `docs/backend-api.md` 契约已废弃。
 - 设置中的 `apiBaseUrl` 保存后会动态改变 `apiClient.ts` 的请求地址。
 - 真实图生图会先上传参考图，再用 `inputAssetId` 创建任务。
@@ -83,7 +83,6 @@ src-tauri/           Rust 入口、桌面配置和 capability
 
 - `src/types.ts` 是客户端领域类型的源文件。
 - `src/services/apiClient.ts` 是真实接口路径和序列化的源文件。
-- `src/services/mockApi.ts` 必须与真实 API 的成功响应和主要错误语义保持一致。
 - `docs/backend-api.md` 是后端联调契约；修改 endpoint、字段、枚举或鉴权方式时必须同步更新。
 - 业务响应使用 camelCase；OpenAI 风格生成请求中的指定字段使用 snake_case，沿用 `toImageGenerationBody()` 的转换边界。
 - 金额使用整数分，积分使用整数，不引入浮点金额。
@@ -165,7 +164,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 任务只有在以下条件同时满足时才算完成：
 
 1. 请求的行为或视觉已经实现，不是只给方案。
-2. Mock 与真实模式的边界未被破坏。
+2. 正式 API 请求、浏览器代理与 Tauri 原生 HTTP 边界未被破坏。
 3. TypeScript 类型、接口文档和 UI 文案一致。
 4. 桌面与移动布局无明显回归，键盘焦点可见。
 5. 必要命令通过，或已准确报告无法执行的原因。

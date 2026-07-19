@@ -1,10 +1,9 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
-import { defaultParams, defaultSettings, legacySamplePrompt } from "@/constants/defaults";
+import { defaultParams, defaultSettings } from "@/constants/defaults";
 import {
   ApiError,
   apiClient,
-  isMockApi,
   resolveApiAssetUrl,
   setAccessToken,
   setApiBaseUrl,
@@ -264,7 +263,6 @@ export const useAppStore = defineStore("app", () => {
       localDb.readHiddenHistoryIds(),
       localDb.readSession()
     ]);
-    const savedPrompt = savedSettings.defaultParams?.prompt;
     const savedApiBaseUrl = savedSettings.apiBaseUrl?.trim().replace(/\/+$/u, "");
     const apiBaseUrl =
       !savedApiBaseUrl || savedApiBaseUrl === "https://api.example.com"
@@ -277,7 +275,6 @@ export const useAppStore = defineStore("app", () => {
       defaultParams: {
         ...defaultParams,
         ...savedSettings.defaultParams,
-        prompt: savedPrompt === legacySamplePrompt ? "" : savedPrompt ?? defaultParams.prompt,
         model: "gpt-image-2",
         outputCompression: Math.min(100, Math.max(0, savedSettings.defaultParams?.outputCompression ?? 85))
       }
@@ -472,7 +469,7 @@ export const useAppStore = defineStore("app", () => {
     settings.value = normalized;
     setApiBaseUrl(normalized.apiBaseUrl);
     await localDb.writeSettings(normalized);
-    if (apiBaseChanged && !isMockApi) {
+    if (apiBaseChanged) {
       await clearSession();
       await Promise.all([refreshCapabilities(), refreshTemplates()]);
     }

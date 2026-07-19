@@ -40,12 +40,11 @@ macOS 桌面窗口使用原生标题栏 Overlay，系统关闭、最小化和缩
 
 ## 环境变量
 
-开发和浏览器 Mock 预览使用根目录 `.env`，可参考 `.env.example`：
+本地开发和浏览器预览使用根目录 `.env`，可参考 `.env.example`：
 
 ```bash
 VITE_API_BASE_URL=https://api.example.com
 VITE_ENABLE_UPDATER=false
-VITE_USE_MOCK_API=true
 ```
 
 正式客户端构建统一使用根目录 `.env.production`，可参考 `.env.production.example`：
@@ -53,14 +52,13 @@ VITE_USE_MOCK_API=true
 ```bash
 VITE_API_BASE_URL=https://api.your-domain.com
 VITE_ENABLE_UPDATER=true
-VITE_USE_MOCK_API=false
 ```
 
-`.env.production` 会随仓库进入 GitHub Actions。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件；构建会校验正式 API 必须使用 HTTPS，并确认 `VITE_USE_MOCK_API=false`。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
+`.env.production` 会随仓库进入 GitHub Actions。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件；构建会校验正式 API 必须使用 HTTPS。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
 
-`VITE_USE_MOCK_API=true` 时，短信认证、模板、积分、图片上传和生成任务都使用本地 Mock，方便完整演示。切到真实后端时设置为 `false`。客户端会在 `VITE_API_BASE_URL` 后自动添加 `/api/client/v1`；该变量也可以直接填写包含基础路径的地址。
+客户端只连接正式 API，不提供本地 Mock 数据。短信认证、模板、积分、图片上传和生成任务都会请求 `VITE_API_BASE_URL` 配置的服务；客户端会自动添加 `/api/client/v1`，该变量也可以直接填写包含基础路径的地址。
 
-真实模式支持手机号登录、短信注册与重置密码、卡密兑换、服务端模板、图生图上传、输出格式与 JPEG/WebP 图片质量、异步任务轮询和排队任务取消。API 服务地址由 `VITE_API_BASE_URL` 配置。
+客户端支持手机号登录、短信注册与重置密码、卡密兑换、服务端模板、图生图上传、输出格式与 JPEG/WebP 图片质量、异步任务轮询和排队任务取消。
 
 浏览器预览使用 `localStorage` 保存登录会话、设置和历史，刷新页面后会恢复登录状态；退出登录或服务端返回 401 时会清除本地会话。
 

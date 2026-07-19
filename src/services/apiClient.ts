@@ -1,4 +1,3 @@
-import { mockApi } from "@/services/mockApi";
 import { fetchHttp } from "@/services/desktop";
 import type {
   CardRedeemResult,
@@ -18,8 +17,6 @@ import type {
 
 const CLIENT_API_PREFIX = "/api/client/v1";
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL || "";
-
-export const isMockApi = import.meta.env.VITE_USE_MOCK_API !== "false";
 
 let token: string | null = null;
 let apiBaseUrl = runtimeApiBaseUrl(configuredApiBaseUrl);
@@ -167,7 +164,6 @@ function idempotencyKey() {
 
 export const apiClient = {
   sendSms(phone: string, purpose: "register" | "passwordReset") {
-    if (isMockApi) return mockApi.sendSms(phone, purpose);
     return request<{ accepted: true; cooldownSeconds: number; expiresInSeconds: number }>("/auth/sms/send", {
       method: "POST",
       body: JSON.stringify({ phone, purpose })
@@ -175,7 +171,6 @@ export const apiClient = {
   },
 
   login(phone: string, password: string, deviceName?: string) {
-    if (isMockApi) return mockApi.login(phone, password);
     return request<ClientAuthResponse>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ phone, password, ...(deviceName ? { deviceName } : {}) })
@@ -183,7 +178,6 @@ export const apiClient = {
   },
 
   register(phone: string, code: string, password: string, deviceName?: string) {
-    if (isMockApi) return mockApi.register(phone, code, password);
     return request<ClientAuthResponse>("/auth/register", {
       method: "POST",
       body: JSON.stringify({ phone, code, password, ...(deviceName ? { deviceName } : {}) })
@@ -191,7 +185,6 @@ export const apiClient = {
   },
 
   resetPassword(phone: string, code: string, password: string) {
-    if (isMockApi) return mockApi.resetPassword(phone, code, password);
     return request<{ success: true }>("/auth/password/reset", {
       method: "POST",
       body: JSON.stringify({ phone, code, password })
@@ -199,13 +192,11 @@ export const apiClient = {
   },
 
   capabilities() {
-    return isMockApi ? mockApi.capabilities() : request<GenerationSettings>("/capabilities");
+    return request<GenerationSettings>("/capabilities");
   },
 
   templateCategories() {
-    return isMockApi
-      ? mockApi.templateCategories()
-      : request<{ items: TemplateCategory[] }>("/template-categories");
+    return request<{ items: TemplateCategory[] }>("/template-categories");
   },
 
   templates(options: {
@@ -214,7 +205,6 @@ export const apiClient = {
     mode?: ClientGenerationMode;
     categoryId?: string;
   } = {}) {
-    if (isMockApi) return mockApi.templates(options);
     return request<ClientPagination<GenerationTemplate>>(
       `/templates${queryString({
         page: options.page,
@@ -226,20 +216,18 @@ export const apiClient = {
   },
 
   template(id: string) {
-    return isMockApi ? mockApi.template(id) : request<GenerationTemplate>(`/templates/${encodeURIComponent(id)}`);
+    return request<GenerationTemplate>(`/templates/${encodeURIComponent(id)}`);
   },
 
   me() {
-    return isMockApi ? mockApi.me() : request<ClientUser>("/me");
+    return request<ClientUser>("/me");
   },
 
   async logout() {
-    if (isMockApi) return mockApi.logout();
     await request<{ success: true }>("/auth/logout", { method: "POST" });
   },
 
   redeemCard(code: string) {
-    if (isMockApi) return mockApi.redeemCard(code);
     return request<CardRedeemResult>("/cards/redeem", {
       method: "POST",
       body: JSON.stringify({ code })
@@ -247,19 +235,16 @@ export const apiClient = {
   },
 
   points(page = 1, pageSize = 50) {
-    if (isMockApi) return mockApi.points(page, pageSize);
     return request<ClientPagination<PointLedgerEntry>>(`/points${queryString({ page, pageSize })}`);
   },
 
   uploadImage(file: File) {
-    if (isMockApi) return mockApi.uploadImage(file);
     const body = new FormData();
     body.append("file", file, file.name);
     return request<ClientAsset>("/uploads/images", { method: "POST", body });
   },
 
   createTask(input: CreateGenerationTaskInput) {
-    if (isMockApi) return mockApi.createTask(input);
     return request<GenerationTask>("/tasks", {
       method: "POST",
       body: JSON.stringify(toCreateTaskBody(input)),
@@ -273,7 +258,6 @@ export const apiClient = {
     status?: GenerationTaskStatus;
     mode?: ClientGenerationMode;
   } = {}) {
-    if (isMockApi) return mockApi.tasks(options);
     return request<ClientPagination<GenerationTask>>(
       `/tasks${queryString({
         page: options.page,
@@ -285,12 +269,10 @@ export const apiClient = {
   },
 
   task(id: string) {
-    return isMockApi ? mockApi.task(id) : request<GenerationTask>(`/tasks/${encodeURIComponent(id)}`);
+    return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}`);
   },
 
   cancelTask(id: string) {
-    return isMockApi
-      ? mockApi.cancelTask(id)
-      : request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   }
 };

@@ -2,7 +2,6 @@
 import { computed } from "vue";
 import {
   CircleAlert,
-  ImageUp,
   LayoutTemplate,
   RotateCcw,
   Sparkles,
@@ -10,7 +9,6 @@ import {
   WandSparkles
 } from "lucide-vue-next";
 import { sizePresets } from "@/constants/defaults";
-import { chooseImageFile } from "@/services/desktop";
 import type {
   GenerationMode,
   ImageParams,
@@ -20,6 +18,7 @@ import type {
   SupportedQuality,
   GenerationSettings
 } from "@/types";
+import ReferenceImageUploader from "@/components/ReferenceImageUploader.vue";
 
 const props = defineProps<{
   mode: GenerationMode;
@@ -35,12 +34,12 @@ const props = defineProps<{
   sizeRules: GenerationSettings["sizeRules"];
 }>();
 const params = defineModel<ImageParams>("params", { required: true });
+const referenceImage = defineModel<SelectedImageFile | null>("referenceImage", { required: true });
 
 const emit = defineEmits<{
   generate: [];
   clear: [];
   openTemplates: [];
-  referenceSelected: [image: SelectedImageFile];
 }>();
 
 const outputFormatOptions: Array<{ value: OutputFormat; label: string }> = [
@@ -100,14 +99,6 @@ function patch(partial: Partial<ImageParams>) {
 function handleOutputFormatChange(outputFormat: OutputFormat) {
   patch({ outputFormat });
 }
-
-async function pickReference() {
-  const selected = await chooseImageFile();
-  if (selected) {
-    patch({ referenceImagePath: selected.path });
-    emit("referenceSelected", selected);
-  }
-}
 </script>
 
 <template>
@@ -120,16 +111,11 @@ async function pickReference() {
     </div>
 
     <div class="generator-scroll">
-      <button v-if="mode === 'image-to-image'" class="upload-zone" type="button" @click="pickReference">
-        <ImageUp :size="24" />
-        <strong>{{ params.referenceImagePath ? "已选择参考图" : "上传参考图" }}</strong>
-        <span>
-          {{
-            params.referenceImagePath ||
-            `支持 PNG / JPG / WEBP，最大 ${Math.floor(uploadMaxBytes / 1024 / 1024)} MB`
-          }}
-        </span>
-      </button>
+      <ReferenceImageUploader
+        v-if="mode === 'image-to-image'"
+        v-model:reference-image="referenceImage"
+        :max-bytes="uploadMaxBytes"
+      />
 
       <div class="field prompt-field">
         <span>
@@ -166,6 +152,27 @@ async function pickReference() {
             <strong>{{ preset.ratio }}</strong>
             <small>{{ preset.label }}</small>
           </button>
+        </div>
+      </div>
+
+      <div class="field">
+        <span>生成质量</span>
+        <div class="radio-group quality-radio-group" role="radiogroup" aria-label="生成质量">
+          <label
+            v-for="quality in qualityOptions"
+            :key="quality.value"
+            class="radio-option"
+            :class="{ active: params.quality === quality.value }"
+          >
+            <input
+              type="radio"
+              name="quality"
+              :value="quality.value"
+              :checked="params.quality === quality.value"
+              @change="patch({ quality: quality.value })"
+            />
+            <span>{{ quality.label }}</span>
+          </label>
         </div>
       </div>
 
@@ -207,27 +214,6 @@ async function pickReference() {
         />
         <span class="range-limits"><small>0%</small><small>100%</small></span>
       </label>
-
-      <div class="field">
-        <span>生成质量</span>
-        <div class="radio-group quality-radio-group" role="radiogroup" aria-label="生成质量">
-          <label
-            v-for="quality in qualityOptions"
-            :key="quality.value"
-            class="radio-option"
-            :class="{ active: params.quality === quality.value }"
-          >
-            <input
-              type="radio"
-              name="quality"
-              :value="quality.value"
-              :checked="params.quality === quality.value"
-              @change="patch({ quality: quality.value })"
-            />
-            <span>{{ quality.label }}</span>
-          </label>
-        </div>
-      </div>
     </div>
 
     <div class="generator-footer">
@@ -243,7 +229,7 @@ async function pickReference() {
           loading ||
           insufficientCredits ||
           !params.prompt.trim() ||
-          (mode === 'image-to-image' && !params.referenceImagePath)
+          (mode === 'image-to-image' && !referenceImage)
         "
         :aria-describedby="visibleError ? 'generation-error' : undefined"
         @click="emit('generate')"
@@ -527,37 +513,6 @@ async function pickReference() {
 
   span {
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.upload-zone {
-  width: 100%;
-  min-height: 108px;
-  display: grid;
-  place-items: center;
-  gap: 5px;
-  margin-bottom: 15px;
-  border: 1px dashed rgba(101, 207, 224, 0.42);
-  border-radius: 7px;
-  color: var(--tech-cyan);
-  background: rgba(101, 207, 224, 0.07);
-  cursor: pointer;
-  transition:
-    border-color 180ms ease,
-    background 180ms ease;
-
-  &:hover {
-    border-color: rgba(101, 207, 224, 0.7);
-    background: rgba(101, 207, 224, 0.1);
-  }
-
-  span {
-    max-width: 90%;
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

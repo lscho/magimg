@@ -4,12 +4,12 @@ import {
   Ban,
   Download,
   FolderOpen,
-  Image,
   LoaderCircle,
   Maximize2,
   Pencil,
   RotateCcw
 } from "lucide-vue-next";
+import GenerationEmptyState from "@/components/GenerationEmptyState.vue";
 import ResultImageContextMenu from "@/components/ResultImageContextMenu.vue";
 import {
   copyRemoteImageToClipboard,
@@ -17,7 +17,12 @@ import {
   remoteImageToSelectedFile,
   saveRemoteImageAs
 } from "@/services/desktop";
-import type { GeneratedImage, GenerationRecord, SelectedImageFile } from "@/types";
+import type {
+  GeneratedImage,
+  GenerationMode,
+  GenerationRecord,
+  SelectedImageFile
+} from "@/types";
 
 const props = defineProps<{
   record: GenerationRecord | null;
@@ -25,6 +30,7 @@ const props = defineProps<{
   saveDirectory: string;
   canCancel: boolean;
   recoverableTask: GenerationRecord | null;
+  mode: GenerationMode;
 }>();
 
 const emit = defineEmits<{
@@ -229,13 +235,7 @@ onBeforeUnmount(() => {
           <img :src="image.remoteUrl" :alt="`生成图片 ${index + 1}`" />
         </figure>
       </div>
-      <div v-else class="empty-state">
-        <div class="empty-visual">
-          <Image :size="34" />
-        </div>
-        <strong>等待你的第一个灵感</strong>
-        <span>在右侧完善画面描述与参数，生成的作品会在这里呈现。</span>
-      </div>
+      <GenerationEmptyState v-else :mode="mode" />
 
       <p v-if="actionError" class="result-action-feedback is-error" role="alert">{{ actionError }}</p>
       <p v-else-if="actionMessage" class="result-action-feedback" role="status">{{ actionMessage }}</p>
@@ -302,7 +302,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 14px;
 
-  > .empty-state {
+  > .generation-empty {
     width: 100%;
     height: 100%;
     min-height: 0;

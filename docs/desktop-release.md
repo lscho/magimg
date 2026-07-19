@@ -23,7 +23,6 @@ Tauri 默认会为 Intel 和 Apple Silicon 生成同名的 macOS updater；Actio
 ```bash
 VITE_API_BASE_URL=https://api.example.com
 VITE_ENABLE_UPDATER=true
-VITE_USE_MOCK_API=false
 ```
 
 GitHub 仓库还需要配置：

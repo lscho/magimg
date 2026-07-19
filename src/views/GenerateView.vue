@@ -78,6 +78,13 @@ watch(
   { deep: true }
 );
 
+watch(referenceImage, (image) => {
+  const nextPath = image?.path;
+  if (params.value.referenceImagePath !== nextPath) {
+    params.value = { ...params.value, referenceImagePath: nextPath };
+  }
+});
+
 function clearPrompt() {
   params.value = { ...params.value, prompt: "" };
 }
@@ -179,6 +186,7 @@ async function useAsReference(image: SelectedImageFile) {
       :save-directory="app.settings.saveDirectory"
       :can-cancel="taskAttached && app.currentTaskStatus === 'pending'"
       :recoverable-task="recoverableTask"
+      :mode="mode"
       @cancel="cancelGeneration"
       @restore-task="restoreTask"
       @use-as-reference="useAsReference"
@@ -198,7 +206,7 @@ async function useAsReference(image: SelectedImageFile) {
       :size-rules="app.capabilities.sizeRules"
       @clear="clearPrompt"
       @open-templates="showTemplates = true"
-      @reference-selected="referenceImage = $event"
+      v-model:reference-image="referenceImage"
       @generate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />
