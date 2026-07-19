@@ -52,7 +52,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - 结果区下载已接入桌面“另存为”，默认保存位置可直接打开；当前模式存在成功结果时生成主按钮显示“重新生成”，放大查看和编辑按钮目前仍为界面占位。
 - 项目目前没有自动化单元测试或 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
-- 任务接口不接收输出格式、压缩比例、背景、审核、流式、风格和图生图强度等旧参数；差异见 `docs/client-api-integration-gaps.md`。
+- 任务接口使用 OpenAI 风格的 `output_format`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。
 
 若任务涉及上述缺口，应明确区分“补实现”和“调整现有实现”，并同步相关文档。
 
@@ -149,6 +149,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 若因为环境限制未运行某项检查，交付时必须明确说明。
+
+测试账号：18888888888
+测试密码：12345678
 
 ## 11. 文档同步
 

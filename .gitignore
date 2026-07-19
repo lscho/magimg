@@ -36,3 +36,5 @@ npm-debug.log*
 # Temporary folders
 tmp/
 temp/
+
+.workbuddy/

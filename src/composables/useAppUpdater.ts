@@ -1,4 +1,4 @@
-import { computed, readonly, shallowRef } from "vue";
+import { computed, onScopeDispose, readonly, shallowRef } from "vue";
 import {
   checkDesktopUpdate,
   type DesktopUpdateHandle,
@@ -28,10 +28,11 @@ export function useAppUpdater() {
   const totalBytes = shallowRef<number | null>(null);
   const errorMessage = shallowRef("");
   const installed = shallowRef(false);
+  const isPromptVisible = shallowRef(false);
   let checked = false;
 
   const info = computed<DesktopUpdateInfo | null>(() => update.value?.info ?? null);
-  const isVisible = computed(() => Boolean(update.value));
+  const isAvailable = computed(() => Boolean(update.value));
   const isBusy = computed(() => ["downloading", "installing", "restarting"].includes(status.value));
   const canDismiss = computed(() =>
     Boolean(update.value && !update.value.info.isForceUpdate && !isBusy.value && !installed.value)
@@ -48,18 +49,18 @@ export function useAppUpdater() {
     try {
       update.value = await checkDesktopUpdate();
       status.value = update.value ? "available" : "idle";
+      isPromptVisible.value = update.value?.info.isForceUpdate === true;
     } catch {
       status.value = "idle";
     }
   }
 
-  async function dismiss() {
-    if (!canDismiss.value) return;
-    const currentUpdate = update.value;
-    update.value = null;
-    status.value = "idle";
-    errorMessage.value = "";
-    await currentUpdate?.close().catch(() => undefined);
+  function openPrompt() {
+    if (update.value) isPromptVisible.value = true;
+  }
+
+  function dismissPrompt() {
+    if (canDismiss.value) isPromptVisible.value = false;
   }
 
   function handleProgress(progress: DesktopUpdateProgress) {
@@ -101,10 +102,15 @@ export function useAppUpdater() {
     }
   }
 
+  onScopeDispose(() => {
+    void update.value?.close().catch(() => undefined);
+  });
+
   return {
     status: readonly(status),
     info,
-    isVisible,
+    isAvailable,
+    isPromptVisible: readonly(isPromptVisible),
     isBusy,
     canDismiss,
     downloadedBytes: readonly(downloadedBytes),
@@ -113,7 +119,8 @@ export function useAppUpdater() {
     errorMessage: readonly(errorMessage),
     installed: readonly(installed),
     checkForUpdates,
-    dismiss,
+    openPrompt,
+    dismissPrompt,
     installAndRestart,
     retryRestart
   };

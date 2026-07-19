@@ -2,8 +2,8 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import { router } from "./router";
-import { disableWindowsContextMenu } from "@/services/desktop";
+import { disableAppContextMenu } from "@/services/desktop";
 import "./styles/main.scss";
 
-disableWindowsContextMenu();
+disableAppContextMenu();
 createApp(App).use(createPinia()).use(router).mount("#app");

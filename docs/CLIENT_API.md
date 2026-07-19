@@ -1,7 +1,7 @@
 # 幻画 AI 客户端 API 文档
 
 > 适用版本：当前仓库 `server/api/client/v1` 实现。基础路径为 `/api/client/v1`。
-> 所有请求/响应字段使用 **camelCase**，ID 使用 **字符串**，时间使用 **ISO 8601**。
+> 请求/响应字段默认使用 **camelCase**；生成任务中的 `output_format`、`output_compression` 沿用 OpenAI 字段名。ID 使用 **字符串**，时间使用 **ISO 8601**。
 > 客户端 Bearer token 与 `/api/auth/login` 返回的管理员 token **不通用**。
 
 ---
@@ -13,7 +13,7 @@
 | 项 | 约定 |
 | --- | --- |
 | 基础路径 | `/api/client/v1` |
-| 字段命名 | 请求与响应均为 camelCase（如 `templateId`、`createdAt`） |
+| 字段命名 | 默认 camelCase（如 `templateId`、`createdAt`）；OpenAI 风格生成字段使用 snake_case |
 | ID 类型 | 对外一律为字符串（`"3"`、`"1"`），内部为数字 |
 | 时间类型 | Unix 秒级存储，对外序列化为 ISO 8601 字符串（如 `2026-07-16T00:00:00.000Z`） |
 | 请求体 | JSON 接口 `Content-Type: application/json`；上传接口为 `multipart/form-data` |
@@ -360,7 +360,9 @@ Authorization: Bearer <client-token>
 
 ### 3.10 `GET /version/latest/tauri`
 
-查询指定平台最新发布的 Tauri 签名更新包，供桌面客户端自动更新。无需登录，发布记录选择规则与 3.9 一致。
+> 后端待补齐：本节定义客户端已经依赖的目标契约。线上路由、发布记录字段和响应行为必须按本节实现后，自动更新链路才完整。
+
+查询指定平台最新发布的 Tauri 签名更新包，供正式桌面客户端启动时自动检查更新。无需登录，响应必须直接使用 Tauri updater 的动态服务格式，不能套业务响应外壳。
 
 **查询参数**
 
@@ -368,7 +370,30 @@ Authorization: Bearer <client-token>
 | --- | --- | --- | --- |
 | `platform` | string | 是 | `windows-x86` / `windows-arm` / `macos-x86` / `macos-arm` |
 
-**成功响应（200）**：Tauri updater metadata
+客户端平台映射：
+
+| 客户端系统 | `platform` | updater 文件 |
+| --- | --- | --- |
+| Windows x64 | `windows-x86` | `.nsis.zip` |
+| Windows ARM64 | `windows-arm` | `.nsis.zip` |
+| macOS Intel | `macos-x86` | `.app.tar.gz` |
+| macOS Apple Silicon | `macos-arm` | `.app.tar.gz` |
+
+**服务端选择规则**
+
+1. 校验 `platform` 是否为上述枚举，否则返回 400。
+2. 查询该平台 `status=99` 的已发布记录，按 `publishTime DESC` 取第一条。版本号不参与字符串排序。
+3. 没有已发布记录时返回 `204 No Content`，响应体必须为空；不能用 404 表示“暂无更新”。
+4. 记录存在但 updater URL、签名、文件名或文件大小缺失时返回 503，不得退回普通 `.exe` 或 `.dmg`。
+5. 返回最新已发布版本，无需由服务端判断客户端当前版本。Tauri updater 会使用 SemVer 在本地比较，版本不高于当前客户端时不触发弹窗。
+
+**成功响应（200）**
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Cache-Control: no-store
+```
 
 ```json
 {
@@ -384,13 +409,82 @@ Authorization: Bearer <client-token>
 }
 ```
 
-- `version` 必须是合法 SemVer。
-- `url` 必须是绝对 HTTPS 地址。Windows 指向 `.nsis.zip`，macOS 指向 `.app.tar.gz`，不能指向普通 `.exe` 或 `.dmg`。
-- `signature` 是同名 `.sig` 文件的完整文本内容，由 Tauri updater 公钥验证。
-- `fileSize` 是 updater 包大小，用于下载进度；`notes` 作为更新日志；`isForceUpdate=true` 时客户端阻断使用直至更新完成。
-- 没有已发布版本时返回 204，无响应体。客户端版本不低于返回版本时，由 Tauri updater 本地比较并视为无更新。
+字段说明：
 
-**错误码**：400 `客户端平台无效`；503 `更新服务暂不可用`（更新包或签名配置不完整）。
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `version` | string | 是 | 合法 SemVer，例如 `1.2.3`；不能包含前缀 `v` |
+| `url` | string | 是 | updater 包的绝对 HTTPS 地址；Windows 为 `.nsis.zip`，macOS 为 `.app.tar.gz` |
+| `signature` | string | 是 | 与 `url` 文件匹配的 `.sig` 完整文本，不能返回签名文件 URL |
+| `notes` | string | 否 | 更新说明；客户端原样作为纯文本显示 |
+| `pub_date` | string | 否 | RFC 3339 时间，例如 `2026-07-16T08:30:00.000Z` |
+| `platform` | string | 是 | 本次查询的平台；Tauri 会忽略，幻画客户端用于展示和诊断 |
+| `fileName` | string | 是 | updater 包文件名，必须与平台扩展名匹配 |
+| `fileSize` | integer | 是 | updater 包字节数，必须为正整数；客户端用于计算下载进度 |
+| `isForceUpdate` | boolean | 是 | `true` 时客户端不允许关闭更新弹窗；必须是 JSON boolean，不能是 `1` 或字符串 |
+
+Tauri updater 必需字段是 `version`、`url` 和 `signature`。`notes`、`pub_date` 是 Tauri 标准可选字段；`platform`、`fileName`、`fileSize` 和 `isForceUpdate` 是幻画客户端读取的扩展字段。未知字段可以保留，但不能把全部字段放入 `{ "data": ... }`。
+
+**无已发布版本（204）**
+
+```http
+HTTP/1.1 204 No Content
+Cache-Control: no-store
+```
+
+204 响应不得携带 JSON、空对象、错误对象或其他响应体。Tauri updater 只把 204 识别为正常的“没有可用版本”。
+
+**错误响应**
+
+| HTTP | `message` | 使用场景 |
+| --- | --- | --- |
+| 400 | `客户端平台无效` | 缺少平台参数或平台不在枚举内 |
+| 503 | `更新服务暂不可用` | 已发布记录缺少 updater 包、签名或必要元数据 |
+
+非 2xx 会被 Tauri 视为更新检查失败。404 仅表示路由不存在，不得用于“该平台暂无版本”。错误响应沿用本文通用错误结构，但不能返回 200 加错误对象。
+
+**下载地址要求**
+
+- `url` 必须无需登录、Cookie、Bearer Token 或临时交互即可访问。若使用带有效期的签名 URL，有效期必须覆盖客户端检查、用户阅读更新说明和完整下载所需时间。
+- 下载响应必须返回 updater 文件字节，不能返回 HTML、对象存储登录页或 JSON 错误。建议提供准确的 `Content-Length`，可选支持 Range 请求。
+- updater 包上传后不得解压、重新压缩或修改任何字节，否则构建时生成的 `.sig` 会失效。
+- 元数据建议使用 `Cache-Control: no-store` 或很短的缓存时间；带版本号的 updater 文件可使用长期 immutable 缓存。
+- `.sig` 必须来自构建该 updater 包时使用的 Tauri 签名私钥，并与客户端构建中固化的公钥配套。后端不能自行生成或替换签名。
+
+**推荐数据校验**
+
+发布记录由 `huanhua-desktop-release-manifest.json` 导入时，后端应校验平台、版本、文件扩展名、文件大小和 SHA-256。推荐至少保存 `updaterUrl`、`updaterFileName`、`updaterFileSize`、`updaterSha256` 和 `updaterSignature`。完整构建、登记和验收流程见 [桌面客户端发布流程](desktop-release.md)。
+
+响应组装逻辑可以按以下伪代码实现：
+
+```ts
+const release = await findLatestPublishedRelease(platform);
+if (!release) return emptyResponse(204);
+
+if (!hasCompleteUpdaterMetadata(release)) {
+  throw serviceUnavailable("更新服务暂不可用");
+}
+
+return {
+  platform: release.platform,
+  version: release.version,
+  url: release.updaterUrl,
+  signature: release.updaterSignature,
+  fileName: release.updaterFileName,
+  fileSize: release.updaterFileSize,
+  notes: release.changelog ?? "",
+  pub_date: release.publishTime,
+  isForceUpdate: release.isForceUpdate
+};
+```
+
+**联调示例**
+
+```bash
+curl -i "https://api.example.com/api/client/v1/version/latest/tauri?platform=macos-arm"
+```
+
+联调必须覆盖：四个平台 200、无记录 204、非法平台 400、元数据不完整 503、旧客户端版本比较、签名成功安装，以及签名不匹配时拒绝安装。
 
 ---
 
@@ -541,12 +635,14 @@ Authorization: Bearer <client-token>
 | `width` | integer | 否 | 缺省取模板或 1024；须满足 sizeRules |
 | `height` | integer | 否 | 缺省取模板或 1024；须满足 sizeRules |
 | `quality` | string | 否 | `auto`/`low`/`medium`/`high`；缺省取模板或 `auto` |
+| `output_format` | string | 否 | `png`/`jpeg`/`webp`；缺省为 `png` |
+| `output_compression` | integer | 否 | JPEG/WebP 输出质量，范围 0–100；PNG 不接受且客户端不会发送 |
 
 **成功响应（200）**：`GenerationTask`（见第 5 节），初始 `status: "pending"`。
 
 **扣费规则**：文生图按 `textToImageCost`、图生图按 `imageToImageCost` 扣除积分；余额不足返回 409 且不产生任务。
 
-**错误码**：400 `Idempotency-Key 格式无效` / `提示词须为 1 到 4000 个字符` / `模板与生成模式不匹配` / `图片尺寸无效` / `图片质量无效` / `图生图需要先上传参考图片` / `文生图不接受参考图片`；403 `账号已停用`；404 `模板不存在或已下线`；503 `生成服务尚未配置`；429（创建限流）。
+**错误码**：400 `Idempotency-Key 格式无效` / `提示词须为 1 到 4000 个字符` / `模板与生成模式不匹配` / `图片尺寸无效` / `图片质量无效` / `输出格式无效` / `输出压缩质量无效` / `图生图需要先上传参考图片` / `文生图不接受参考图片`；403 `账号已停用`；404 `模板不存在或已下线`；503 `生成服务尚未配置`；429（创建限流）。
 
 ---
 

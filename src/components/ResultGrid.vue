@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef } from "vue";
+import { computed, onBeforeUnmount, shallowRef, watch } from "vue";
 import {
   Ban,
   Download,
@@ -10,8 +10,14 @@ import {
   Pencil,
   RotateCcw
 } from "lucide-vue-next";
-import { openDirectory, saveRemoteImageAs } from "@/services/desktop";
-import type { GeneratedImage, GenerationRecord } from "@/types";
+import ResultImageContextMenu from "@/components/ResultImageContextMenu.vue";
+import {
+  copyRemoteImageToClipboard,
+  openDirectory,
+  remoteImageToSelectedFile,
+  saveRemoteImageAs
+} from "@/services/desktop";
+import type { GeneratedImage, GenerationRecord, SelectedImageFile } from "@/types";
 
 const props = defineProps<{
   record: GenerationRecord | null;
@@ -24,6 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   cancel: [];
   restoreTask: [];
+  useAsReference: [image: SelectedImageFile];
 }>();
 
 const resultImages = computed(() => props.record?.images ?? []);
@@ -38,25 +45,132 @@ const recoverableTaskLabel = computed(() => {
 });
 const saving = shallowRef(false);
 const actionError = shallowRef("");
+const actionMessage = shallowRef("");
+const contextMenuTarget = shallowRef<{ image: GeneratedImage; index: number } | null>(null);
+const contextMenuX = shallowRef(0);
+const contextMenuY = shallowRef(0);
+let actionMessageTimer: number | undefined;
+
+watch(
+  () => props.record,
+  () => closeContextMenu()
+);
 
 function imageFrameStyle(image: GeneratedImage) {
   return isSingleResult.value ? undefined : { aspectRatio: `${image.width} / ${image.height}` };
 }
 
-async function downloadImage() {
-  if (!primaryImage.value || !props.record) return;
+function suggestedImageName(index: number) {
+  if (!props.record) return "huanhua-image";
+  return resultImages.value.length > 1
+    ? `huanhua-${props.record.generationId}-${index + 1}`
+    : `huanhua-${props.record.generationId}`;
+}
+
+function showActionMessage(message: string) {
+  actionMessage.value = message;
+  if (actionMessageTimer) window.clearTimeout(actionMessageTimer);
+  actionMessageTimer = window.setTimeout(() => {
+    actionMessage.value = "";
+    actionMessageTimer = undefined;
+  }, 2400);
+}
+
+async function downloadImage(image: GeneratedImage, index: number) {
+  if (!props.record) return;
   saving.value = true;
   actionError.value = "";
+  actionMessage.value = "";
   try {
     await saveRemoteImageAs(
-      primaryImage.value.remoteUrl,
-      `huanhua-${props.record.generationId}`,
-      primaryImage.value.mimeType
+      image.remoteUrl,
+      suggestedImageName(index),
+      image.mimeType
     );
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "图片保存失败，请稍后重试。";
   } finally {
     saving.value = false;
+  }
+}
+
+async function downloadPrimaryImage() {
+  if (!primaryImage.value) return;
+  await downloadImage(primaryImage.value, 0);
+}
+
+function openImageContextMenu(event: MouseEvent, image: GeneratedImage, index: number) {
+  if (props.record?.mode !== "text-to-image") return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const targetRect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const requestedX = event.clientX || targetRect.left + Math.min(36, targetRect.width / 2);
+  const requestedY = event.clientY || targetRect.top + Math.min(36, targetRect.height / 2);
+  showImageContextMenu(image, index, requestedX, requestedY);
+}
+
+function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: GeneratedImage, index: number) {
+  const isMenuShortcut = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+  if (!isMenuShortcut || props.record?.mode !== "text-to-image") return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const targetRect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  showImageContextMenu(
+    image,
+    index,
+    targetRect.left + Math.min(36, targetRect.width / 2),
+    targetRect.top + Math.min(36, targetRect.height / 2)
+  );
+}
+
+function showImageContextMenu(image: GeneratedImage, index: number, requestedX: number, requestedY: number) {
+  contextMenuX.value = Math.max(8, Math.min(requestedX, window.innerWidth - 176));
+  contextMenuY.value = Math.max(8, Math.min(requestedY, window.innerHeight - 124));
+  contextMenuTarget.value = { image, index };
+}
+
+function closeContextMenu() {
+  contextMenuTarget.value = null;
+}
+
+async function copyContextImage() {
+  const target = contextMenuTarget.value;
+  closeContextMenu();
+  if (!target) return;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    await copyRemoteImageToClipboard(target.image.remoteUrl, target.image.mimeType);
+    showActionMessage("图片已复制");
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片复制失败，请稍后重试。";
+  }
+}
+
+async function downloadContextImage() {
+  const target = contextMenuTarget.value;
+  closeContextMenu();
+  if (!target) return;
+  await downloadImage(target.image, target.index);
+}
+
+async function useContextImageAsReference() {
+  const target = contextMenuTarget.value;
+  closeContextMenu();
+  if (!target || !props.record) return;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    const selected = await remoteImageToSelectedFile(
+      target.image.remoteUrl,
+      suggestedImageName(target.index),
+      target.image.mimeType
+    );
+    emit("useAsReference", selected);
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片读取失败，请稍后重试。";
   }
 }
 
@@ -68,6 +182,10 @@ async function openSaveDirectory() {
     actionError.value = exception instanceof Error ? exception.message : "无法打开保存位置。";
   }
 }
+
+onBeforeUnmount(() => {
+  if (actionMessageTimer) window.clearTimeout(actionMessageTimer);
+});
 </script>
 
 <template>
@@ -103,6 +221,10 @@ async function openSaveDirectory() {
           :key="image.id"
           class="result-image"
           :style="imageFrameStyle(image)"
+          :tabindex="record?.mode === 'text-to-image' ? 0 : undefined"
+          :aria-label="record?.mode === 'text-to-image' ? `生成图片 ${index + 1}，可打开图片菜单` : undefined"
+          @contextmenu="openImageContextMenu($event, image, index)"
+          @keydown="openImageContextMenuFromKeyboard($event, image, index)"
         >
           <img :src="image.remoteUrl" :alt="`生成图片 ${index + 1}`" />
         </figure>
@@ -115,7 +237,8 @@ async function openSaveDirectory() {
         <span>在右侧完善画面描述与参数，生成的作品会在这里呈现。</span>
       </div>
 
-      <p v-if="actionError" class="result-action-error" role="alert">{{ actionError }}</p>
+      <p v-if="actionError" class="result-action-feedback is-error" role="alert">{{ actionError }}</p>
+      <p v-else-if="actionMessage" class="result-action-feedback" role="status">{{ actionMessage }}</p>
       <div v-if="resultImages.length && !loading" class="toolbar result-toolbar" role="toolbar" aria-label="图片操作">
         <button class="icon-button result-tool" type="button" title="放大查看" aria-label="放大查看">
           <Maximize2 :size="16" />
@@ -129,7 +252,7 @@ async function openSaveDirectory() {
           title="下载图片"
           aria-label="下载图片"
           :disabled="saving"
-          @click="downloadImage"
+          @click="downloadPrimaryImage"
         >
           <LoaderCircle v-if="saving" class="saving-spinner" :size="16" />
           <Download v-else :size="16" />
@@ -145,6 +268,15 @@ async function openSaveDirectory() {
           <FolderOpen :size="16" />
         </button>
       </div>
+      <ResultImageContextMenu
+        v-if="contextMenuTarget"
+        :x="contextMenuX"
+        :y="contextMenuY"
+        @close="closeContextMenu"
+        @copy="copyContextImage"
+        @download="downloadContextImage"
+        @use-as-reference="useContextImageAsReference"
+      />
     </div>
   </section>
 </template>
@@ -262,7 +394,7 @@ async function openSaveDirectory() {
   }
 }
 
-.result-action-error {
+.result-action-feedback {
   position: absolute;
   z-index: 5;
   top: 70px;
@@ -270,13 +402,18 @@ async function openSaveDirectory() {
   max-width: min(380px, calc(100% - 48px));
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid rgba(239, 125, 136, 0.42);
+  border: 1px solid rgba(101, 211, 173, 0.38);
   border-radius: 6px;
-  color: var(--danger);
+  color: var(--success);
   background: rgba(16, 22, 29, 0.94);
   font-size: 11px;
   font-weight: 600;
   line-height: 1.45;
+
+  &.is-error {
+    border-color: rgba(239, 125, 136, 0.42);
+    color: var(--danger);
+  }
 }
 
 .saving-spinner {
@@ -310,6 +447,12 @@ async function openSaveDirectory() {
   border-radius: 7px;
   background: var(--field);
   box-shadow: none;
+
+  &:focus-visible {
+    border-color: var(--accent);
+    outline: 2px solid var(--accent-border);
+    outline-offset: -3px;
+  }
 
   img {
     width: 100%;

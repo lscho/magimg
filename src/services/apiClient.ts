@@ -150,6 +150,17 @@ function queryString(params: Record<string, string | number | undefined>) {
   return value ? `?${value}` : "";
 }
 
+function toCreateTaskBody(input: CreateGenerationTaskInput) {
+  const { outputFormat, outputCompression, ...body } = input;
+  return {
+    ...body,
+    ...(outputFormat ? { output_format: outputFormat } : {}),
+    ...(outputFormat !== "png" && outputCompression !== undefined
+      ? { output_compression: outputCompression }
+      : {})
+  };
+}
+
 function idempotencyKey() {
   return `huanhua:${crypto.randomUUID()}`;
 }
@@ -251,7 +262,7 @@ export const apiClient = {
     if (isMockApi) return mockApi.createTask(input);
     return request<GenerationTask>("/tasks", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify(toCreateTaskBody(input)),
       idempotencyKey: idempotencyKey()
     });
   },

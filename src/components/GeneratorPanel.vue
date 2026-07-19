@@ -29,7 +29,6 @@ const props = defineProps<{
   hasResult: boolean;
   insufficientCredits: boolean;
   error: string;
-  showOutputOptions: boolean;
   maxPromptLength: number;
   supportedQualities: SupportedQuality[];
   uploadMaxBytes: number;
@@ -93,7 +92,7 @@ function patch(partial: Partial<ImageParams>) {
     model: "gpt-image-2",
     n: 1,
     background: "auto",
-    outputCompression: Math.min(100, Math.max(1, partial.outputCompression ?? params.value.outputCompression))
+    outputCompression: Math.min(100, Math.max(0, partial.outputCompression ?? params.value.outputCompression))
   };
   params.value = next;
 }
@@ -170,7 +169,7 @@ async function pickReference() {
         </div>
       </div>
 
-      <div v-if="showOutputOptions" class="field">
+      <div class="field">
         <span>输出格式</span>
         <div class="radio-group format-radio-group" role="radiogroup" aria-label="输出格式">
           <label
@@ -191,21 +190,27 @@ async function pickReference() {
         </div>
       </div>
 
-      <label v-if="showOutputOptions && params.outputFormat !== 'png'" class="field compression-field">
-        <span>压缩比例 <em>{{ params.outputCompression }}%</em></span>
+      <label class="field compression-field" :class="{ 'is-disabled': params.outputFormat === 'png' }">
+        <span>
+          图片质量
+          <em>{{ params.outputFormat === "png" ? "无损" : `${params.outputCompression}%` }}</em>
+        </span>
         <input
           type="range"
-          min="1"
+          min="0"
           max="100"
-          :value="params.outputCompression"
+          aria-label="图片质量"
+          :aria-valuetext="params.outputFormat === 'png' ? 'PNG 无损' : `${params.outputCompression}%`"
+          :disabled="params.outputFormat === 'png'"
+          :value="params.outputFormat === 'png' ? 100 : params.outputCompression"
           @input="patch({ outputCompression: Number(($event.target as HTMLInputElement).value) })"
         />
-        <span class="range-limits"><small>1%</small><small>100%</small></span>
+        <span class="range-limits"><small>0%</small><small>100%</small></span>
       </label>
 
       <div class="field">
-        <span>质量</span>
-        <div class="radio-group quality-radio-group" role="radiogroup" aria-label="质量">
+        <span>生成质量</span>
+        <div class="radio-group quality-radio-group" role="radiogroup" aria-label="生成质量">
           <label
             v-for="quality in qualityOptions"
             :key="quality.value"
@@ -435,6 +440,17 @@ async function pickReference() {
     padding: 0;
     accent-color: var(--accent);
     cursor: pointer;
+  }
+
+  &.is-disabled {
+    > span em {
+      color: var(--muted);
+    }
+
+    input[type="range"] {
+      cursor: not-allowed;
+      opacity: 0.42;
+    }
   }
 
   .range-limits {

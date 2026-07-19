@@ -279,7 +279,7 @@ export const useAppStore = defineStore("app", () => {
         ...savedSettings.defaultParams,
         prompt: savedPrompt === legacySamplePrompt ? "" : savedPrompt ?? defaultParams.prompt,
         model: "gpt-image-2",
-        outputCompression: Math.min(100, Math.max(1, savedSettings.defaultParams?.outputCompression ?? 85))
+        outputCompression: Math.min(100, Math.max(0, savedSettings.defaultParams?.outputCompression ?? 85))
       }
     };
     history.value = Array.isArray(savedHistory) ? savedHistory : [];
@@ -641,7 +641,7 @@ export const useAppStore = defineStore("app", () => {
         model: "gpt-image-2",
         n: 1,
         background: "auto",
-        outputCompression: Math.min(100, Math.max(1, params.outputCompression))
+        outputCompression: Math.min(100, Math.max(0, params.outputCompression))
       };
 
       let inputAssetId: string | undefined;
@@ -670,7 +670,11 @@ export const useAppStore = defineStore("app", () => {
           isSupportedQuality(fixedParams.quality) &&
           capabilities.value.supportedQualities.includes(fixedParams.quality)
             ? fixedParams.quality
-            : capabilities.value.supportedQualities[0] || "auto"
+            : capabilities.value.supportedQualities[0] || "auto",
+        outputFormat: fixedParams.outputFormat,
+        ...(fixedParams.outputFormat !== "png"
+          ? { outputCompression: fixedParams.outputCompression }
+          : {})
       };
       const task = await apiClient.createTask(taskInput);
       const activeRecord = setActiveGeneration(task, fixedParams);

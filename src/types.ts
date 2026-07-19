@@ -242,6 +242,8 @@ export interface CreateGenerationTaskInput {
   width?: number;
   height?: number;
   quality?: SupportedQuality;
+  outputFormat?: OutputFormat;
+  outputCompression?: number;
 }
 
 export interface SelectedImageFile {

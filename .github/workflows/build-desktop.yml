@@ -175,10 +175,46 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  prepare-release:
+    name: Prepare backend release manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download desktop bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: huanhua-*
+          path: release-artifacts
+
+      - name: Validate bundles and create backend release manifest
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          RELEASE_ARTIFACTS_DIR: release-artifacts
+          RELEASE_MANIFEST_PATH: release-manifest/huanhua-desktop-release-manifest.json
+          PUBLISH_GITHUB_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+        run: node scripts/build-desktop-release-manifest.mjs
+
+      - name: Upload backend release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: huanhua-desktop-release-manifest
+          path: release-manifest/huanhua-desktop-release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: prepare-release
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -3,6 +3,7 @@ import { computed, onMounted, shallowRef } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import {
   Coins,
+  CircleArrowUp,
   History,
   ImagePlus,
   LayoutTemplate,
@@ -25,7 +26,8 @@ const app = useAppStore();
 const {
   status: updateStatus,
   info: updateInfo,
-  isVisible: showUpdate,
+  isAvailable: hasUpdate,
+  isPromptVisible: showUpdate,
   canDismiss: canDismissUpdate,
   downloadedBytes: updateDownloadedBytes,
   totalBytes: updateTotalBytes,
@@ -33,7 +35,8 @@ const {
   errorMessage: updateErrorMessage,
   installed: updateInstalled,
   checkForUpdates,
-  dismiss: dismissUpdate,
+  openPrompt: openUpdatePrompt,
+  dismissPrompt: dismissUpdatePrompt,
   installAndRestart,
   retryRestart
 } = useAppUpdater();
@@ -133,6 +136,17 @@ function openRechargeFromCreditLog() {
         </nav>
 
         <div class="sidebar-footer">
+          <button
+            v-if="hasUpdate && updateInfo"
+            class="sidebar-update-button"
+            type="button"
+            :aria-label="`发现新版本 ${updateInfo.version}，查看更新`"
+            :title="`发现新版本 ${updateInfo.version}`"
+            @click="openUpdatePrompt"
+          >
+            <CircleArrowUp :size="18" aria-hidden="true" />
+            <span class="rail-tooltip" aria-hidden="true">发现新版本 {{ updateInfo.version }}</span>
+          </button>
           <template v-if="app.isAuthenticated">
             <button
               class="account-settings-button"
@@ -170,7 +184,7 @@ function openRechargeFromCreditLog() {
       :progress-percent="updateProgressPercent"
       :error-message="updateErrorMessage"
       :installed="updateInstalled"
-      @dismiss="dismissUpdate"
+      @dismiss="dismissUpdatePrompt"
       @install="installAndRestart"
       @restart="retryRestart"
     />
@@ -346,9 +360,9 @@ function openRechargeFromCreditLog() {
   gap: 6px;
   width: 100%;
   padding: 10px 8px;
-  border-top: 1px solid var(--line);
 }
 
+.sidebar-update-button,
 .account-settings-button,
 .sidebar-login-link {
   position: relative;
@@ -370,6 +384,18 @@ function openRechargeFromCreditLog() {
     color: var(--accent-strong);
     border-color: var(--accent-border);
     background: var(--accent-soft);
+  }
+}
+
+.sidebar-update-button {
+  color: var(--success);
+  border-color: rgba(101, 211, 173, 0.42);
+  background: rgba(101, 211, 173, 0.11);
+
+  &:hover {
+    color: #9aebcf;
+    border-color: rgba(101, 211, 173, 0.72);
+    background: rgba(101, 211, 173, 0.17);
   }
 }
 
@@ -400,6 +426,8 @@ function openRechargeFromCreditLog() {
 
 .nav-item:hover .rail-tooltip,
 .nav-item:focus-visible .rail-tooltip,
+.sidebar-update-button:hover .rail-tooltip,
+.sidebar-update-button:focus-visible .rail-tooltip,
 .account-settings-button:hover .rail-tooltip,
 .account-settings-button:focus-visible .rail-tooltip,
 .sidebar-login-link:hover .rail-tooltip,
@@ -473,6 +501,7 @@ function openRechargeFromCreditLog() {
   }
 
   .nav-item,
+  .sidebar-update-button,
   .account-settings-button,
   .sidebar-login-link {
     width: 100%;

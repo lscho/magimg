@@ -12,6 +12,7 @@ import type {
   GenerationTask,
   GenerationTaskStatus,
   GenerationTemplate,
+  OutputFormat,
   PointLedgerEntry,
   TemplateCategory
 } from "@/types";
@@ -38,6 +39,10 @@ const mockTransactions: PointLedgerEntry[] = [
   }
 ];
 const mockTasks: GenerationTask[] = [];
+const mockTaskOutputSettings = new Map<
+  string,
+  { outputFormat: OutputFormat; outputCompression?: number }
+>();
 
 const delay = (ms = 300) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const id = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
@@ -88,6 +93,12 @@ function advanceMockTask(task: GenerationTask) {
   if (task.status !== "pending" && task.status !== "processing") return task;
   const elapsed = Date.now() - new Date(task.createdAt).getTime();
   if (elapsed >= 8000) {
+    const outputSettings = mockTaskOutputSettings.get(task.id) ?? { outputFormat: "jpeg" as const };
+    const imageFormat = outputSettings.outputFormat === "jpeg" ? "jpg" : outputSettings.outputFormat;
+    const mimeType = outputSettings.outputFormat === "jpeg" ? "image/jpeg" : `image/${outputSettings.outputFormat}`;
+    const imageUrl = sampleImages[0]
+      .replace("auto=format", `fm=${imageFormat}`)
+      .replace(/q=\d+/u, `q=${Math.max(1, outputSettings.outputCompression ?? 100)}`);
     task.status = "succeeded";
     task.attemptCount = 1;
     task.startedAt ||= new Date(new Date(task.createdAt).getTime() + 1800).toISOString();
@@ -95,8 +106,8 @@ function advanceMockTask(task: GenerationTask) {
     task.outputAsset = {
       id: `output_${task.id}`,
       kind: "output",
-      url: `${sampleImages[0]}&sig=${task.id}`,
-      mimeType: "image/jpeg",
+      url: `${imageUrl}&sig=${task.id}`,
+      mimeType,
       size: 320000,
       createdAt: task.finishedAt
     };
@@ -236,6 +247,11 @@ export const mockApi = {
     mockBalance -= pointsCost;
 
     const taskId = id("task");
+    const outputFormat = input.outputFormat ?? "png";
+    const outputCompression =
+      outputFormat === "png"
+        ? undefined
+        : Math.min(100, Math.max(0, input.outputCompression ?? 100));
     const task: GenerationTask = {
       id: taskId,
       requestId: id("request"),
@@ -250,6 +266,10 @@ export const mockApi = {
       attemptCount: 0,
       createdAt: new Date().toISOString()
     };
+    mockTaskOutputSettings.set(taskId, {
+      outputFormat,
+      ...(outputCompression !== undefined ? { outputCompression } : {})
+    });
     mockTasks.unshift(task);
     mockTransactions.unshift({
       id: id("point"),

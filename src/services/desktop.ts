@@ -17,8 +17,8 @@ export function hasWindowsWindowControls(): boolean {
   return isTauri && platform() === "windows";
 }
 
-export function disableWindowsContextMenu(): void {
-  if (!hasWindowsWindowControls()) return;
+export function disableAppContextMenu(): void {
+  if (!isTauri) return;
   document.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
@@ -148,8 +148,9 @@ async function remoteImageBytes(url: string) {
   } catch {
     throw new Error("图片地址无效，无法下载。");
   }
-  if (resolvedUrl.protocol !== "http:" && resolvedUrl.protocol !== "https:") {
-    throw new Error("仅支持下载 HTTP 或 HTTPS 图片。");
+  const canReadBrowserBlob = !isTauri && resolvedUrl.protocol === "blob:";
+  if (resolvedUrl.protocol !== "http:" && resolvedUrl.protocol !== "https:" && !canReadBrowserBlob) {
+    throw new Error("仅支持读取 HTTP、HTTPS 或浏览器临时图片。");
   }
 
   let response: Response;
@@ -160,6 +161,63 @@ async function remoteImageBytes(url: string) {
   }
   if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
   return new Uint8Array(await response.arrayBuffer());
+}
+
+async function remoteImageBlob(url: string, mimeType?: string) {
+  const bytes = await remoteImageBytes(url);
+  return new Blob([bytes], { type: mimeType || "image/png" });
+}
+
+async function imageBlobAsPng(blob: Blob): Promise<Blob> {
+  if (blob.type === "image/png") return blob;
+
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("当前设备无法处理该图片。");
+    context.drawImage(bitmap, 0, 0);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (pngBlob) => (pngBlob ? resolve(pngBlob) : reject(new Error("图片格式转换失败。"))),
+        "image/png"
+      );
+    });
+  } finally {
+    bitmap.close();
+  }
+}
+
+export async function copyRemoteImageToClipboard(url: string, mimeType?: string): Promise<void> {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("当前系统不支持复制图片，请使用下载功能。");
+  }
+
+  const pngBlob = await imageBlobAsPng(await remoteImageBlob(url, mimeType));
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+  } catch (exception) {
+    throw new Error("无法复制图片，请检查系统剪贴板权限。", { cause: exception });
+  }
+}
+
+export async function remoteImageToSelectedFile(
+  url: string,
+  suggestedName: string,
+  mimeType?: string
+): Promise<SelectedImageFile> {
+  const normalizedMimeType = ["image/jpeg", "image/png", "image/webp"].includes(mimeType || "")
+    ? mimeType!
+    : "image/png";
+  const name = safeImageFilename(suggestedName, normalizedMimeType);
+  const blob = await remoteImageBlob(url, normalizedMimeType);
+  return {
+    name,
+    path: name,
+    file: new File([blob], name, { type: normalizedMimeType })
+  };
 }
 
 async function writeImageFile(path: string, bytes: Uint8Array) {

@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { defaultParams } from "@/constants/defaults";
 import GeneratorPanel from "@/components/GeneratorPanel.vue";
 import LoginModal from "@/components/LoginModal.vue";
 import ResultGrid from "@/components/ResultGrid.vue";
 import PromptTemplateModal from "@/components/PromptTemplateModal.vue";
-import { isMockApi } from "@/services/apiClient";
 import { useAppStore } from "@/stores/app";
 import type {
   GenerationMode,
@@ -156,6 +155,20 @@ function applyTemplate(template: PromptTemplate) {
   applyTemplateParams(template);
   showTemplates.value = false;
 }
+
+async function useAsReference(image: SelectedImageFile) {
+  if (mode.value !== "image-to-image") {
+    await router.push("/generate/image-to-image");
+    await nextTick();
+  }
+  referenceImage.value = image;
+  params.value = {
+    ...params.value,
+    referenceImagePath: image.path
+  };
+  taskAttached.value = false;
+  app.clearGenerationError();
+}
 </script>
 
 <template>
@@ -168,6 +181,7 @@ function applyTemplate(template: PromptTemplate) {
       :recoverable-task="recoverableTask"
       @cancel="cancelGeneration"
       @restore-task="restoreTask"
+      @use-as-reference="useAsReference"
     />
     <GeneratorPanel
       v-model:params="params"
@@ -178,7 +192,6 @@ function applyTemplate(template: PromptTemplate) {
       :has-result="hasResult"
       :insufficient-credits="insufficientCredits"
       :error="taskAttached ? app.error : ''"
-      :show-output-options="isMockApi"
       :max-prompt-length="4000"
       :supported-qualities="app.capabilities.supportedQualities"
       :upload-max-bytes="app.capabilities.uploadMaxBytes"
