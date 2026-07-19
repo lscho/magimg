@@ -47,7 +47,7 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             artifact: huanhua-macos-x64
-            bundles: dmg
+            bundles: app,dmg
             upload_path: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
               src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
@@ -56,7 +56,7 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             artifact: huanhua-macos-arm64
-            bundles: dmg
+            bundles: app,dmg
             upload_path: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
               src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
