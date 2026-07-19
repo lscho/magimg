@@ -47,6 +47,7 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
             artifact: huanhua-macos-x64
+            updater_arch: x64
             bundles: app,dmg
             upload_path: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
@@ -56,6 +57,7 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             artifact: huanhua-macos-arm64
+            updater_arch: arm64
             bundles: app,dmg
             upload_path: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
@@ -164,6 +166,39 @@ jobs:
           APPLE_API_KEY: ${{ vars.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         run: npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config "$RUNNER_TEMP/huanhua-release/tauri.release.conf.json"
+
+      - name: Add architecture suffix to macOS updater
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          UPDATER_ARCH: ${{ matrix.updater_arch }}
+          UPDATER_DIRECTORY: src-tauri/target/${{ matrix.target }}/release/bundle/macos
+        run: |
+          shopt -s nullglob
+          updater_files=("$UPDATER_DIRECTORY"/*.app.tar.gz)
+          if [ "${#updater_files[@]}" -ne 1 ]; then
+            echo "Expected exactly one macOS updater, found ${#updater_files[@]}" >&2
+            find "$UPDATER_DIRECTORY" -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+
+          updater_path="${updater_files[0]}"
+          signature_path="${updater_path}.sig"
+          if [ ! -s "$signature_path" ]; then
+            echo "Missing or empty updater signature: $signature_path" >&2
+            exit 1
+          fi
+
+          renamed_updater="${updater_path%.app.tar.gz}_${UPDATER_ARCH}.app.tar.gz"
+          renamed_signature="${renamed_updater}.sig"
+          if [ -e "$renamed_updater" ] || [ -e "$renamed_signature" ]; then
+            echo "Architecture-specific updater already exists" >&2
+            exit 1
+          fi
+
+          mv "$updater_path" "$renamed_updater"
+          mv "$signature_path" "$renamed_signature"
+          echo "Prepared $(basename "$renamed_updater")"
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4

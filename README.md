@@ -85,8 +85,8 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 
 - `huanhua-windows-x64`：Windows x64 NSIS `.exe`，同一文件用于安装和 Tauri v2 updater，并附带 `.exe.sig`。
 - `huanhua-windows-arm64`：Windows ARM64 NSIS `.exe`，同一文件用于安装和 Tauri v2 updater，并附带 `.exe.sig`。
-- `huanhua-macos-x64`：macOS Intel 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
-- `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、`.app.tar.gz` updater 包和 `.sig`。
+- `huanhua-macos-x64`：macOS Intel 磁盘映像、带 `_x64` 后缀的 `.app.tar.gz` updater 包和 `.sig`。
+- `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、带 `_arm64` 后缀的 `.app.tar.gz` updater 包和 `.sig`。
 - `huanhua-desktop-release-manifest`：供后端登记版本使用的 JSON 清单，包含四个平台的文件名、大小、SHA-256、updater 签名和标签发布来源 URL。
 
 构建完成后，`prepare-release` 作业会校验四个平台的普通安装包、updater 包和签名是否齐全；任一产物缺失、签名为空或 GitHub Release 资产重名时发布失败。标签构建随后创建或更新 GitHub Release，并上传全部产物和发布清单；手动构建只生成保留 14 天的 Artifact。后端登记、接口验证和回滚步骤见 [桌面客户端发布流程](docs/desktop-release.md)。

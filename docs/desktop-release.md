@@ -14,6 +14,7 @@
 | `macos-arm` | `.dmg` | `.app.tar.gz` | `.app.tar.gz.sig` |
 
 Windows 的 NSIS `.exe` 同时用于官网手动下载和 Tauri v2 自动更新，updater 使用同名 `.exe.sig` 验签。macOS 的 `.dmg` 用于手动安装，`.app.tar.gz` 和对应 `.sig` 用于自动更新，两者不能互换。
+Tauri 默认会为 Intel 和 Apple Silicon 生成同名的 macOS updater；Actions 会在上传前分别添加 `_x64` 和 `_arm64` 后缀，并同步重命名签名文件，避免 GitHub Release 资产重名。重命名不改变文件内容，不影响 updater 签名。
 
 ## 2. 一次性配置
 
