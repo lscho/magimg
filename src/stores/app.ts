@@ -97,6 +97,24 @@ function toSession(response: ClientAuthResponse): UserSession {
   };
 }
 
+function isPersistedSession(value: unknown): value is UserSession {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Partial<UserSession>;
+  if (typeof candidate.accessToken !== "string" || !candidate.accessToken.trim()) return false;
+  if (!candidate.user || typeof candidate.user !== "object") return false;
+  if (typeof candidate.user.id !== "string" || !candidate.user.id) return false;
+  if (typeof candidate.user.nickname !== "string") return false;
+
+  if (candidate.expiresAt !== undefined) {
+    if (typeof candidate.expiresAt !== "string") return false;
+    const expiresAt = Date.parse(candidate.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
+  }
+
+  return true;
+}
+
 function toCreditTransaction(entry: PointLedgerEntry): CreditTransaction {
   return {
     id: entry.id,
@@ -222,6 +240,8 @@ export const useAppStore = defineStore("app", () => {
   let generationMonitorVersion = 0;
   let monitoredTaskId: string | null = null;
   let monitoredTaskPromise: Promise<GenerationRecord> | null = null;
+  let hydrationPromise: Promise<void> | null = null;
+  let initializationPromise: Promise<void> | null = null;
 
   const isAuthenticated = computed(() => Boolean(session.value));
   const generating = computed(
@@ -255,47 +275,66 @@ export const useAppStore = defineStore("app", () => {
     await localDb.writeSession(null);
   }
 
-  async function init() {
+  async function hydrateLocalState() {
     if (initialized.value) return;
-    const [savedSettings, savedHistory, savedHiddenHistoryIds, savedSession] = await Promise.all([
-      localDb.readSettings(),
-      localDb.readHistory(),
-      localDb.readHiddenHistoryIds(),
-      localDb.readSession()
-    ]);
-    const savedApiBaseUrl = savedSettings.apiBaseUrl?.trim().replace(/\/+$/u, "");
-    const apiBaseUrl =
-      !savedApiBaseUrl || savedApiBaseUrl === "https://api.example.com"
-        ? defaultSettings.apiBaseUrl
-        : savedApiBaseUrl;
-    settings.value = {
-      ...defaultSettings,
-      ...savedSettings,
-      apiBaseUrl,
-      defaultParams: {
-        ...defaultParams,
-        ...savedSettings.defaultParams,
-        model: "gpt-image-2",
-        outputCompression: Math.min(100, Math.max(0, savedSettings.defaultParams?.outputCompression ?? 85))
-      }
-    };
-    history.value = Array.isArray(savedHistory) ? savedHistory : [];
-    hiddenHistoryIds.value = Array.isArray(savedHiddenHistoryIds) ? savedHiddenHistoryIds : [];
-    session.value = savedSession;
-    setApiBaseUrl(settings.value.apiBaseUrl);
-    setAccessToken(savedSession?.accessToken ?? null);
-    setUnauthorizedHandler(clearSession);
-    initialized.value = true;
+    hydrationPromise ??= (async () => {
+      const [savedSettings, savedHistory, savedHiddenHistoryIds, savedSession] = await Promise.all([
+        localDb.readSettings(),
+        localDb.readHistory(),
+        localDb.readHiddenHistoryIds(),
+        localDb.readSession()
+      ]);
+      const savedApiBaseUrl = savedSettings.apiBaseUrl?.trim().replace(/\/+$/u, "");
+      const apiBaseUrl =
+        !savedApiBaseUrl || savedApiBaseUrl === "https://api.example.com"
+          ? defaultSettings.apiBaseUrl
+          : savedApiBaseUrl;
+      const restoredSession = isPersistedSession(savedSession) ? savedSession : null;
 
-    await Promise.all([refreshCapabilities(), refreshTemplates()]);
-    if (session.value) {
-      try {
-        await refreshProfile();
-        await Promise.all([refreshTransactions(), refreshTaskHistory()]);
-      } catch (exception) {
-        console.warn("恢复登录状态失败", exception);
+      settings.value = {
+        ...defaultSettings,
+        ...savedSettings,
+        apiBaseUrl,
+        defaultParams: {
+          ...defaultParams,
+          ...savedSettings.defaultParams,
+          model: "gpt-image-2",
+          outputCompression: Math.min(100, Math.max(0, savedSettings.defaultParams?.outputCompression ?? 85))
+        }
+      };
+      history.value = Array.isArray(savedHistory) ? savedHistory : [];
+      hiddenHistoryIds.value = Array.isArray(savedHiddenHistoryIds) ? savedHiddenHistoryIds : [];
+      session.value = restoredSession;
+      setApiBaseUrl(settings.value.apiBaseUrl);
+      setAccessToken(restoredSession?.accessToken ?? null);
+      setUnauthorizedHandler(clearSession);
+      initialized.value = true;
+
+      if (savedSession !== null && !restoredSession) {
+        try {
+          await localDb.writeSession(null);
+        } catch (exception) {
+          console.warn("清理无效登录缓存失败", exception);
+        }
       }
-    }
+    })();
+    await hydrationPromise;
+  }
+
+  async function init() {
+    await hydrateLocalState();
+    initializationPromise ??= (async () => {
+      await Promise.all([refreshCapabilities(), refreshTemplates()]);
+      if (session.value) {
+        try {
+          await refreshProfile();
+          await Promise.all([refreshTransactions(), refreshTaskHistory()]);
+        } catch (exception) {
+          console.warn("恢复登录状态失败", exception);
+        }
+      }
+    })();
+    await initializationPromise;
   }
 
   async function sendSms(phone: string, purpose: "register" | "passwordReset") {
@@ -765,6 +804,7 @@ export const useAppStore = defineStore("app", () => {
     error,
     generationErrorKind,
     isAuthenticated,
+    hydrateLocalState,
     init,
     sendSms,
     login,

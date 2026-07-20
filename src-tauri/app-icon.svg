@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="mark-gradient" x1="296" y1="270" x2="728" y2="702" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DD4BF"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#E879F9"/>
+    </linearGradient>
+    <filter id="tile-shadow" x="52" y="60" width="920" height="928" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#tile-shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="#0A0918"/>
+    <rect
+      x="101.5"
+      y="101.5"
+      width="821"
+      height="821"
+      rx="183.5"
+      stroke="#FFFFFF"
+      stroke-opacity="0.09"
+      stroke-width="3"
+    />
+  </g>
+
+  <circle
+    cx="512"
+    cy="486"
+    r="219"
+    stroke="url(#mark-gradient)"
+    stroke-width="52"
+    stroke-linecap="round"
+    stroke-dasharray="1030 386"
+    transform="rotate(-45 512 486)"
+  />
+  <path
+    d="M358 666C461 580 563 580 666 666"
+    stroke="url(#mark-gradient)"
+    stroke-width="52"
+    stroke-linecap="round"
+  />
+  <circle cx="666" cy="332" r="45" fill="#F5C97B"/>
+</svg>
