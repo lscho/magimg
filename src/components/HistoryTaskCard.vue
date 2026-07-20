@@ -47,19 +47,22 @@ const creditsTitle = computed(() => {
 <template>
   <article class="history-task-card" :class="{ selected }">
     <button
-      v-if="previewImage"
       class="history-task-media"
       type="button"
-      :aria-label="selected ? '取消选择此历史作品' : '选择此历史作品'"
+      :aria-label="selected ? '取消选择此历史任务' : '选择此历史任务'"
       :aria-pressed="selected"
       @click="emit('toggle', record.generationId)"
     >
       <img
+        v-if="previewImage"
         :src="previewImage.remoteUrl"
         :alt="`${record.mode === 'text-to-image' ? '文生图' : '图生图'}历史作品`"
         loading="lazy"
         decoding="async"
       />
+      <div v-else class="history-task-placeholder">
+        <ImageOff :size="24" aria-hidden="true" />
+      </div>
       <span v-if="selected" class="history-selected-mark" aria-hidden="true">
         <Check :size="15" :stroke-width="2.5" />
       </span>
@@ -68,15 +71,6 @@ const creditsTitle = computed(() => {
       </span>
       <span class="history-size-tag">{{ record.params.size }}</span>
     </button>
-    <div v-else class="history-task-media">
-      <div class="history-task-placeholder">
-        <ImageOff :size="24" aria-hidden="true" />
-      </div>
-      <span class="history-status history-status-overlay" :class="statusDetail.className">
-        <i aria-hidden="true"></i>{{ statusDetail.label }}
-      </span>
-      <span class="history-size-tag">{{ record.params.size }}</span>
-    </div>
 
     <div class="history-task-content">
       <h2 :title="record.params.prompt">{{ record.params.prompt }}</h2>

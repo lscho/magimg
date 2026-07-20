@@ -1,7 +1,7 @@
 # 幻画 AI 客户端 API 文档
 
 > 适用版本：当前仓库 `server/api/client/v1` 实现。基础路径为 `/api/client/v1`。
-> 请求/响应字段默认使用 **camelCase**；生成任务中的 `output_format`、`output_compression` 沿用 OpenAI 字段名。ID 使用 **字符串**，时间使用 **ISO 8601**。
+> 请求/响应字段默认使用 **camelCase**；生成任务中的 `output_compression` 沿用 OpenAI 字段名。ID 使用 **字符串**，时间使用 **ISO 8601**。
 > 客户端 Bearer token 与 `/api/auth/login` 返回的管理员 token **不通用**。
 
 ---
@@ -635,8 +635,8 @@ curl -i "https://api.example.com/api/client/v1/version/latest/tauri?platform=mac
 | `width` | integer | 否 | 缺省取模板或 1024；须满足 sizeRules |
 | `height` | integer | 否 | 缺省取模板或 1024；须满足 sizeRules |
 | `quality` | string | 否 | `auto`/`low`/`medium`/`high`；缺省取模板或 `auto` |
-| `output_format` | string | 否 | `png`/`jpeg`/`webp`；缺省为 `png` |
-| `output_compression` | integer | 否 | JPEG/WebP 输出质量，范围 0–100；PNG 不接受且客户端不会发送 |
+| `outputFormat` | string | 否 | `png`/`jpeg`/`webp`；缺省为 `png` |
+| `output_compression` | integer | 否 | JPEG/WebP 压缩率（客户端界面名称），范围 0–100；PNG 不接受且客户端不会发送 |
 
 **成功响应（200）**：`GenerationTask`（见第 5 节），初始 `status: "pending"`。
 

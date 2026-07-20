@@ -52,7 +52,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - 结果区下载已接入桌面“另存为”，默认保存位置可直接打开；当前模式存在成功结果时生成主按钮显示“重新生成”，放大查看和编辑按钮目前仍为界面占位。
 - 项目目前没有自动化单元测试或 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
-- 任务接口使用 OpenAI 风格的 `output_format`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。
+- 任务接口使用 camelCase 的 `outputFormat`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。
 
 若任务涉及上述缺口，应明确区分“补实现”和“调整现有实现”，并同步相关文档。
 
@@ -84,7 +84,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - `src/types.ts` 是客户端领域类型的源文件。
 - `src/services/apiClient.ts` 是真实接口路径和序列化的源文件。
 - `docs/backend-api.md` 是后端联调契约；修改 endpoint、字段、枚举或鉴权方式时必须同步更新。
-- 业务响应使用 camelCase；OpenAI 风格生成请求中的指定字段使用 snake_case，沿用 `toImageGenerationBody()` 的转换边界。
+- 业务请求与响应默认使用 camelCase；任务压缩率字段 `output_compression` 保留 snake_case，转换边界位于 `toCreateTaskBody()`。
 - 金额使用整数分，积分使用整数，不引入浮点金额。
 - 受保护请求统一通过 `setAccessToken()` 管理 Authorization，不在组件里直接拼接 Token。
 - 不在组件中直接调用 `fetch`；请求放入 service，业务编排放入 store。

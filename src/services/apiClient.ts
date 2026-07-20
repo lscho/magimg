@@ -151,7 +151,7 @@ function toCreateTaskBody(input: CreateGenerationTaskInput) {
   const { outputFormat, outputCompression, ...body } = input;
   return {
     ...body,
-    ...(outputFormat ? { output_format: outputFormat } : {}),
+    ...(outputFormat ? { outputFormat } : {}),
     ...(outputFormat !== "png" && outputCompression !== undefined
       ? { output_compression: outputCompression }
       : {})

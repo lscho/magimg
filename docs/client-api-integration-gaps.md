@@ -14,7 +14,7 @@
 | 模板 | `GET /template-categories`、`GET /templates`、`GET /templates/:id` | 模板广场和生成页模板弹窗使用服务端数据；详情接口已封装 |
 | 积分 | `GET /points`、`POST /cards/redeem` | 积分日志使用服务端分页数据，充值弹窗改为卡密兑换 |
 | 上传 | `POST /uploads/images` | 图生图先读取本地文件并 multipart 上传，再使用 `inputAssetId` 创建任务 |
-| 任务 | `POST /tasks`、`GET /tasks`、`GET /tasks/:id`、`POST /tasks/:id/cancel` | 创建任务携带幂等键、`output_format`，并仅为 JPEG/WebP 携带 `output_compression`；store 每 2 秒查询状态并重试临时失败；恢复会话时找回最新进行中任务；排队任务可取消；服务端任务合并到历史记录 |
+| 任务 | `POST /tasks`、`GET /tasks`、`GET /tasks/:id`、`POST /tasks/:id/cancel` | 创建任务携带幂等键、`outputFormat`，并仅为 JPEG/WebP 携带 `output_compression`；store 每 2 秒查询状态并重试临时失败；恢复会话时找回最新进行中任务；排队任务可取消；服务端任务合并到历史记录 |
 | 更新 | `GET /version/latest/tauri` | 正式 Tauri 构建启动时按平台检查签名更新；普通更新确认后安装，强制更新阻断使用，安装完成自动重启 |
 
 真实接口基础路径固定为 `/api/client/v1`。`VITE_API_BASE_URL` 可配置为服务端 Origin，也可直接包含该基础路径。

@@ -3,6 +3,7 @@ import { Download, LoaderCircle, Trash2, X } from "lucide-vue-next";
 
 defineProps<{
   selectedCount: number;
+  canDownload: boolean;
   downloading: boolean;
   deleting: boolean;
   message: string;
@@ -37,7 +38,8 @@ const emit = defineEmits<{
         <Trash2 v-else :size="17" />
       </button>
       <button
-        class="selection-action primary"
+        v-if="canDownload"
+        class="selection-action download"
         type="button"
         title="批量下载"
         aria-label="批量下载所选作品"
@@ -144,15 +146,15 @@ const emit = defineEmits<{
     color: var(--danger);
   }
 
-  &.primary {
-    color: var(--on-accent);
+  &.download {
+    color: var(--accent-strong);
     border-color: var(--accent);
-    background: var(--accent);
+    background: transparent;
 
     &:hover:not(:disabled) {
-      color: var(--on-accent);
+      color: var(--accent-strong);
       border-color: var(--accent-strong);
-      background: var(--accent-strong);
+      background: var(--accent-soft);
     }
   }
 }

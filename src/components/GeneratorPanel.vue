@@ -197,19 +197,18 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
         </div>
       </div>
 
-      <label class="field compression-field" :class="{ 'is-disabled': params.outputFormat === 'png' }">
+      <label v-if="params.outputFormat !== 'png'" class="field compression-field">
         <span>
-          图片质量
-          <em>{{ params.outputFormat === "png" ? "无损" : `${params.outputCompression}%` }}</em>
+          压缩率
+          <em>{{ params.outputCompression }}%</em>
         </span>
         <input
           type="range"
           min="0"
           max="100"
-          aria-label="图片质量"
-          :aria-valuetext="params.outputFormat === 'png' ? 'PNG 无损' : `${params.outputCompression}%`"
-          :disabled="params.outputFormat === 'png'"
-          :value="params.outputFormat === 'png' ? 100 : params.outputCompression"
+          aria-label="压缩率"
+          :aria-valuetext="`${params.outputCompression}%`"
+          :value="params.outputCompression"
           @input="patch({ outputCompression: Number(($event.target as HTMLInputElement).value) })"
         />
         <span class="range-limits"><small>0%</small><small>100%</small></span>
@@ -426,17 +425,6 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
     padding: 0;
     accent-color: var(--accent);
     cursor: pointer;
-  }
-
-  &.is-disabled {
-    > span em {
-      color: var(--muted);
-    }
-
-    input[type="range"] {
-      cursor: not-allowed;
-      opacity: 0.42;
-    }
   }
 
   .range-limits {

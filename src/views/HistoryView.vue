@@ -7,7 +7,6 @@ import {
   ChevronsRight,
   Clock3,
   ImagePlus,
-  Trash2,
   Wand2
 } from "lucide-vue-next";
 import HistorySelectionBar from "@/components/HistorySelectionBar.vue";
@@ -50,6 +49,11 @@ const selectedRecords = computed(() => {
   return app.visibleHistory.filter((record) => selectedIds.has(record.generationId));
 });
 const selectedCount = computed(() => selectedRecords.value.length);
+const canDownloadSelection = computed(
+  () =>
+    selectedRecords.value.length > 0 &&
+    selectedRecords.value.every((record) => record.images.length > 0)
+);
 
 watch(activeMode, () => {
   currentPage.value = 1;
@@ -109,15 +113,9 @@ async function deleteSelected() {
   }
 }
 
-async function clearAllHistory() {
-  if (!app.visibleHistory.length) return;
-  const confirmed = window.confirm("确定清空当前设备上的全部创作历史吗？");
-  if (!confirmed) return;
-  await app.clearHistory();
-  clearSelection();
-}
-
 async function downloadSelected() {
+  if (!canDownloadSelection.value) return;
+
   const downloads = selectedRecords.value.flatMap((record) =>
     record.images.map((image, index) => ({
       image,
@@ -152,34 +150,22 @@ async function downloadSelected() {
         <p>集中管理生成任务与历史作品。</p>
       </div>
 
-      <div class="history-heading-actions">
-        <div class="history-mode-switch" role="group" aria-label="历史类型">
-          <button
-            type="button"
-            :class="{ active: activeMode === 'text-to-image' }"
-            :aria-pressed="activeMode === 'text-to-image'"
-            @click="activeMode = 'text-to-image'"
-          >
-            <Wand2 :size="15" /> 文生图
-          </button>
-          <button
-            type="button"
-            :class="{ active: activeMode === 'image-to-image' }"
-            :aria-pressed="activeMode === 'image-to-image'"
-            @click="activeMode = 'image-to-image'"
-          >
-            <ImagePlus :size="15" /> 图生图
-          </button>
-        </div>
+      <div class="history-mode-switch" role="group" aria-label="历史类型">
         <button
-          class="icon-button danger history-clear"
           type="button"
-          :disabled="!app.visibleHistory.length"
-          aria-label="清空创作历史"
-          title="清空创作历史"
-          @click="clearAllHistory"
+          :class="{ active: activeMode === 'text-to-image' }"
+          :aria-pressed="activeMode === 'text-to-image'"
+          @click="activeMode = 'text-to-image'"
         >
-          <Trash2 :size="16" />
+          <Wand2 :size="15" /> 文生图
+        </button>
+        <button
+          type="button"
+          :class="{ active: activeMode === 'image-to-image' }"
+          :aria-pressed="activeMode === 'image-to-image'"
+          @click="activeMode = 'image-to-image'"
+        >
+          <ImagePlus :size="15" /> 图生图
         </button>
       </div>
     </div>
@@ -258,6 +244,7 @@ async function downloadSelected() {
     <HistorySelectionBar
       v-if="selectedCount"
       :selected-count="selectedCount"
+      :can-download="canDownloadSelection"
       :downloading="downloading"
       :deleting="deleting"
       :message="actionMessage"
@@ -278,12 +265,6 @@ async function downloadSelected() {
 
 .history-heading-copy {
   min-width: 0;
-}
-
-.history-heading-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .history-mode-switch {
@@ -318,10 +299,6 @@ async function downloadSelected() {
       background: var(--accent-soft);
     }
   }
-}
-
-.history-clear {
-  flex: 0 0 auto;
 }
 
 .history-toolbar {
@@ -409,12 +386,8 @@ async function downloadSelected() {
     align-items: flex-start;
   }
 
-  .history-heading-actions {
-    width: 100%;
-  }
-
   .history-mode-switch {
-    flex: 1;
+    width: 100%;
 
     button {
       min-width: 0;
