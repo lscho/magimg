@@ -274,3 +274,52 @@ jobs:
               --title "幻画 AI $GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY"
           fi
+
+  sync-and-notify:
+    name: Sync release to COS and register backend draft
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-release
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install release dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download desktop bundles and manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: huanhua-*
+          path: release-artifacts
+
+      - name: Upload immutable release assets and register backend draft
+        env:
+          RELEASE_ARTIFACTS_DIR: release-artifacts
+          FINAL_RELEASE_MANIFEST_PATH: release-manifest-final/huanhua-desktop-release-manifest.json
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+          TENCENT_COS_BUCKET: ${{ vars.TENCENT_COS_BUCKET }}
+          TENCENT_COS_REGION: ${{ vars.TENCENT_COS_REGION }}
+          DESKTOP_RELEASE_CDN_BASE_URL: ${{ vars.DESKTOP_RELEASE_CDN_BASE_URL }}
+          DESKTOP_RELEASE_API_URL: ${{ vars.DESKTOP_RELEASE_API_URL }}
+          DESKTOP_RELEASE_WEBHOOK_SECRET: ${{ secrets.DESKTOP_RELEASE_WEBHOOK_SECRET }}
+        run: node scripts/publish-desktop-release.mjs
+
+      - name: Upload final CDN release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: huanhua-desktop-release-final-manifest
+          path: release-manifest-final/huanhua-desktop-release-manifest.json
+          if-no-files-found: error
+          retention-days: 30

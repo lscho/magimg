@@ -33,8 +33,13 @@ GitHub 仓库还需要配置：
 | Secret | `TAURI_SIGNING_PRIVATE_KEY` | 构建 updater 包的 `.sig` |
 | Secret | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码；无密码时可不配置 |
 | Variable/Secret | Apple 签名与公证字段 | 详见 README 的桌面打包章节 |
+| Environment Variable | `TENCENT_COS_BUCKET` / `TENCENT_COS_REGION` | COS bucket 与地域 |
+| Environment Variable | `DESKTOP_RELEASE_CDN_BASE_URL` | 公开 HTTPS CDN 基础地址，可包含固定路径前缀 |
+| Environment Variable | `DESKTOP_RELEASE_API_URL` | website 的 `/api/internal/desktop-releases` 完整 HTTPS 地址 |
+| Environment Secret | `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY` | 仅有发布前缀权限的 CAM 凭据 |
+| Environment Secret | `DESKTOP_RELEASE_WEBHOOK_SECRET` | 与 website 一致、至少 32 字符的 HMAC 密钥 |
 
-私钥只能保存在 GitHub Actions Secrets。更换 updater 密钥会使已经安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本，再开始使用新私钥。旧私钥已经丢失时，现有客户端无法通过自动更新完成密钥轮换。
+COS 和后台登记配置放在名为 `production-release` 的 GitHub Environment 中，并限制为正式版本标签使用。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、HeadObject/GetObject，禁止 DeleteObject 和全桶管理。所有私钥只能保存在 GitHub Actions Secrets。更换 updater 密钥会使已经安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本，再开始使用新私钥。
 
 ## 3. GitHub Actions 流程
 
@@ -46,8 +51,11 @@ GitHub 仓库还需要配置：
 4. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
 5. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
 6. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
+7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。上传使用 COS `x-cos-forbid-overwrite`，对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
+8. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
+9. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
 
-手动运行 workflow 也会生成四个平台 Artifact 和发布清单，但不会创建 GitHub Release。Artifact 保留 14 天。
+手动运行 workflow 也会生成四个平台 Artifact 和发布清单，但不会创建 GitHub Release、上传 COS 或登记后台。Artifact 保留 14 天。COS、CDN 或后台接口任一步失败都会使标签 workflow 失败；再次运行同一标签只会校验已有对象并更新未发布草稿。
 
 ## 4. 发布清单
 
@@ -83,20 +91,13 @@ GitHub 仓库还需要配置：
 }
 ```
 
-标签发布时 `sourceUrl` 指向 GitHub Release。若仓库为私有仓库，该地址不能直接提供给未登录客户端；后端必须把文件复制到无需鉴权的 HTTPS 对象存储，再把最终地址写入发布记录。手动构建的 `sourceUrl` 为 `null`。
+初始清单的 `sourceUrl` 指向 GitHub Release。`sync-and-notify` 会生成最终清单，把安装包和 updater 的 `sourceUrl` 改为长期公开的 CDN URL，并为 updater 增加 `signatureSourceUrl`、`signatureFileSize` 和 `signatureSha256`。手动构建的初始 `sourceUrl` 为 `null`。
 
 ## 5. 后端登记流程
 
-后端发布工具或管理员按以下顺序处理：
+website 的 `POST /api/internal/desktop-releases` 只接受 256 KB 内的 JSON 最终清单，并要求 `X-Release-Timestamp` 与 `X-Release-Signature`。服务端拒绝超过 5 分钟的请求，校验来源仓库、四个平台、SemVer、CDN 固定 origin/path、文件名、大小、SHA-256 和四份 `.sig`，再对所有公开对象执行不跟随重定向的 HEAD 校验。
 
-1. 下载 GitHub Release 或 workflow Artifact 中的发布清单和对应文件。
-2. 根据清单的 `fileSize` 和 `sha256` 校验下载文件，拒绝不一致的产物。
-3. 将普通安装包和 updater 包上传到公开 HTTPS 文件存储。不要解压、重新压缩或修改 updater 包，否则 `.sig` 会失效。
-4. 保存 `.sig` 的完整文本；签名来自 CI，不由后端重新生成。
-5. 为四个平台分别创建草稿记录，保存版本、两类文件 URL、updater 签名、文件名、文件大小、SHA-256、更新说明和强制更新标记。
-6. 发布前对 updater URL 发起实际下载，确认返回的是文件字节而不是 HTML、登录页或 JSON 错误。
-7. 原子地把已验证记录设为已发布状态。文件和签名未齐全时禁止发布。
-8. 请求 `/version/latest/tauri` 验证四个平台的状态码和响应字段，再用一个旧版本正式客户端完成真实更新。
+校验完成后，服务端在单个数据库事务中按 `(platform, version)` 创建或更新四条草稿，固定 `changelog=null`、`isForceUpdate=false`。重复通知只更新草稿；只要一个同版本记录已经发布，整次请求返回 409 且不修改任何记录。管理员随后在后台填写更新说明、确认强制更新选项并发布；登记草稿本身不会改变客户端当前可见版本。
 
 建议后端发布记录至少包含：
 

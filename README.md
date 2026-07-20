@@ -87,13 +87,14 @@ GitHub Actions 工作流 `.github/workflows/build-desktop.yml` 会在推送 `v*`
 - `huanhua-macos-arm64`：macOS Apple Silicon 磁盘映像、带 `_arm64` 后缀的 `.app.tar.gz` updater 包和 `.sig`。
 - `huanhua-desktop-release-manifest`：供后端登记版本使用的 JSON 清单，包含四个平台的文件名、大小、SHA-256、updater 签名和标签发布来源 URL。
 
-构建完成后，`prepare-release` 作业会校验四个平台的普通安装包、updater 包和签名是否齐全；任一产物缺失、签名为空或 GitHub Release 资产重名时发布失败。标签构建随后创建或更新 GitHub Release，并上传全部产物和发布清单；手动构建只生成保留 14 天的 Artifact。后端登记、接口验证和回滚步骤见 [桌面客户端发布流程](docs/desktop-release.md)。
+构建完成后，`prepare-release` 作业会校验四个平台的普通安装包、updater 包和签名是否齐全；任一产物缺失、签名为空或 GitHub Release 资产重名时发布失败。标签构建随后创建或更新 GitHub Release，再由 `sync-and-notify` 作业把不可变制品同步到腾讯云 COS/CDN、校验公开 HEAD 元数据，并通过 HMAC 接口在后台原子登记四个平台草稿。手动构建只生成保留 14 天的 Artifact，不上传 COS 或通知后台。完整配置和验收步骤见 [桌面客户端发布流程](docs/desktop-release.md)。
 
 GitHub Actions 会直接读取仓库中的 `.env.production`，并用同一份 `VITE_API_BASE_URL` 生成客户端 API 和 updater 地址。修改正式接口配置后，需要先提交该文件再创建新版本标签。仓库还需要在 GitHub `Settings -> Secrets and variables -> Actions` 配置以下签名值：
 
 - Repository variables：`TAURI_SIGNING_PUBLIC_KEY` 可配置为 Repository Variable，也可放入同名 Repository Secret，工作流会优先读取 Variable。macOS 正式分发还必须配置 `APPLE_SIGNING_IDENTITY`、`APPLE_API_ISSUER` 和 `APPLE_API_KEY`。`APPLE_SIGNING_IDENTITY` 是完整的 `Developer ID Application: 名称 (TEAM_ID)`，另外两项分别是 App Store Connect API 的 Issuer ID 和 Key ID。
-- Repository secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。macOS 签名和公证还必须配置 Base64 编码的 `APPLE_CERTIFICATE`、证书导出密码 `APPLE_CERTIFICATE_PASSWORD`，以及 Base64 编码的 App Store Connect `.p8` 私钥 `APPLE_API_KEY_P8`。
+- `production-release` Environment variables：`TENCENT_COS_BUCKET`、`TENCENT_COS_REGION`、`DESKTOP_RELEASE_CDN_BASE_URL`、`DESKTOP_RELEASE_API_URL`。
+- Repository/Environment secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。macOS 签名和公证还必须配置 Base64 编码的 `APPLE_CERTIFICATE`、证书导出密码 `APPLE_CERTIFICATE_PASSWORD`，以及 Base64 编码的 App Store Connect `.p8` 私钥 `APPLE_API_KEY_P8`。COS/后台登记另需 `TENCENT_COS_SECRET_ID`、`TENCENT_COS_SECRET_KEY` 和至少 32 字符的 `DESKTOP_RELEASE_WEBHOOK_SECRET`。
 
-发布时根据 `huanhua-desktop-release-manifest.json` 校验并登记产物：Windows 的 NSIS `.exe` 同时用于普通安装和 Tauri v2 updater，macOS 的 `.dmg` 用于普通安装、`.app.tar.gz` 用于 updater；updater 均使用对应 `.sig` 内容验签。GitHub Release 来源 URL 仅在仓库公开时适合客户端直接下载；私有仓库必须把文件同步到无需鉴权的 HTTPS 存储。updater 私钥、Apple `.p12` 和 App Store Connect `.p8` 只保存在 Actions Secrets 中，不能提交或上传为构建产物。
+发布时根据 `huanhua-desktop-release-manifest.json` 校验并登记产物：Windows 的 NSIS `.exe` 同时用于普通安装和 Tauri v2 updater，macOS 的 `.dmg` 用于普通安装、`.app.tar.gz` 用于 updater；四个平台 updater 均使用对应 `.sig` 内容验签。COS CAM 身份只应允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、HeadObject/GetObject，不授予删除或全桶管理权限。updater 私钥、Apple `.p12`、App Store Connect `.p8`、COS SecretKey 和后台 Webhook Secret 只保存在 Actions Secrets 中，不能提交、记录或上传为构建产物。
 
 macOS 构建会导入 Developer ID Application 证书，通过 App Store Connect API 完成公证并由 Tauri staple；Windows 当前仍未配置代码签名，直接分发时系统可能显示安全提示。
