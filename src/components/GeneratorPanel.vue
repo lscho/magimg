@@ -27,6 +27,7 @@ const props = defineProps<{
   balance: number;
   hasResult: boolean;
   insufficientCredits: boolean;
+  isLoggedIn: boolean;
   error: string;
   maxPromptLength: number;
   supportedQualities: SupportedQuality[];
@@ -74,6 +75,7 @@ const supportedSizePresets = computed(() =>
 const modeTitle = computed(() => (props.mode === "image-to-image" ? "图生图" : "文生图"));
 const missingCredits = computed(() => Math.max(0, props.cost - props.balance));
 const generateButtonLabel = computed(() => {
+  if (!props.isLoggedIn) return "登录后生成";
   if (props.loading) return "正在创作...";
   if (props.insufficientCredits) {
     return missingCredits.value > 0
@@ -227,8 +229,8 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
         :disabled="
           loading ||
           insufficientCredits ||
-          !params.prompt.trim() ||
-          (mode === 'image-to-image' && !referenceImage)
+          (isLoggedIn && !params.prompt.trim()) ||
+          (isLoggedIn && mode === 'image-to-image' && !referenceImage)
         "
         :aria-describedby="visibleError ? 'generation-error' : undefined"
         @click="emit('generate')"

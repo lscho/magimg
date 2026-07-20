@@ -45,7 +45,10 @@ for (const asset of allAssets) {
   const result = await uploadImmutableCosAsset(cos, {
     bucket,
     region,
-    tag: manifest.tag
+    tag: manifest.tag,
+    onMultipartPartComplete: ({ fileName, partNumber, partCount }) => {
+      console.log(`Uploaded multipart chunk ${partNumber}/${partCount} for ${fileName}`);
+    }
   }, asset);
   console.log(`${result.uploaded ? "Uploaded" : "Verified"} ${result.key}`);
 }

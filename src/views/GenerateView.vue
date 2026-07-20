@@ -102,6 +102,11 @@ async function generate() {
   }
 }
 
+function onLoginSuccess() {
+  showLogin.value = false;
+  void generate();
+}
+
 function workspaceParams() {
   const configured = app.initialized ? app.settings.defaultParams : defaultParams;
   return {
@@ -199,6 +204,7 @@ async function useAsReference(image: SelectedImageFile) {
       :balance="app.balance.balance"
       :has-result="hasResult"
       :insufficient-credits="insufficientCredits"
+      :is-logged-in="app.isAuthenticated"
       :error="taskAttached ? app.error : ''"
       :max-prompt-length="4000"
       :supported-qualities="app.capabilities.supportedQualities"
@@ -210,7 +216,7 @@ async function useAsReference(image: SelectedImageFile) {
       @generate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />
-    <LoginModal v-if="showLogin" context="generation" @close="showLogin = false" />
+    <LoginModal v-if="showLogin" context="generation" @close="showLogin = false" @success="onLoginSuccess" />
   </div>
 </template>
 

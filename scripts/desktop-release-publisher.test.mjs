@@ -188,4 +188,75 @@ describe("uploadImmutableCosAsset", () => {
     assert.equal(putHeaders["x-cos-forbid-overwrite"], "true");
     assert.equal(headCalls, 2);
   });
+
+  it("uses retrying concurrent multipart upload for large assets", async () => {
+    const multipartAsset = {
+      ...asset,
+      fileName: "large-release.exe",
+      fileSize: 20
+    };
+    let headCalls = 0;
+    let putCalls = 0;
+    let uploadCalls = 0;
+    let completeParams;
+    const completedParts = [];
+    const client = {
+      headObject(_params, callback) {
+        headCalls += 1;
+        if (headCalls === 1) {
+          callback({ statusCode: 404, code: "NoSuchKey" });
+          return;
+        }
+        callback(null, {
+          headers: {
+            "content-length": String(multipartAsset.fileSize),
+            "x-cos-meta-sha256": multipartAsset.sha256
+          }
+        });
+      },
+      putObject() {
+        putCalls += 1;
+      },
+      multipartInit(params, callback) {
+        assert.equal(params.Headers["x-cos-meta-sha256"], multipartAsset.sha256);
+        callback(null, { UploadId: "upload-123" });
+      },
+      multipartUpload(params, callback) {
+        uploadCalls += 1;
+        params.Body.destroy();
+        if (params.PartNumber === 1 && uploadCalls === 1) {
+          callback({ statusCode: 400, code: "UserNetworkTooSlow" });
+          return;
+        }
+        callback(null, { ETag: `etag-${params.PartNumber}` });
+      },
+      multipartComplete(params, callback) {
+        completeParams = params;
+        callback(null, {});
+      },
+      multipartAbort(_params, callback) {
+        callback(null, {});
+      }
+    };
+    assert.deepEqual(await uploadImmutableCosAsset(client, {
+      ...config,
+      multipartThreshold: 10,
+      multipartChunkSize: 8,
+      multipartConcurrency: 2,
+      multipartRetryDelayMs: 0,
+      onMultipartPartComplete: part => completedParts.push(part.partNumber)
+    }, multipartAsset), {
+      key: "desktop/releases/v1.2.3/large-release.exe",
+      uploaded: true
+    });
+    assert.equal(putCalls, 0);
+    assert.equal(uploadCalls, 4);
+    assert.deepEqual(completeParams.Parts, [
+      { PartNumber: 1, ETag: "etag-1" },
+      { PartNumber: 2, ETag: "etag-2" },
+      { PartNumber: 3, ETag: "etag-3" }
+    ]);
+    assert.equal(completeParams.Headers["x-cos-forbid-overwrite"], "true");
+    assert.deepEqual(completedParts.sort(), [1, 2, 3]);
+  });
 });

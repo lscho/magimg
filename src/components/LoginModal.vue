@@ -8,7 +8,7 @@ type AuthMode = "login" | "register" | "reset";
 const props = defineProps<{
   context?: "generation";
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; success: [] }>();
 const app = useAppStore();
 const dialog = useTemplateRef<HTMLElement>("dialog");
 const phone = shallowRef("");
@@ -90,6 +90,7 @@ async function submit() {
   try {
     if (mode.value === "register") {
       await app.register(phone.value, code.value, password.value);
+      emit("success");
       emit("close");
       return;
     }
@@ -100,6 +101,7 @@ async function submit() {
       return;
     }
     await app.login(phone.value, password.value);
+    emit("success");
     emit("close");
   } catch (exception) {
     error.value = exception instanceof Error ? exception.message : "登录失败";

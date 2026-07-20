@@ -11,6 +11,11 @@ export const RELEASE_PLATFORMS = [
   "macos-arm"
 ];
 
+export const COS_MULTIPART_THRESHOLD = 32 * 1024 * 1024;
+export const COS_MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
+export const COS_MULTIPART_CONCURRENCY = 3;
+export const COS_MULTIPART_MAX_ATTEMPTS = 4;
+
 const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -294,11 +299,118 @@ function isMissingObject(error) {
   return error?.statusCode === 404 || error?.code === "NoSuchKey" || error?.code === "NoSuchResource";
 }
 
-function isObjectConflict(error) {
-  return error?.statusCode === 409
-    || error?.statusCode === 412
-    || error?.code === "ObjectExists"
-    || error?.code === "PreconditionFailed";
+function isRetryableMultipartError(error) {
+  return error?.code === "UserNetworkTooSlow"
+    || error?.statusCode === 408
+    || error?.statusCode === 429
+    || error?.statusCode >= 500
+    || !error?.statusCode;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  let firstError;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (!firstError && nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        try {
+          await worker(items[index]);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    }
+  );
+  await Promise.all(workers);
+  if (firstError) throw firstError;
+}
+
+async function uploadMultipartPart(client, params, attempts, retryDelayMs) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const body = createReadStream(params.path, { start: params.start, end: params.end });
+    try {
+      const result = await callCos(client, "multipartUpload", {
+        ...params.baseParams,
+        UploadId: params.uploadId,
+        PartNumber: params.partNumber,
+        ContentLength: params.end - params.start + 1,
+        Body: body,
+        Headers: {}
+      });
+      if (!result?.ETag) throw new Error(`COS did not return an ETag for part ${params.partNumber}`);
+      return { PartNumber: params.partNumber, ETag: result.ETag };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isRetryableMultipartError(error)) throw error;
+      if (retryDelayMs > 0) await sleep(retryDelayMs * attempt);
+    } finally {
+      body.destroy();
+    }
+  }
+  throw lastError;
+}
+
+async function uploadMultipartCosAsset(client, baseParams, asset, config) {
+  const chunkSize = config.multipartChunkSize ?? COS_MULTIPART_CHUNK_SIZE;
+  const concurrency = config.multipartConcurrency ?? COS_MULTIPART_CONCURRENCY;
+  const attempts = config.multipartMaxAttempts ?? COS_MULTIPART_MAX_ATTEMPTS;
+  const retryDelayMs = config.multipartRetryDelayMs ?? 1000;
+  const headers = {
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Content-Type": contentType(asset.fileName),
+    "x-cos-meta-sha256": asset.sha256
+  };
+  const initialized = await callCos(client, "multipartInit", {
+    ...baseParams,
+    Headers: headers
+  });
+  const uploadId = initialized?.UploadId;
+  if (!uploadId) throw new Error(`COS did not return an upload ID for ${asset.fileName}`);
+
+  const partCount = Math.ceil(asset.fileSize / chunkSize);
+  const parts = Array.from({ length: partCount }, (_, index) => ({
+    partNumber: index + 1,
+    start: index * chunkSize,
+    end: Math.min(asset.fileSize, (index + 1) * chunkSize) - 1
+  }));
+  const completedParts = [];
+  try {
+    await mapWithConcurrency(parts, concurrency, async part => {
+      const completed = await uploadMultipartPart(client, {
+        ...part,
+        path: asset.path,
+        baseParams,
+        uploadId
+      }, attempts, retryDelayMs);
+      completedParts.push(completed);
+      config.onMultipartPartComplete?.({
+        fileName: asset.fileName,
+        partNumber: part.partNumber,
+        partCount
+      });
+    });
+    completedParts.sort((left, right) => left.PartNumber - right.PartNumber);
+    await callCos(client, "multipartComplete", {
+      ...baseParams,
+      UploadId: uploadId,
+      Parts: completedParts,
+      Headers: {
+        "x-cos-forbid-overwrite": "true",
+        "x-cos-meta-sha256": asset.sha256
+      }
+    });
+  } catch (error) {
+    try {
+      await callCos(client, "multipartAbort", { ...baseParams, UploadId: uploadId });
+    } catch {
+      // Preserve the upload failure; an incomplete multipart upload is not a published object.
+    }
+    throw error;
+  }
 }
 
 export async function uploadImmutableCosAsset(client, config, asset) {
@@ -317,22 +429,30 @@ export async function uploadImmutableCosAsset(client, config, asset) {
   }
 
   try {
-    await callCos(client, "putObject", {
-      ...baseParams,
-      Body: createReadStream(asset.path),
-      ContentLength: asset.fileSize,
-      ContentType: contentType(asset.fileName),
-      CacheControl: "public, max-age=31536000, immutable",
-      Headers: {
-        "x-cos-forbid-overwrite": "true",
-        "x-cos-meta-sha256": asset.sha256
-      }
-    });
+    if (asset.fileSize >= (config.multipartThreshold ?? COS_MULTIPART_THRESHOLD)) {
+      await uploadMultipartCosAsset(client, baseParams, asset, config);
+    } else {
+      await callCos(client, "putObject", {
+        ...baseParams,
+        Body: createReadStream(asset.path),
+        ContentLength: asset.fileSize,
+        ContentType: contentType(asset.fileName),
+        CacheControl: "public, max-age=31536000, immutable",
+        Headers: {
+          "x-cos-forbid-overwrite": "true",
+          "x-cos-meta-sha256": asset.sha256
+        }
+      });
+    }
   } catch (error) {
-    if (!isObjectConflict(error)) throw error;
-    const concurrent = await callCos(client, "headObject", baseParams);
-    assertStoredMetadata(responseHeaders(concurrent), asset, asset.fileName);
-    return { key, uploaded: false };
+    try {
+      const concurrent = await callCos(client, "headObject", baseParams);
+      assertStoredMetadata(responseHeaders(concurrent), asset, asset.fileName);
+      return { key, uploaded: false };
+    } catch (headError) {
+      if (!isMissingObject(headError)) throw headError;
+      throw error;
+    }
   }
   const uploaded = await callCos(client, "headObject", baseParams);
   assertStoredMetadata(responseHeaders(uploaded), asset, asset.fileName);

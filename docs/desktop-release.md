@@ -39,7 +39,7 @@ GitHub 仓库还需要配置：
 | Environment Secret | `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY` | 仅有发布前缀权限的 CAM 凭据 |
 | Environment Secret | `DESKTOP_RELEASE_WEBHOOK_SECRET` | 与 website 一致、至少 32 字符的 HMAC 密钥 |
 
-COS 和后台登记配置放在名为 `production-release` 的 GitHub Environment 中，并限制为正式版本标签使用。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、HeadObject/GetObject，禁止 DeleteObject 和全桶管理。所有私钥只能保存在 GitHub Actions Secrets。更换 updater 密钥会使已经安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本，再开始使用新私钥。
+COS 和后台登记配置放在名为 `production-release` 的 GitHub Environment 中，并限制为正式版本标签使用。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，禁止 DeleteObject 和全桶管理。所有私钥只能保存在 GitHub Actions Secrets。更换 updater 密钥会使已经安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本，再开始使用新私钥。
 
 ## 3. GitHub Actions 流程
 
@@ -51,7 +51,7 @@ COS 和后台登记配置放在名为 `production-release` 的 GitHub Environmen
 4. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
 5. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
 6. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
-7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。上传使用 COS `x-cos-forbid-overwrite`，对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
+7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。32 MiB 以上文件自动使用 8 MiB 分片、3 路并发，每个分片遇到临时网络错误最多尝试 4 次。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
 8. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
 9. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
 
