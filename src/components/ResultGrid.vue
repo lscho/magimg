@@ -11,6 +11,7 @@ import {
 } from "lucide-vue-next";
 import GenerationEmptyState from "@/components/GenerationEmptyState.vue";
 import ResultImageContextMenu from "@/components/ResultImageContextMenu.vue";
+import brandMark from "@/assets/huanhua-mark.svg";
 import {
   copyRemoteImageToClipboard,
   openDirectory,
@@ -213,13 +214,25 @@ onBeforeUnmount(() => {
         <RotateCcw :size="14" aria-hidden="true" />
       </button>
       <div v-if="loading" class="result-loading" role="status" aria-live="polite">
-        <div class="image-skeleton" />
-        <span>
-          <LoaderCircle :size="18" /> 正在创作...
-          <button v-if="canCancel" class="cancel-task-button" type="button" @click="emit('cancel')">
-            <Ban :size="14" /> 取消任务
-          </button>
-        </span>
+        <div class="image-skeleton">
+          <span class="frame-corner corner-tl" />
+          <span class="frame-corner corner-tr" />
+          <span class="frame-corner corner-bl" />
+          <span class="frame-corner corner-br" />
+          <div class="skeleton-mark">
+            <div class="skeleton-stage" aria-hidden="true">
+              <span class="skeleton-orbit" />
+              <span class="skeleton-orbit orbit-b" />
+              <img class="skeleton-logo" :src="brandMark" alt="" />
+            </div>
+            <div class="skeleton-caption">
+              正在创作...
+              <button v-if="canCancel" class="cancel-task-button" type="button" @click="emit('cancel')">
+                <Ban :size="14" /> 取消任务
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div v-else-if="resultImages.length" class="image-grid" :class="{ 'single-result': isSingleResult }">
         <figure
@@ -376,6 +389,7 @@ onBeforeUnmount(() => {
 
 .task-recovery-spinner {
   color: var(--accent);
+  will-change: transform;
   animation: spin 0.9s linear infinite;
 }
 
@@ -417,6 +431,7 @@ onBeforeUnmount(() => {
 }
 
 .saving-spinner {
+  will-change: transform;
   animation: spin 0.9s linear infinite;
 }
 
@@ -472,12 +487,106 @@ onBeforeUnmount(() => {
 }
 
 .image-skeleton {
+  position: relative;
   min-height: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  background: linear-gradient(110deg, #111820, #1c2a3e, #111820);
-  background-size: 240% 100%;
-  animation: shimmer 1.2s ease-in-out infinite;
+  border-radius: 8px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--surface-subtle), transparent 62%),
+    var(--field);
+}
+
+.frame-corner {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-style: solid;
+  border-color: var(--line-strong);
+  opacity: 0.9;
+  will-change: opacity;
+  animation: corner-pulse 2.4s ease-in-out infinite;
+}
+
+.corner-tl {
+  top: 6%;
+  left: 6%;
+  border-width: 1.5px 0 0 1.5px;
+  border-radius: 7px 0 0;
+}
+
+.corner-tr {
+  top: 6%;
+  right: 6%;
+  border-width: 1.5px 1.5px 0 0;
+  border-color: var(--accent-border);
+  border-radius: 0 7px 0 0;
+  animation-delay: 0.2s;
+}
+
+.corner-bl {
+  bottom: 6%;
+  left: 6%;
+  border-width: 0 0 1.5px 1.5px;
+  border-color: var(--accent-border);
+  border-radius: 0 0 0 7px;
+  animation-delay: 0.2s;
+}
+
+.corner-br {
+  right: 6%;
+  bottom: 6%;
+  border-width: 0 1.5px 1.5px 0;
+  border-radius: 0 0 7px;
+}
+
+.skeleton-mark {
+  position: relative;
+  width: min(46%, 340px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.skeleton-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.skeleton-logo {
+  width: 50%;
+  height: 50%;
+  display: block;
+  opacity: 0.92;
+  will-change: opacity, transform;
+  animation: mark-breathe 2.4s ease-in-out infinite;
+}
+
+.skeleton-orbit {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  border-radius: 50%;
+  opacity: 0.75;
+  will-change: transform;
+  animation: spin 1.3s linear infinite;
+}
+
+.orbit-b {
+  inset: -13px;
+  border-color: transparent;
+  border-bottom-color: var(--tech-cyan);
+  border-left-color: var(--tech-cyan);
+  opacity: 0.45;
+  animation-duration: 2.1s;
+  animation-direction: reverse;
 }
 
 .result-loading {
@@ -489,27 +598,28 @@ onBeforeUnmount(() => {
   place-items: center;
 
   .image-skeleton {
-    width: 100%;
-    height: 100%;
+    width: 66.7%;
+    max-width: 100%;
+    aspect-ratio: 1;
+    height: auto;
+    max-height: 100%;
   }
+}
 
-  > span {
-    position: absolute;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 11px;
-    border: 1px solid var(--line-strong);
-    border-radius: 6px;
-    color: var(--soft);
-    background: rgba(21, 29, 39, 0.94);
-    font-size: 11px;
-
-    svg {
-      color: var(--accent);
-      animation: spin 0.9s linear infinite;
-    }
-  }
+.skeleton-caption {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 .cancel-task-button {
@@ -522,6 +632,30 @@ onBeforeUnmount(() => {
   color: var(--danger);
   font-size: 11px;
   font-weight: 650;
+}
+
+@keyframes corner-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes mark-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.95);
+  }
+
+  50% {
+    opacity: 0.95;
+    transform: scale(1);
+  }
 }
 
 @media (max-width: 900px) {

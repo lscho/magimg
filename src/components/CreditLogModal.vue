@@ -262,12 +262,37 @@ onMounted(() => {
   gap: 9px;
 
   i {
+    position: relative;
+    overflow: hidden;
     height: 58px;
     border: 1px solid var(--line);
     border-radius: 6px;
-    background: linear-gradient(110deg, #111820, #1c2a3e, #111820);
-    background-size: 240% 100%;
-    animation: shimmer 1.2s ease-in-out infinite;
+    background: var(--surface-subtle);
+
+    &::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(
+        100deg,
+        transparent 20%,
+        var(--accent-soft) 50%,
+        transparent 80%
+      );
+      will-change: transform;
+      animation: skeleton-sweep 1.6s ease-in-out infinite;
+    }
+  }
+}
+
+@keyframes skeleton-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
   }
 }
 

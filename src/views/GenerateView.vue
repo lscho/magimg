@@ -189,7 +189,7 @@ async function useAsReference(image: SelectedImageFile) {
       :record="visibleRecord"
       :loading="previewLoading"
       :save-directory="app.settings.saveDirectory"
-      :can-cancel="taskAttached && app.currentTaskStatus === 'pending'"
+      :can-cancel="taskAttached && app.generating && app.currentTaskStatus !== 'processing'"
       :recoverable-task="recoverableTask"
       :mode="mode"
       @cancel="cancelGeneration"
