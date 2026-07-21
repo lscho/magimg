@@ -16,6 +16,8 @@
 Windows 的 NSIS `.exe` 同时用于官网手动下载和 Tauri v2 自动更新，updater 使用同名 `.exe.sig` 验签。macOS 的 `.dmg` 用于手动安装，`.app.tar.gz` 和对应 `.sig` 用于自动更新，两者不能互换。
 Tauri 默认会为 Intel 和 Apple Silicon 生成同名的 macOS updater；Actions 会在上传前分别添加 `_x64` 和 `_arm64` 后缀，并同步重命名签名文件，避免 GitHub Release 资产重名。重命名不改变文件内容，不影响 updater 签名。
 
+Windows 构建通过 `src-tauri/tauri.windows.conf.json` 使用英文产品名 `Huanhua AI`，默认安装目录和 NSIS 文件名均为英文；窗口标题仍使用“幻画 AI”。macOS 不应用该覆盖。首次发布英文目录版本时，需要从上一版中文目录安装包完成真实升级和卸载测试，检查旧目录与卸载项是否残留。
+
 ## 2. 一次性配置
 
 正式构建读取仓库根目录 `.env.production`：
@@ -51,7 +53,7 @@ COS 和后台登记配置放在名为 `production-release` 的 GitHub Environmen
 4. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
 5. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
 6. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
-7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。32 MiB 以上文件自动使用 8 MiB 分片、3 路并发，每个分片遇到临时网络错误最多尝试 4 次。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
+7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。1 MiB 以上文件自动使用 1 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次，覆盖所有安装包和 updater。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
 8. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
 9. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
 

@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  COS_MULTIPART_CHUNK_SIZE,
+  COS_MULTIPART_CONCURRENCY,
+  COS_MULTIPART_THRESHOLD,
   createReleaseWebhookSignature,
   releaseAssetUrl,
   releaseObjectKey,
@@ -118,6 +121,12 @@ describe("uploadImmutableCosAsset", () => {
     region: "ap-guangzhou",
     tag: "v1.2.3"
   };
+
+  it("uses multipart defaults suitable for every desktop binary", () => {
+    assert.equal(COS_MULTIPART_THRESHOLD, 1024 * 1024);
+    assert.equal(COS_MULTIPART_CHUNK_SIZE, 1024 * 1024);
+    assert.equal(COS_MULTIPART_CONCURRENCY, 4);
+  });
 
   it("skips an existing object only when immutable metadata matches", async () => {
     let putCalls = 0;

@@ -95,6 +95,8 @@ GitHub Actions 会直接读取仓库中的 `.env.production`，并用同一份 `
 - `production-release` Environment variables：`TENCENT_COS_BUCKET`、`TENCENT_COS_REGION`、`DESKTOP_RELEASE_CDN_BASE_URL`、`DESKTOP_RELEASE_API_URL`。
 - Repository/Environment secrets：`TAURI_SIGNING_PRIVATE_KEY` 必须配置；`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仅在私钥设置了密码时配置。macOS 签名和公证还必须配置 Base64 编码的 `APPLE_CERTIFICATE`、证书导出密码 `APPLE_CERTIFICATE_PASSWORD`，以及 Base64 编码的 App Store Connect `.p8` 私钥 `APPLE_API_KEY_P8`。COS/后台登记另需 `TENCENT_COS_SECRET_ID`、`TENCENT_COS_SECRET_KEY` 和至少 32 字符的 `DESKTOP_RELEASE_WEBHOOK_SECRET`。
 
-发布时根据 `huanhua-desktop-release-manifest.json` 校验并登记产物：Windows 的 NSIS `.exe` 同时用于普通安装和 Tauri v2 updater，macOS 的 `.dmg` 用于普通安装、`.app.tar.gz` 用于 updater；四个平台 updater 均使用对应 `.sig` 内容验签。32 MiB 以上文件使用 8 MiB COS 分片、3 路并发和单片重试。COS CAM 身份只应允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，不授予 DeleteObject 或全桶管理权限。updater 私钥、Apple `.p12`、App Store Connect `.p8`、COS SecretKey 和后台 Webhook Secret 只保存在 Actions Secrets 中，不能提交、记录或上传为构建产物。
+发布时根据 `huanhua-desktop-release-manifest.json` 校验并登记产物：Windows 的 NSIS `.exe` 同时用于普通安装和 Tauri v2 updater，macOS 的 `.dmg` 用于普通安装、`.app.tar.gz` 用于 updater；四个平台 updater 均使用对应 `.sig` 内容验签。1 MiB 以上文件使用 1 MiB COS 分片、4 路并发和单片重试，确保所有安装包与 updater 避免长时间单连接上传。COS CAM 身份只应允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，不授予 DeleteObject 或全桶管理权限。updater 私钥、Apple `.p12`、App Store Connect `.p8`、COS SecretKey 和后台 Webhook Secret 只保存在 Actions Secrets 中，不能提交、记录或上传为构建产物。
 
 macOS 构建会导入 Developer ID Application 证书，通过 App Store Connect API 完成公证并由 Tauri staple；Windows 当前仍未配置代码签名，直接分发时系统可能显示安全提示。
+
+Windows 使用平台专属的英文产品名 `Huanhua AI`，NSIS 默认安装目录和安装包文件名不包含中文；应用窗口和界面仍显示“幻画 AI”。macOS 继续使用中文产品名。产品名变更后的首个 Windows 版本必须从已有中文目录安装版本执行一次升级与卸载验收，确认旧测试版本不会残留。

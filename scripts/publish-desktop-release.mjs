@@ -46,6 +46,9 @@ for (const asset of allAssets) {
     bucket,
     region,
     tag: manifest.tag,
+    onMultipartStart: ({ fileName, partCount, chunkSize, concurrency }) => {
+      console.log(`Starting multipart upload for ${fileName}: ${partCount} chunks, ${chunkSize} bytes each, concurrency ${concurrency}`);
+    },
     onMultipartPartComplete: ({ fileName, partNumber, partCount }) => {
       console.log(`Uploaded multipart chunk ${partNumber}/${partCount} for ${fileName}`);
     }

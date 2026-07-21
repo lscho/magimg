@@ -11,9 +11,9 @@ export const RELEASE_PLATFORMS = [
   "macos-arm"
 ];
 
-export const COS_MULTIPART_THRESHOLD = 32 * 1024 * 1024;
-export const COS_MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
-export const COS_MULTIPART_CONCURRENCY = 3;
+export const COS_MULTIPART_THRESHOLD = 1024 * 1024;
+export const COS_MULTIPART_CHUNK_SIZE = 1024 * 1024;
+export const COS_MULTIPART_CONCURRENCY = 4;
 export const COS_MULTIPART_MAX_ATTEMPTS = 4;
 
 const SEMVER_PATTERN =
@@ -377,6 +377,13 @@ async function uploadMultipartCosAsset(client, baseParams, asset, config) {
     start: index * chunkSize,
     end: Math.min(asset.fileSize, (index + 1) * chunkSize) - 1
   }));
+  config.onMultipartStart?.({
+    fileName: asset.fileName,
+    fileSize: asset.fileSize,
+    partCount,
+    chunkSize,
+    concurrency
+  });
   const completedParts = [];
   try {
     await mapWithConcurrency(parts, concurrency, async part => {
