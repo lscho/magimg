@@ -49,7 +49,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - 真实图生图会先上传参考图，再用 `inputAssetId` 创建任务。
 - 浏览器预览使用 `localStorage` 保存设置、历史和登录会话；Tauri 使用 plugin-store。
 - 自动更新仅在正式构建启用，使用独立签名端点，不跟随设置中的 `apiBaseUrl`；浏览器预览不检查更新。
-- 结果区下载已接入桌面“另存为”，默认保存位置可直接打开；当前模式存在成功结果时生成主按钮显示“重新生成”，放大查看和编辑按钮目前仍为界面占位。
+- 结果区已接入复制、本地图片编辑、桌面“另存为”和打开默认保存位置；当前模式存在成功结果时生成主按钮显示“重新生成”。编辑版本只替换当前工作区预览，不写入服务端任务或创作历史。
 - 项目目前没有自动化单元测试或 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
 - 任务接口使用 camelCase 的 `outputFormat`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。

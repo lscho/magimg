@@ -138,12 +138,22 @@ function taskParams(task: GenerationTask): ImageParams {
 }
 
 function taskToRecord(task: GenerationTask, balanceAfter: number): GenerationRecord {
+  const input = task.inputAsset;
   const output = task.outputAsset;
   return {
     id: `server_${task.id}`,
     generationId: task.id,
     mode: toGenerationMode(task.mode),
     params: taskParams(task),
+    inputImage: input
+      ? {
+          id: input.id,
+          remoteUrl: resolveApiAssetUrl(input.url),
+          width: task.width,
+          height: task.height,
+          mimeType: input.mimeType
+        }
+      : undefined,
     images: output
       ? [
           {
@@ -233,6 +243,11 @@ export const useAppStore = defineStore("app", () => {
   const templatesError = shallowRef("");
   const activeMode = shallowRef<GenerationMode>("text-to-image");
   const pendingTemplate = ref<PromptTemplate | null>(null);
+  const pendingHistoryWorkspace = shallowRef<{
+    record: GenerationRecord;
+    referenceImage: SelectedImageFile | null;
+  } | null>(null);
+  const pendingReferenceImage = shallowRef<SelectedImageFile | null>(null);
   const creatingGeneration = shallowRef(false);
   const activeGeneration = ref<GenerationRecord | null>(null);
   const error = shallowRef("");
@@ -256,7 +271,15 @@ export const useAppStore = defineStore("app", () => {
     const hiddenIds = new Set(hiddenHistoryIds.value);
     history.value.forEach((record) => records.set(record.generationId, record));
     serverHistory.value.forEach((record) => {
-      if (!records.has(record.generationId)) records.set(record.generationId, record);
+      const localRecord = records.get(record.generationId);
+      if (!localRecord) {
+        records.set(record.generationId, record);
+      } else if (!localRecord.inputImage && record.inputImage) {
+        records.set(record.generationId, {
+          ...localRecord,
+          inputImage: record.inputImage
+        });
+      }
     });
     return [...records.values()]
       .filter((record) => !hiddenIds.has(record.generationId))
@@ -271,6 +294,8 @@ export const useAppStore = defineStore("app", () => {
     balance.value = { balance: 0, frozen: 0, updatedAt: new Date().toISOString() };
     transactions.value = [];
     serverHistory.value = [];
+    pendingHistoryWorkspace.value = null;
+    pendingReferenceImage.value = null;
     setAccessToken(null);
     await localDb.writeSession(null);
   }
@@ -779,6 +804,57 @@ export const useAppStore = defineStore("app", () => {
     return template;
   }
 
+  async function resolveHistoryTask(record: GenerationRecord) {
+    if (record.mode !== "image-to-image" || record.inputImage || !session.value) return record;
+
+    const task = await apiClient.task(record.generationId);
+    const serverRecord = taskToRecord(task, balance.value.balance);
+    upsertServerHistory(serverRecord);
+    return {
+      ...record,
+      inputImage: serverRecord.inputImage,
+      images: record.images.length ? record.images : serverRecord.images
+    };
+  }
+
+  function queueHistoryWorkspace(
+    record: GenerationRecord,
+    referenceImage: SelectedImageFile | null
+  ) {
+    pendingReferenceImage.value = null;
+    pendingHistoryWorkspace.value = {
+      record,
+      referenceImage
+    };
+  }
+
+  function consumeHistoryWorkspace(mode: GenerationMode) {
+    if (pendingHistoryWorkspace.value?.record.mode !== mode) return null;
+    const workspace = pendingHistoryWorkspace.value;
+    pendingHistoryWorkspace.value = null;
+    return workspace;
+  }
+
+  function discardHistoryWorkspace() {
+    pendingHistoryWorkspace.value = null;
+  }
+
+  function queueReferenceImage(referenceImage: SelectedImageFile) {
+    pendingHistoryWorkspace.value = null;
+    pendingReferenceImage.value = referenceImage;
+  }
+
+  function consumeReferenceImage(mode: GenerationMode) {
+    if (mode !== "image-to-image") return null;
+    const referenceImage = pendingReferenceImage.value;
+    pendingReferenceImage.value = null;
+    return referenceImage;
+  }
+
+  function discardReferenceImage() {
+    pendingReferenceImage.value = null;
+  }
+
   return {
     initialized,
     session,
@@ -825,6 +901,13 @@ export const useAppStore = defineStore("app", () => {
     clearGenerationError,
     redeemCard,
     selectTemplate,
-    consumeTemplate
+    consumeTemplate,
+    resolveHistoryTask,
+    queueHistoryWorkspace,
+    consumeHistoryWorkspace,
+    discardHistoryWorkspace,
+    queueReferenceImage,
+    consumeReferenceImage,
+    discardReferenceImage
   };
 });

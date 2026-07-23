@@ -10,6 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   toggle: [generationId: string];
+  openMenu: [position: { x: number; y: number }];
 }>();
 
 const statusDetails: Record<GenerationStatus, { label: string; className: string }> = {
@@ -42,16 +43,38 @@ const creditsTitle = computed(() => {
   if (props.record.status === "queued" || props.record.status === "processing") return "预扣积分";
   return "消耗积分";
 });
+
+function openContextMenu(event: MouseEvent) {
+  emit("openMenu", { x: event.clientX, y: event.clientY });
+}
+
+function openContextMenuFromKeyboard(event: KeyboardEvent) {
+  const isMenuShortcut = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+  if (!isMenuShortcut) return;
+
+  event.preventDefault();
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  emit("openMenu", {
+    x: rect.left + Math.min(28, rect.width / 2),
+    y: rect.top + Math.min(28, rect.height / 2)
+  });
+}
 </script>
 
 <template>
-  <article class="history-task-card" :class="{ selected }">
+  <article
+    class="history-task-card"
+    :class="{ selected }"
+    @contextmenu.prevent.stop="openContextMenu"
+  >
     <button
       class="history-task-media"
       type="button"
       :aria-label="selected ? '取消选择此历史任务' : '选择此历史任务'"
       :aria-pressed="selected"
       @click="emit('toggle', record.generationId)"
+      @keydown="openContextMenuFromKeyboard"
     >
       <img
         v-if="previewImage"

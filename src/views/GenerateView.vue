@@ -9,6 +9,7 @@ import PromptTemplateModal from "@/components/PromptTemplateModal.vue";
 import { useAppStore } from "@/stores/app";
 import type {
   GenerationMode,
+  GenerationRecord,
   ImageParams,
   PromptTemplate,
   SelectedImageFile
@@ -22,20 +23,36 @@ const referenceImage = shallowRef<SelectedImageFile | null>(null);
 const showTemplates = shallowRef(false);
 const showLogin = shallowRef(false);
 const taskAttached = shallowRef(false);
+const openedHistoryRecord = ref<GenerationRecord | null>(null);
 
 const mode = computed<GenerationMode>(() =>
   route.params.mode === "image-to-image" ? "image-to-image" : "text-to-image"
 );
-const visibleRecord = computed(
-  () =>
-    taskAttached.value && app.activeGeneration?.mode === mode.value
+const attachedRecord = computed(() => {
+  if (openedHistoryRecord.value) {
+    return app.activeGeneration?.generationId === openedHistoryRecord.value.generationId
       ? app.activeGeneration
-      : null
+      : openedHistoryRecord.value;
+  }
+  return app.activeGeneration?.mode === mode.value ? app.activeGeneration : null;
+});
+const visibleRecord = computed(() => (taskAttached.value ? attachedRecord.value : null));
+const recoverableTask = computed(() => {
+  const recoverable = app.recoverableGeneration;
+  return recoverable?.generationId === visibleRecord.value?.generationId ? null : recoverable;
+});
+const previewLoading = computed(
+  () =>
+    taskAttached.value &&
+    ((!openedHistoryRecord.value && app.creatingGeneration) ||
+      visibleRecord.value?.status === "queued" ||
+      visibleRecord.value?.status === "processing")
 );
-const recoverableTask = computed(() =>
-  taskAttached.value ? null : app.recoverableGeneration
+const isViewingActiveGeneration = computed(
+  () =>
+    Boolean(visibleRecord.value) &&
+    visibleRecord.value?.generationId === app.activeGeneration?.generationId
 );
-const previewLoading = computed(() => taskAttached.value && app.generating);
 const hasResult = computed(
   () => visibleRecord.value?.status === "succeeded" && visibleRecord.value.images.length > 0
 );
@@ -94,6 +111,7 @@ async function generate() {
     showLogin.value = true;
     return;
   }
+  openedHistoryRecord.value = null;
   taskAttached.value = true;
   try {
     await app.generate(mode.value, params.value, referenceImage.value);
@@ -124,8 +142,27 @@ function resetWorkspace(nextMode: GenerationMode) {
   params.value = workspaceParams();
   referenceImage.value = null;
   taskAttached.value = false;
+  openedHistoryRecord.value = null;
   showTemplates.value = false;
   app.clearGenerationError();
+
+  const historyWorkspace = app.consumeHistoryWorkspace(nextMode);
+  if (historyWorkspace) {
+    params.value = { ...historyWorkspace.record.params };
+    referenceImage.value = historyWorkspace.referenceImage;
+    openedHistoryRecord.value = historyWorkspace.record;
+    taskAttached.value = true;
+    return;
+  }
+
+  const pendingReferenceImage = app.consumeReferenceImage(nextMode);
+  if (pendingReferenceImage) {
+    referenceImage.value = pendingReferenceImage;
+    params.value = {
+      ...params.value,
+      referenceImagePath: pendingReferenceImage.path
+    };
+  }
 
   const template = app.consumeTemplate(nextMode);
   if (template) applyTemplateParams(template);
@@ -140,6 +177,7 @@ async function restoreTask() {
     referenceImagePath: undefined
   };
   referenceImage.value = null;
+  openedHistoryRecord.value = null;
   taskAttached.value = true;
   app.clearGenerationError();
 }
@@ -174,6 +212,7 @@ async function useAsReference(image: SelectedImageFile) {
     await nextTick();
   }
   referenceImage.value = image;
+  openedHistoryRecord.value = null;
   params.value = {
     ...params.value,
     referenceImagePath: image.path
@@ -189,7 +228,11 @@ async function useAsReference(image: SelectedImageFile) {
       :record="visibleRecord"
       :loading="previewLoading"
       :save-directory="app.settings.saveDirectory"
-      :can-cancel="taskAttached && app.generating && app.currentTaskStatus !== 'processing'"
+      :can-cancel="
+        isViewingActiveGeneration &&
+        app.generating &&
+        app.currentTaskStatus !== 'processing'
+      "
       :recoverable-task="recoverableTask"
       :mode="mode"
       @cancel="cancelGeneration"
@@ -205,7 +248,7 @@ async function useAsReference(image: SelectedImageFile) {
       :has-result="hasResult"
       :insufficient-credits="insufficientCredits"
       :is-logged-in="app.isAuthenticated"
-      :error="taskAttached ? app.error : ''"
+      :error="taskAttached && isViewingActiveGeneration ? app.error : ''"
       :max-prompt-length="4000"
       :supported-qualities="app.capabilities.supportedQualities"
       :upload-max-bytes="app.capabilities.uploadMaxBytes"

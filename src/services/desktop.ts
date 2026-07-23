@@ -163,7 +163,7 @@ async function remoteImageBytes(url: string) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-async function remoteImageBlob(url: string, mimeType?: string) {
+export async function loadRemoteImageBlob(url: string, mimeType?: string) {
   const bytes = await remoteImageBytes(url);
   return new Blob([bytes], { type: mimeType || "image/png" });
 }
@@ -191,11 +191,15 @@ async function imageBlobAsPng(blob: Blob): Promise<Blob> {
 }
 
 export async function copyRemoteImageToClipboard(url: string, mimeType?: string): Promise<void> {
+  await copyImageBlobToClipboard(await loadRemoteImageBlob(url, mimeType));
+}
+
+export async function copyImageBlobToClipboard(blob: Blob): Promise<void> {
   if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
     throw new Error("当前系统不支持复制图片，请使用下载功能。");
   }
 
-  const pngBlob = await imageBlobAsPng(await remoteImageBlob(url, mimeType));
+  const pngBlob = await imageBlobAsPng(blob);
   try {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
   } catch (exception) {
@@ -211,8 +215,19 @@ export async function remoteImageToSelectedFile(
   const normalizedMimeType = ["image/jpeg", "image/png", "image/webp"].includes(mimeType || "")
     ? mimeType!
     : "image/png";
+  const blob = await loadRemoteImageBlob(url, normalizedMimeType);
+  return imageBlobToSelectedFile(blob, suggestedName, normalizedMimeType);
+}
+
+export function imageBlobToSelectedFile(
+  blob: Blob,
+  suggestedName: string,
+  mimeType?: string
+): SelectedImageFile {
+  const normalizedMimeType = ["image/jpeg", "image/png", "image/webp"].includes(mimeType || blob.type)
+    ? (mimeType || blob.type)
+    : "image/png";
   const name = safeImageFilename(suggestedName, normalizedMimeType);
-  const blob = await remoteImageBlob(url, normalizedMimeType);
   return {
     name,
     path: name,
@@ -240,11 +255,19 @@ export async function saveRemoteImageAs(
   mimeType?: string
 ): Promise<string | null> {
   if (!url) return null;
-  const filename = safeImageFilename(suggestedName, mimeType);
+  return saveImageBlobAs(await loadRemoteImageBlob(url, mimeType), suggestedName, mimeType);
+}
+
+export async function saveImageBlobAs(
+  blob: Blob,
+  suggestedName: string,
+  mimeType?: string
+): Promise<string | null> {
+  const resolvedMimeType = mimeType || blob.type || "image/png";
+  const filename = safeImageFilename(suggestedName, resolvedMimeType);
 
   if (!isTauri) {
-    const bytes = await remoteImageBytes(url);
-    const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType || "image/png" }));
+    const blobUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = blobUrl;
     anchor.download = filename;
@@ -256,11 +279,11 @@ export async function saveRemoteImageAs(
   const path = await save({
     title: "保存生成图片",
     defaultPath: filename,
-    filters: [imageFilter(mimeType)]
+    filters: [imageFilter(resolvedMimeType)]
   });
   if (!path) return null;
 
-  await writeImageFile(path, await remoteImageBytes(url));
+  await writeImageFile(path, new Uint8Array(await blob.arrayBuffer()));
   return path;
 }
 

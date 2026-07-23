@@ -1,23 +1,33 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, shallowRef, useTemplateRef, watch } from "vue";
 import {
   Ban,
+  Clipboard,
   Download,
   FolderOpen,
   LoaderCircle,
-  Maximize2,
   Pencil,
   RotateCcw
 } from "lucide-vue-next";
 import GenerationEmptyState from "@/components/GenerationEmptyState.vue";
+import ImageEditorModal from "@/components/image-editor/ImageEditorModal.vue";
 import ResultImageContextMenu from "@/components/ResultImageContextMenu.vue";
 import brandMark from "@/assets/huanhua-mark.svg";
 import {
+  copyImageBlobToClipboard,
   copyRemoteImageToClipboard,
+  imageBlobToSelectedFile,
+  loadRemoteImageBlob,
   openDirectory,
   remoteImageToSelectedFile,
+  saveImageBlobAs,
   saveRemoteImageAs
 } from "@/services/desktop";
+import type {
+  ImageEditorApplyResult,
+  ImageEditorDocument,
+  ImageEditorSource
+} from "@/components/image-editor/types";
 import type {
   GeneratedImage,
   GenerationMode,
@@ -40,9 +50,46 @@ const emit = defineEmits<{
   useAsReference: [image: SelectedImageFile];
 }>();
 
+interface DisplayImage extends GeneratedImage {
+  editedBlob?: Blob;
+  isEdited?: boolean;
+}
+
+interface EditedImageOverride {
+  originalBlob: Blob;
+  editedBlob: Blob;
+  previewUrl: string;
+  width: number;
+  height: number;
+  mimeType: string;
+  document: ImageEditorDocument;
+}
+
+interface EditorSession {
+  imageId: string;
+  index: number;
+  source: ImageEditorSource;
+}
+
 const resultImages = computed(() => props.record?.images ?? []);
-const isSingleResult = computed(() => resultImages.value.length === 1);
-const primaryImage = computed(() => resultImages.value[0] ?? null);
+const editedImages = shallowRef(new Map<string, EditedImageOverride>());
+const displayImages = computed<DisplayImage[]>(() =>
+  resultImages.value.map((image) => {
+    const edited = editedImages.value.get(image.id);
+    if (!edited) return image;
+    return {
+      ...image,
+      remoteUrl: edited.previewUrl,
+      width: edited.width,
+      height: edited.height,
+      mimeType: edited.mimeType,
+      editedBlob: edited.editedBlob,
+      isEdited: true
+    };
+  })
+);
+const isSingleResult = computed(() => displayImages.value.length === 1);
+const primaryImage = computed(() => displayImages.value[0] ?? null);
 const hasSaveDirectory = computed(() => Boolean(props.saveDirectory.trim()));
 const recoverableTaskLabel = computed(() => {
   if (!props.recoverableTask) return "";
@@ -51,27 +98,36 @@ const recoverableTaskLabel = computed(() => {
   return `${modeLabel} · ${statusLabel}`;
 });
 const saving = shallowRef(false);
+const copying = shallowRef(false);
+const loadingEditor = shallowRef(false);
 const actionError = shallowRef("");
 const actionMessage = shallowRef("");
-const contextMenuTarget = shallowRef<{ image: GeneratedImage; index: number } | null>(null);
+const contextMenuTarget = shallowRef<{ image: DisplayImage; index: number } | null>(null);
 const contextMenuX = shallowRef(0);
 const contextMenuY = shallowRef(0);
+const editorSession = shallowRef<EditorSession | null>(null);
+const editButton = useTemplateRef<HTMLButtonElement>("editButton");
 let actionMessageTimer: number | undefined;
 
 watch(
-  () => props.record,
-  () => closeContextMenu()
+  () => props.record?.generationId,
+  () => {
+    closeContextMenu();
+    editorSession.value = null;
+    clearEditedImages();
+  }
 );
 
 function imageFrameStyle(image: GeneratedImage) {
   return isSingleResult.value ? undefined : { aspectRatio: `${image.width} / ${image.height}` };
 }
 
-function suggestedImageName(index: number) {
+function suggestedImageName(index: number, edited = false) {
   if (!props.record) return "huanhua-image";
-  return resultImages.value.length > 1
+  const baseName = resultImages.value.length > 1
     ? `huanhua-${props.record.generationId}-${index + 1}`
     : `huanhua-${props.record.generationId}`;
+  return edited ? `${baseName}-edited` : baseName;
 }
 
 function showActionMessage(message: string) {
@@ -83,17 +139,25 @@ function showActionMessage(message: string) {
   }, 2400);
 }
 
-async function downloadImage(image: GeneratedImage, index: number) {
+async function downloadImage(image: DisplayImage, index: number) {
   if (!props.record) return;
   saving.value = true;
   actionError.value = "";
   actionMessage.value = "";
   try {
-    await saveRemoteImageAs(
-      image.remoteUrl,
-      suggestedImageName(index),
-      image.mimeType
-    );
+    if (image.editedBlob) {
+      await saveImageBlobAs(
+        image.editedBlob,
+        suggestedImageName(index, true),
+        image.mimeType
+      );
+    } else {
+      await saveRemoteImageAs(
+        image.remoteUrl,
+        suggestedImageName(index),
+        image.mimeType
+      );
+    }
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "图片保存失败，请稍后重试。";
   } finally {
@@ -106,7 +170,27 @@ async function downloadPrimaryImage() {
   await downloadImage(primaryImage.value, 0);
 }
 
-function openImageContextMenu(event: MouseEvent, image: GeneratedImage, index: number) {
+async function copyImage(image: DisplayImage) {
+  copying.value = true;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    if (image.editedBlob) await copyImageBlobToClipboard(image.editedBlob);
+    else await copyRemoteImageToClipboard(image.remoteUrl, image.mimeType);
+    showActionMessage("图片已复制");
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片复制失败，请稍后重试。";
+  } finally {
+    copying.value = false;
+  }
+}
+
+async function copyPrimaryImage() {
+  if (!primaryImage.value) return;
+  await copyImage(primaryImage.value);
+}
+
+function openImageContextMenu(event: MouseEvent, image: DisplayImage, index: number) {
   if (props.record?.mode !== "text-to-image") return;
   event.preventDefault();
   event.stopPropagation();
@@ -117,7 +201,7 @@ function openImageContextMenu(event: MouseEvent, image: GeneratedImage, index: n
   showImageContextMenu(image, index, requestedX, requestedY);
 }
 
-function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: GeneratedImage, index: number) {
+function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: DisplayImage, index: number) {
   const isMenuShortcut = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
   if (!isMenuShortcut || props.record?.mode !== "text-to-image") return;
   event.preventDefault();
@@ -132,7 +216,7 @@ function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: Generated
   );
 }
 
-function showImageContextMenu(image: GeneratedImage, index: number, requestedX: number, requestedY: number) {
+function showImageContextMenu(image: DisplayImage, index: number, requestedX: number, requestedY: number) {
   contextMenuX.value = Math.max(8, Math.min(requestedX, window.innerWidth - 176));
   contextMenuY.value = Math.max(8, Math.min(requestedY, window.innerHeight - 124));
   contextMenuTarget.value = { image, index };
@@ -146,14 +230,7 @@ async function copyContextImage() {
   const target = contextMenuTarget.value;
   closeContextMenu();
   if (!target) return;
-  actionError.value = "";
-  actionMessage.value = "";
-  try {
-    await copyRemoteImageToClipboard(target.image.remoteUrl, target.image.mimeType);
-    showActionMessage("图片已复制");
-  } catch (exception) {
-    actionError.value = exception instanceof Error ? exception.message : "图片复制失败，请稍后重试。";
-  }
+  await copyImage(target.image);
 }
 
 async function downloadContextImage() {
@@ -170,15 +247,98 @@ async function useContextImageAsReference() {
   actionError.value = "";
   actionMessage.value = "";
   try {
-    const selected = await remoteImageToSelectedFile(
-      target.image.remoteUrl,
-      suggestedImageName(target.index),
-      target.image.mimeType
-    );
+    const selected = target.image.editedBlob
+      ? imageBlobToSelectedFile(
+          target.image.editedBlob,
+          suggestedImageName(target.index, true),
+          target.image.mimeType
+        )
+      : await remoteImageToSelectedFile(
+          target.image.remoteUrl,
+          suggestedImageName(target.index),
+          target.image.mimeType
+        );
     emit("useAsReference", selected);
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "图片读取失败，请稍后重试。";
   }
+}
+
+async function openEditor() {
+  const originalImage = resultImages.value[0];
+  if (!originalImage || !props.record) return;
+  loadingEditor.value = true;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    const existing = editedImages.value.get(originalImage.id);
+    const originalBlob = existing?.originalBlob
+      ?? await loadRemoteImageBlob(originalImage.remoteUrl, originalImage.mimeType);
+    const mimeType = originalImage.mimeType || originalBlob.type || "image/png";
+    editorSession.value = {
+      imageId: originalImage.id,
+      index: 0,
+      source: {
+        blob: originalBlob,
+        mimeType,
+        fileBaseName: suggestedImageName(0),
+        quality: props.record.params.outputFormat === "png"
+          ? undefined
+          : props.record.params.outputCompression / 100,
+        document: existing?.document
+      }
+    };
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片读取失败，请稍后重试。";
+  } finally {
+    loadingEditor.value = false;
+  }
+}
+
+function removeEditedImage(imageId: string) {
+  const existing = editedImages.value.get(imageId);
+  if (!existing) return;
+  URL.revokeObjectURL(existing.previewUrl);
+  const next = new Map(editedImages.value);
+  next.delete(imageId);
+  editedImages.value = next;
+}
+
+function applyEditorResult(result: ImageEditorApplyResult) {
+  const session = editorSession.value;
+  if (!session) return;
+  if (result.pristine) {
+    removeEditedImage(session.imageId);
+    closeEditor();
+    showActionMessage("已恢复原图");
+    return;
+  }
+
+  const previous = editedImages.value.get(session.imageId);
+  if (previous) URL.revokeObjectURL(previous.previewUrl);
+  const next = new Map(editedImages.value);
+  next.set(session.imageId, {
+    originalBlob: session.source.blob,
+    editedBlob: result.blob,
+    previewUrl: URL.createObjectURL(result.blob),
+    width: result.width,
+    height: result.height,
+    mimeType: result.mimeType,
+    document: result.document
+  });
+  editedImages.value = next;
+  closeEditor();
+  showActionMessage("已应用编辑");
+}
+
+function closeEditor() {
+  editorSession.value = null;
+  nextTick(() => editButton.value?.focus());
+}
+
+function clearEditedImages() {
+  editedImages.value.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+  editedImages.value = new Map();
 }
 
 async function openSaveDirectory() {
@@ -192,6 +352,7 @@ async function openSaveDirectory() {
 
 onBeforeUnmount(() => {
   if (actionMessageTimer) window.clearTimeout(actionMessageTimer);
+  clearEditedImages();
 });
 </script>
 
@@ -234,9 +395,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-      <div v-else-if="resultImages.length" class="image-grid" :class="{ 'single-result': isSingleResult }">
+      <div v-else-if="displayImages.length" class="image-grid" :class="{ 'single-result': isSingleResult }">
         <figure
-          v-for="(image, index) in resultImages"
+          v-for="(image, index) in displayImages"
           :key="image.id"
           class="result-image"
           :style="imageFrameStyle(image)"
@@ -245,19 +406,39 @@ onBeforeUnmount(() => {
           @contextmenu="openImageContextMenu($event, image, index)"
           @keydown="openImageContextMenuFromKeyboard($event, image, index)"
         >
-          <img :src="image.remoteUrl" :alt="`生成图片 ${index + 1}`" />
+          <img
+            :src="image.remoteUrl"
+            :alt="`${image.isEdited ? '编辑后的' : ''}生成图片 ${index + 1}`"
+          />
         </figure>
       </div>
       <GenerationEmptyState v-else :mode="mode" />
 
       <p v-if="actionError" class="result-action-feedback is-error" role="alert">{{ actionError }}</p>
       <p v-else-if="actionMessage" class="result-action-feedback" role="status">{{ actionMessage }}</p>
-      <div v-if="resultImages.length && !loading" class="toolbar result-toolbar" role="toolbar" aria-label="图片操作">
-        <button class="icon-button result-tool" type="button" title="放大查看" aria-label="放大查看">
-          <Maximize2 :size="16" />
+      <div v-if="displayImages.length && !loading" class="toolbar result-toolbar" role="toolbar" aria-label="图片操作">
+        <button
+          class="icon-button result-tool"
+          type="button"
+          title="复制图片"
+          aria-label="复制图片"
+          :disabled="copying"
+          @click="copyPrimaryImage"
+        >
+          <LoaderCircle v-if="copying" class="saving-spinner" :size="16" />
+          <Clipboard v-else :size="16" />
         </button>
-        <button class="icon-button result-tool" type="button" title="编辑图片" aria-label="编辑图片">
-          <Pencil :size="16" />
+        <button
+          ref="editButton"
+          class="icon-button result-tool"
+          type="button"
+          :title="primaryImage?.isEdited ? '继续编辑图片' : '编辑图片'"
+          :aria-label="primaryImage?.isEdited ? '继续编辑图片' : '编辑图片'"
+          :disabled="loadingEditor"
+          @click="openEditor"
+        >
+          <LoaderCircle v-if="loadingEditor" class="saving-spinner" :size="16" />
+          <Pencil v-else :size="16" />
         </button>
         <button
           class="icon-button result-tool"
@@ -289,6 +470,12 @@ onBeforeUnmount(() => {
         @copy="copyContextImage"
         @download="downloadContextImage"
         @use-as-reference="useContextImageAsReference"
+      />
+      <ImageEditorModal
+        v-if="editorSession"
+        :source="editorSession.source"
+        @apply="applyEditorResult"
+        @close="closeEditor"
       />
     </div>
   </section>

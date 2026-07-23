@@ -59,6 +59,7 @@ export interface GenerationRecord {
   generationId: string;
   mode: GenerationMode;
   params: ImageParams;
+  inputImage?: GeneratedImage;
   images: GeneratedImage[];
   status: GenerationStatus;
   costCredits: number;

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from "vue";
+import { useRouter } from "vue-router";
 import {
+  CircleAlert,
+  CircleCheck,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -11,11 +14,18 @@ import {
 } from "lucide-vue-next";
 import HistorySelectionBar from "@/components/HistorySelectionBar.vue";
 import HistoryTaskCard from "@/components/HistoryTaskCard.vue";
-import { saveRemoteImagesToDirectory } from "@/services/desktop";
+import HistoryTaskContextMenu from "@/components/HistoryTaskContextMenu.vue";
+import {
+  copyRemoteImageToClipboard,
+  remoteImageToSelectedFile,
+  saveRemoteImageAs,
+  saveRemoteImagesToDirectory
+} from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
-import type { GenerationMode } from "@/types";
+import type { GenerationMode, GenerationRecord, SelectedImageFile } from "@/types";
 
 const app = useAppStore();
+const router = useRouter();
 const pageSize = 12;
 const activeMode = shallowRef<GenerationMode>("text-to-image");
 const currentPage = shallowRef(1);
@@ -24,6 +34,9 @@ const downloading = shallowRef(false);
 const deleting = shallowRef(false);
 const actionMessage = shallowRef("");
 const actionError = shallowRef("");
+const contextMenuTarget = shallowRef<GenerationRecord | null>(null);
+const contextMenuX = shallowRef(0);
+const contextMenuY = shallowRef(0);
 
 const filteredHistory = computed(() =>
   app.visibleHistory.filter((record) => record.mode === activeMode.value)
@@ -54,6 +67,7 @@ const canDownloadSelection = computed(
     selectedRecords.value.length > 0 &&
     selectedRecords.value.every((record) => record.images.length > 0)
 );
+const contextMenuHasImage = computed(() => Boolean(contextMenuTarget.value?.images[0]));
 
 watch(activeMode, () => {
   currentPage.value = 1;
@@ -94,6 +108,122 @@ function clearSelection() {
   selectedGenerationIds.value = new Set();
   actionMessage.value = "";
   actionError.value = "";
+}
+
+function openTaskMenu(record: GenerationRecord, position: { x: number; y: number }) {
+  contextMenuX.value = Math.max(8, Math.min(position.x, window.innerWidth - 176));
+  contextMenuY.value = Math.max(8, Math.min(position.y, window.innerHeight - 176));
+  contextMenuTarget.value = record;
+  actionMessage.value = "";
+  actionError.value = "";
+}
+
+function closeTaskMenu() {
+  contextMenuTarget.value = null;
+}
+
+async function restoredReferenceImage(record: GenerationRecord): Promise<SelectedImageFile | null> {
+  if (record.mode !== "image-to-image") return null;
+  if (!record.inputImage) {
+    throw new Error("该图生图任务缺少可恢复的参考图。");
+  }
+
+  return await remoteImageToSelectedFile(
+    record.inputImage.remoteUrl,
+    `huanhua-${record.generationId}-reference`,
+    record.inputImage.mimeType
+  );
+}
+
+async function openContextTask() {
+  const selectedRecord = contextMenuTarget.value;
+  closeTaskMenu();
+  if (!selectedRecord) return;
+
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    const record = await app.resolveHistoryTask(selectedRecord);
+    const restoredReference = await restoredReferenceImage(record);
+    app.queueHistoryWorkspace(record, restoredReference);
+    await router.push({
+      name: "generate",
+      params: { mode: record.mode }
+    });
+  } catch (exception) {
+    app.discardHistoryWorkspace();
+    actionError.value = exception instanceof Error
+      ? exception.message
+      : "任务打开失败，请稍后重试。";
+  }
+}
+
+function takeContextImage() {
+  const record = contextMenuTarget.value;
+  const image = record?.images[0];
+  closeTaskMenu();
+  return record && image ? { record, image } : null;
+}
+
+async function copyContextImage() {
+  const target = takeContextImage();
+  if (!target) return;
+
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    await copyRemoteImageToClipboard(target.image.remoteUrl, target.image.mimeType);
+    actionMessage.value = "图片已复制";
+  } catch (exception) {
+    actionError.value = exception instanceof Error
+      ? exception.message
+      : "图片复制失败，请稍后重试。";
+  }
+}
+
+async function downloadContextImage() {
+  const target = takeContextImage();
+  if (!target) return;
+
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    const savedPath = await saveRemoteImageAs(
+      target.image.remoteUrl,
+      `huanhua-${target.record.generationId}`,
+      target.image.mimeType
+    );
+    if (savedPath) actionMessage.value = "图片已保存";
+  } catch (exception) {
+    actionError.value = exception instanceof Error
+      ? exception.message
+      : "图片保存失败，请稍后重试。";
+  }
+}
+
+async function useContextImageAsReference() {
+  const target = takeContextImage();
+  if (!target) return;
+
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    const referenceImage = await remoteImageToSelectedFile(
+      target.image.remoteUrl,
+      `huanhua-${target.record.generationId}`,
+      target.image.mimeType
+    );
+    app.queueReferenceImage(referenceImage);
+    await router.push({
+      name: "generate",
+      params: { mode: "image-to-image" }
+    });
+  } catch (exception) {
+    app.discardReferenceImage();
+    actionError.value = exception instanceof Error
+      ? exception.message
+      : "图片读取失败，请稍后重试。";
+  }
 }
 
 async function deleteSelected() {
@@ -182,6 +312,7 @@ async function downloadSelected() {
         :record="record"
         :selected="selectedGenerationIds.has(record.generationId)"
         @toggle="toggleSelection"
+        @open-menu="openTaskMenu(record, $event)"
       />
     </div>
     <div v-else class="empty-state full">
@@ -241,6 +372,23 @@ async function downloadSelected() {
       </button>
     </nav>
 
+    <p
+      v-if="actionError && !selectedCount"
+      class="history-action-feedback is-error"
+      role="alert"
+    >
+      <CircleAlert :size="15" aria-hidden="true" />
+      <span>{{ actionError }}</span>
+    </p>
+    <p
+      v-else-if="actionMessage && !selectedCount"
+      class="history-action-feedback"
+      role="status"
+    >
+      <CircleCheck :size="15" aria-hidden="true" />
+      <span>{{ actionMessage }}</span>
+    </p>
+
     <HistorySelectionBar
       v-if="selectedCount"
       :selected-count="selectedCount"
@@ -252,6 +400,18 @@ async function downloadSelected() {
       @clear="clearSelection"
       @delete="deleteSelected"
       @download="downloadSelected"
+    />
+
+    <HistoryTaskContextMenu
+      v-if="contextMenuTarget"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :has-image="contextMenuHasImage"
+      @close="closeTaskMenu"
+      @open-task="openContextTask"
+      @copy="copyContextImage"
+      @download="downloadContextImage"
+      @use-as-reference="useContextImageAsReference"
     />
   </section>
 </template>
@@ -327,6 +487,30 @@ async function downloadSelected() {
 
 .history-view.has-selection {
   padding-bottom: 108px;
+}
+
+.history-action-feedback {
+  width: fit-content;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  margin: 16px 0 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(101, 211, 173, 0.42);
+  border-radius: 7px;
+  color: var(--success);
+  background: rgba(101, 211, 173, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+
+  &.is-error {
+    border-color: rgba(239, 125, 136, 0.42);
+    color: var(--danger);
+    background: rgba(239, 125, 136, 0.08);
+  }
 }
 
 .empty-state.full {
