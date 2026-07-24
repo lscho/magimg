@@ -58,7 +58,7 @@ const tools: Array<{
         class="editor-tool-button"
         :class="{ active: activeTool === tool.id }"
         type="button"
-        :title="tool.label"
+        :data-tooltip="tool.label"
         :aria-label="tool.label"
         :aria-pressed="activeTool === tool.id"
         :disabled="busy || !ready"
@@ -72,7 +72,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="向左旋转"
+        data-tooltip="向左旋转"
         aria-label="向左旋转"
         :disabled="busy || !ready"
         @click="emit('rotate', 'counterclockwise')"
@@ -82,7 +82,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="向右旋转"
+        data-tooltip="向右旋转"
         aria-label="向右旋转"
         :disabled="busy || !ready"
         @click="emit('rotate', 'clockwise')"
@@ -92,7 +92,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="水平翻转"
+        data-tooltip="水平翻转"
         aria-label="水平翻转"
         :disabled="busy || !ready"
         @click="emit('flip', 'horizontal')"
@@ -102,7 +102,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="垂直翻转"
+        data-tooltip="垂直翻转"
         aria-label="垂直翻转"
         :disabled="busy || !ready"
         @click="emit('flip', 'vertical')"
@@ -115,7 +115,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="撤销"
+        data-tooltip="撤销"
         aria-label="撤销"
         :disabled="busy || !canUndo"
         @click="emit('undo')"
@@ -125,7 +125,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="重做"
+        data-tooltip="重做"
         aria-label="重做"
         :disabled="busy || !canRedo"
         @click="emit('redo')"
@@ -135,7 +135,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="删除所选标注"
+        data-tooltip="删除所选标注"
         aria-label="删除所选标注"
         :disabled="busy || !ready"
         @click="emit('deleteSelected')"
@@ -145,7 +145,7 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        title="恢复原图"
+        data-tooltip="恢复原图"
         aria-label="恢复原图"
         :disabled="busy || !ready"
         @click="emit('reset')"
@@ -158,6 +158,8 @@ const tools: Array<{
 
 <style scoped lang="scss">
 .editor-toolbar {
+  position: relative;
+  z-index: 2;
   width: 54px;
   min-height: 0;
   display: flex;
@@ -187,6 +189,7 @@ const tools: Array<{
 }
 
 .editor-tool-button {
+  position: relative;
   width: 38px;
   height: 38px;
   display: grid;
@@ -199,6 +202,36 @@ const tools: Array<{
     color 160ms ease,
     border-color 160ms ease,
     background 160ms ease;
+
+  &::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    z-index: 30;
+    top: 50%;
+    left: calc(100% + 9px);
+    width: max-content;
+    max-width: 180px;
+    padding: 5px 7px;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    color: var(--text);
+    background: rgba(16, 22, 29, 0.98);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.34);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.2;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%);
+    visibility: hidden;
+    white-space: nowrap;
+  }
+
+  &:hover::after,
+  &:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+  }
 
   &:hover:not(:disabled),
   &:focus-visible {
@@ -219,7 +252,11 @@ const tools: Array<{
   }
 
   &:disabled {
-    opacity: 0.38;
+    cursor: not-allowed;
+
+    > svg {
+      opacity: 0.38;
+    }
   }
 }
 

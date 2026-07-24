@@ -1,11 +1,12 @@
 export type ImageEditorTool = "select" | "crop" | "adjust" | "text" | "draw" | "erase";
 export type CropRatio = "free" | "original" | "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
-export type ImageAdjustment = "brightness" | "contrast" | "saturation";
+export type ImageAdjustment = "brightness" | "contrast" | "saturation" | "grayscale";
 
 export interface ImageAdjustments {
   brightness: number;
   contrast: number;
   saturation: number;
+  grayscale: number;
 }
 
 export type ImageGeometryOperation =
@@ -46,7 +47,8 @@ export function createEmptyImageEditorDocument(): ImageEditorDocument {
     adjustments: {
       brightness: 0,
       contrast: 0,
-      saturation: 0
+      saturation: 0,
+      grayscale: 0
     },
     annotations: { objects: [] }
   };
@@ -61,6 +63,7 @@ export function isPristineImageEditorDocument(document: ImageEditorDocument): bo
     document.adjustments.brightness === 0 &&
     document.adjustments.contrast === 0 &&
     document.adjustments.saturation === 0 &&
+    (document.adjustments.grayscale ?? 0) === 0 &&
     annotations.length === 0
   );
 }

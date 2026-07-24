@@ -28,6 +28,7 @@ import type {
   ImageEditorDocument,
   ImageEditorSource
 } from "@/components/image-editor/types";
+import { preloadImageEditorRuntime } from "@/components/image-editor/useImageEditor";
 import type {
   GeneratedImage,
   GenerationMode,
@@ -71,6 +72,11 @@ interface EditorSession {
   source: ImageEditorSource;
 }
 
+interface IdleCallbacks {
+  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
+}
+
 const resultImages = computed(() => props.record?.images ?? []);
 const editedImages = shallowRef(new Map<string, EditedImageOverride>());
 const displayImages = computed<DisplayImage[]>(() =>
@@ -107,15 +113,36 @@ const contextMenuX = shallowRef(0);
 const contextMenuY = shallowRef(0);
 const editorSession = shallowRef<EditorSession | null>(null);
 const editButton = useTemplateRef<HTMLButtonElement>("editButton");
+const originalBlobPromises = new Map<string, Promise<Blob>>();
 let actionMessageTimer: number | undefined;
+let editorPreloadTimer: number | undefined;
+let editorPreloadIdleHandle: number | undefined;
 
 watch(
   () => props.record?.generationId,
   () => {
     closeContextMenu();
     editorSession.value = null;
+    clearEditorPreloadCache();
     clearEditedImages();
-  }
+  },
+  { flush: "post" }
+);
+
+watch(
+  [
+    () => props.loading,
+    () => resultImages.value[0]?.id,
+    () => resultImages.value[0]?.remoteUrl
+  ],
+  ([loading, imageId, remoteUrl]) => {
+    if (loading || !imageId || !remoteUrl) {
+      cancelEditorPreloadSchedule();
+      return;
+    }
+    scheduleEditorPreload();
+  },
+  { flush: "post", immediate: true }
 );
 
 function imageFrameStyle(image: GeneratedImage) {
@@ -137,6 +164,64 @@ function showActionMessage(message: string) {
     actionMessage.value = "";
     actionMessageTimer = undefined;
   }, 2400);
+}
+
+function cancelEditorPreloadSchedule() {
+  const idleCallbacks = window as unknown as IdleCallbacks;
+  if (editorPreloadIdleHandle !== undefined) {
+    idleCallbacks.cancelIdleCallback?.(editorPreloadIdleHandle);
+    editorPreloadIdleHandle = undefined;
+  }
+  if (editorPreloadTimer !== undefined) {
+    window.clearTimeout(editorPreloadTimer);
+    editorPreloadTimer = undefined;
+  }
+}
+
+function getOriginalImageBlob(image: GeneratedImage): Promise<Blob> {
+  const edited = editedImages.value.get(image.id);
+  if (edited) return Promise.resolve(edited.originalBlob);
+
+  const cached = originalBlobPromises.get(image.id);
+  if (cached) return cached;
+
+  const request = loadRemoteImageBlob(image.remoteUrl, image.mimeType);
+  originalBlobPromises.set(image.id, request);
+  void request.catch(() => {
+    if (originalBlobPromises.get(image.id) === request) {
+      originalBlobPromises.delete(image.id);
+    }
+  });
+  return request;
+}
+
+function preloadEditorAssets() {
+  cancelEditorPreloadSchedule();
+  const image = resultImages.value[0];
+  if (!image || props.loading) return;
+  void preloadImageEditorRuntime().catch(() => undefined);
+  void getOriginalImageBlob(image).catch(() => undefined);
+}
+
+function scheduleEditorPreload() {
+  cancelEditorPreloadSchedule();
+  const idleCallbacks = window as unknown as IdleCallbacks;
+  if (idleCallbacks.requestIdleCallback) {
+    editorPreloadIdleHandle = idleCallbacks.requestIdleCallback(() => {
+      editorPreloadIdleHandle = undefined;
+      preloadEditorAssets();
+    }, { timeout: 900 });
+    return;
+  }
+  editorPreloadTimer = window.setTimeout(() => {
+    editorPreloadTimer = undefined;
+    preloadEditorAssets();
+  }, 120);
+}
+
+function clearEditorPreloadCache() {
+  cancelEditorPreloadSchedule();
+  originalBlobPromises.clear();
 }
 
 async function downloadImage(image: DisplayImage, index: number) {
@@ -272,8 +357,8 @@ async function openEditor() {
   actionMessage.value = "";
   try {
     const existing = editedImages.value.get(originalImage.id);
-    const originalBlob = existing?.originalBlob
-      ?? await loadRemoteImageBlob(originalImage.remoteUrl, originalImage.mimeType);
+    void preloadImageEditorRuntime().catch(() => undefined);
+    const originalBlob = await getOriginalImageBlob(originalImage);
     const mimeType = originalImage.mimeType || originalBlob.type || "image/png";
     editorSession.value = {
       imageId: originalImage.id,
@@ -352,6 +437,7 @@ async function openSaveDirectory() {
 
 onBeforeUnmount(() => {
   if (actionMessageTimer) window.clearTimeout(actionMessageTimer);
+  clearEditorPreloadCache();
   clearEditedImages();
 });
 </script>
@@ -409,6 +495,7 @@ onBeforeUnmount(() => {
           <img
             :src="image.remoteUrl"
             :alt="`${image.isEdited ? '编辑后的' : ''}生成图片 ${index + 1}`"
+            @load="index === 0 && scheduleEditorPreload()"
           />
         </figure>
       </div>
@@ -435,6 +522,8 @@ onBeforeUnmount(() => {
           :title="primaryImage?.isEdited ? '继续编辑图片' : '编辑图片'"
           :aria-label="primaryImage?.isEdited ? '继续编辑图片' : '编辑图片'"
           :disabled="loadingEditor"
+          @focus="preloadEditorAssets"
+          @pointerenter="preloadEditorAssets"
           @click="openEditor"
         >
           <LoaderCircle v-if="loadingEditor" class="saving-spinner" :size="16" />

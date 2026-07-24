@@ -47,10 +47,13 @@ const cropRatios: Array<{ value: CropRatio; label: string }> = [
 const adjustmentControls: Array<{
   id: ImageAdjustment;
   label: string;
+  min: number;
+  max: number;
 }> = [
-  { id: "brightness", label: "亮度" },
-  { id: "contrast", label: "对比度" },
-  { id: "saturation", label: "饱和度" }
+  { id: "brightness", label: "亮度", min: -100, max: 100 },
+  { id: "contrast", label: "对比度", min: -100, max: 100 },
+  { id: "saturation", label: "饱和度", min: -100, max: 100 },
+  { id: "grayscale", label: "灰度", min: 0, max: 100 }
 ];
 
 const colorSwatches = [
@@ -116,8 +119,8 @@ function colorFromEvent(event: Event) {
           type="range"
           :aria-label="control.label"
           :aria-valuetext="String(adjustments[control.id])"
-          min="-100"
-          max="100"
+          :min="control.min"
+          :max="control.max"
           step="1"
           :disabled="busy"
           @input="emit('setAdjustment', control.id, numberFromEvent($event), false)"

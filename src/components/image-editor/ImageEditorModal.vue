@@ -9,6 +9,7 @@ import {
 } from "vue";
 import { Check, LoaderCircle, X } from "lucide-vue-next";
 import ImageEditorInspector from "./ImageEditorInspector.vue";
+import ImageEditorTextContextMenu from "./ImageEditorTextContextMenu.vue";
 import ImageEditorToolbar from "./ImageEditorToolbar.vue";
 import type {
   ImageAdjustment,
@@ -91,6 +92,12 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if (editor.textContextMenu.value && event.key === "Escape") {
+    event.preventDefault();
+    closeTextContextMenu(true);
+    return;
+  }
+
   if (event.key === "Escape") {
     event.preventDefault();
     requestClose();
@@ -100,8 +107,27 @@ function handleKeydown(event: KeyboardEvent) {
   else editor.handleKeydown(event);
 }
 
+function handlePointerDown(event: PointerEvent) {
+  if (!editor.textContextMenu.value) return;
+  const target = event.target as HTMLElement;
+  if (!target.closest("[data-image-editor-text-menu]")) {
+    editor.closeTextContextMenu();
+  }
+}
+
+function closeTextContextMenu(focusCanvas = false) {
+  editor.closeTextContextMenu();
+  if (focusCanvas) nextTick(() => viewport.value?.focus());
+}
+
+function deleteContextText() {
+  editor.deleteContextText();
+  nextTick(() => viewport.value?.focus());
+}
+
 function requestClose() {
   if (editor.busy.value) return;
+  editor.closeTextContextMenu();
   if (!editor.dirty.value) {
     emit("close");
     return;
@@ -137,7 +163,11 @@ function setAdjustment(adjustment: ImageAdjustment, value: number, commit: boole
 <template>
   <Teleport to="body">
     <Transition name="image-editor" appear>
-      <div class="image-editor-backdrop" @click.self="requestClose">
+      <div
+        class="image-editor-backdrop"
+        @click.self="requestClose"
+        @pointerdown.capture="handlePointerDown"
+      >
         <section
           ref="dialog"
           class="image-editor-dialog"
@@ -221,6 +251,14 @@ function setAdjustment(adjustment: ImageAdjustment, value: number, commit: boole
               @toggle-text-bold="editor.toggleTextBold"
             />
           </div>
+
+          <ImageEditorTextContextMenu
+            v-if="editor.textContextMenu.value"
+            :x="editor.textContextMenu.value.x"
+            :y="editor.textContextMenu.value.y"
+            @close="closeTextContextMenu(true)"
+            @delete="deleteContextText"
+          />
 
           <footer class="image-editor-footer">
             <p v-if="editor.error.value" role="alert">{{ editor.error.value }}</p>

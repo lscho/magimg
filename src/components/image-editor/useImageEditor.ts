@@ -25,8 +25,26 @@ import {
   type ImageEditorTool,
   type ImageGeometryOperation
 } from "./types";
+import {
+  DEFAULT_IMAGE_ADJUSTMENTS,
+  drawAdjustedImage,
+  hasImageAdjustments,
+  normalizeImageAdjustments
+} from "./imageAdjustments";
 
 type FabricModule = typeof import("fabric");
+
+let fabricRuntimePromise: Promise<FabricModule> | null = null;
+
+export function preloadImageEditorRuntime(): Promise<FabricModule> {
+  if (!fabricRuntimePromise) {
+    fabricRuntimePromise = import("fabric").catch((exception) => {
+      fabricRuntimePromise = null;
+      throw exception;
+    });
+  }
+  return fabricRuntimePromise;
+}
 
 interface EditorElements {
   annotationCanvas: HTMLCanvasElement;
@@ -39,8 +57,14 @@ interface EditorSnapshot {
   signature: string;
 }
 
+interface TextContextMenuPosition {
+  x: number;
+  y: number;
+}
+
 const MAX_HISTORY = 30;
 const EMPTY_ANNOTATIONS = { objects: [] };
+const CROP_EDGE_TOLERANCE_PX = 4;
 
 function cloneDocument(document: ImageEditorDocument): ImageEditorDocument {
   return JSON.parse(JSON.stringify(document)) as ImageEditorDocument;
@@ -62,14 +86,6 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: num
   });
 }
 
-function imageFilter(adjustments: ImageEditorDocument["adjustments"]) {
-  return [
-    `brightness(${100 + adjustments.brightness}%)`,
-    `contrast(${100 + adjustments.contrast}%)`,
-    `saturate(${100 + adjustments.saturation}%)`
-  ].join(" ");
-}
-
 export function useImageEditor(source: ImageEditorSource) {
   const ready = shallowRef(false);
   const busy = shallowRef(false);
@@ -85,16 +101,13 @@ export function useImageEditor(source: ImageEditorSource) {
   const canRedo = shallowRef(false);
   const dirty = shallowRef(false);
   const selectedIsText = shallowRef(false);
+  const textContextMenu = shallowRef<TextContextMenuPosition | null>(null);
   const brushColor = shallowRef("#F1F4F8");
   const brushSize = shallowRef(8);
   const textColor = shallowRef("#F1F4F8");
   const textSize = shallowRef(54);
   const textBold = shallowRef(false);
-  const adjustments = reactive({
-    brightness: 0,
-    contrast: 0,
-    saturation: 0
-  });
+  const adjustments = reactive({ ...DEFAULT_IMAGE_ADJUSTMENTS });
 
   let fabricModule: FabricModule | null = null;
   let canvas: FabricCanvas | null = null;
@@ -102,9 +115,12 @@ export function useImageEditor(source: ImageEditorSource) {
   let viewport: HTMLElement | null = null;
   let sourceBitmap: ImageBitmap | null = null;
   let geometryCanvas: HTMLCanvasElement | null = null;
+  let previewAdjustmentCanvas: HTMLCanvasElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let cropBox: FabricRect | null = null;
-  let cropShades: FabricRect[] = [];
+  let cropShade: FabricRect | null = null;
+  let cropShadeClip: FabricRect | null = null;
+  let contextTextObject: FabricIText | null = null;
   let operations: ImageGeometryOperation[] = [];
   let history: EditorSnapshot[] = [];
   let historyIndex = -1;
@@ -123,7 +139,7 @@ export function useImageEditor(source: ImageEditorSource) {
 
     try {
       const [module, bitmap] = await Promise.all([
-        import("fabric"),
+        preloadImageEditorRuntime(),
         createImageBitmap(source.blob)
       ]);
       fabricModule = module;
@@ -132,8 +148,10 @@ export function useImageEditor(source: ImageEditorSource) {
       canvas = new module.Canvas(elements.annotationCanvas, {
         backgroundColor: "transparent",
         enableRetinaScaling: true,
+        fireRightClick: true,
         preserveObjectStacking: true,
         selection: true,
+        stopContextMenu: true,
         uniformScaling: false
       });
       bindCanvasEvents();
@@ -141,12 +159,12 @@ export function useImageEditor(source: ImageEditorSource) {
       const initialDocument = cloneDocument(
         source.document ?? createEmptyImageEditorDocument()
       );
+      initialDocument.adjustments = normalizeImageAdjustments(initialDocument.adjustments);
       operations = initialDocument.operations;
       Object.assign(adjustments, initialDocument.adjustments);
       await rebuildGeometryCanvas();
       await loadAnnotations(initialDocument.annotations);
       resizePreview();
-      renderBasePreview();
       setTool("select");
 
       const initial = captureSnapshot();
@@ -178,6 +196,25 @@ export function useImageEditor(source: ImageEditorSource) {
     canvas.on("selection:created", syncSelectedObject);
     canvas.on("selection:updated", syncSelectedObject);
     canvas.on("selection:cleared", syncSelectedObject);
+    canvas.on("mouse:down", ({ e }) => {
+      if ((e as MouseEvent).button !== 2) closeTextContextMenu();
+    });
+    canvas.on("contextmenu", ({ e, target }) => {
+      if (!target || target.type !== "i-text" || transientObjects.has(target)) {
+        closeTextContextMenu();
+        return;
+      }
+
+      const pointerEvent = e as MouseEvent;
+      contextTextObject = target as FabricIText;
+      canvas?.setActiveObject(contextTextObject);
+      syncSelectedObject();
+      canvas?.requestRenderAll();
+      textContextMenu.value = {
+        x: pointerEvent.clientX,
+        y: pointerEvent.clientY
+      };
+    });
   }
 
   function syncSelectedObject() {
@@ -246,13 +283,13 @@ export function useImageEditor(source: ImageEditorSource) {
     canUndo.value = false;
     canRedo.value = false;
     clearCropOverlay();
+    closeTextContextMenu();
     activeTool.value = "select";
     operations = cloneDocument(snapshot.document).operations;
-    Object.assign(adjustments, snapshot.document.adjustments);
+    Object.assign(adjustments, normalizeImageAdjustments(snapshot.document.adjustments));
     await rebuildGeometryCanvas();
     await loadAnnotations(snapshot.document.annotations);
     resizePreview();
-    renderBasePreview();
     updateInteractionMode();
     restoring = false;
     syncHistoryFlags();
@@ -284,14 +321,13 @@ export function useImageEditor(source: ImageEditorSource) {
     const accent = getComputedStyle(document.documentElement)
       .getPropertyValue("--accent")
       .trim() || "#7898F5";
-    const scale = Math.max(previewScale.value, 0.01);
     const isEraser = object.globalCompositeOperation === "destination-out";
     object.set({
       borderColor: accent,
       cornerColor: accent,
-      cornerSize: 10 / scale,
+      cornerSize: 10,
       cornerStyle: "rect",
-      padding: 3 / scale,
+      padding: 3,
       transparentCorners: false,
       selectable: !isEraser,
       evented: !isEraser
@@ -309,10 +345,21 @@ export function useImageEditor(source: ImageEditorSource) {
 
   async function rebuildGeometryCanvas() {
     if (!sourceBitmap) return;
-    let current = document.createElement("canvas");
-    current.width = sourceBitmap.width;
-    current.height = sourceBitmap.height;
-    current.getContext("2d")?.drawImage(sourceBitmap, 0, 0);
+
+    if (!operations.length) {
+      if (geometryCanvas) {
+        geometryCanvas.width = 0;
+        geometryCanvas.height = 0;
+      }
+      geometryCanvas = null;
+      outputWidth.value = sourceBitmap.width;
+      outputHeight.value = sourceBitmap.height;
+      return;
+    }
+
+    let current: CanvasImageSource = sourceBitmap;
+    let currentWidth = sourceBitmap.width;
+    let currentHeight = sourceBitmap.height;
 
     for (const operation of operations) {
       const next = document.createElement("canvas");
@@ -320,8 +367,8 @@ export function useImageEditor(source: ImageEditorSource) {
       if (!context) throw new Error("当前设备无法处理该图片。");
 
       if (operation.type === "rotate") {
-        next.width = current.height;
-        next.height = current.width;
+        next.width = currentHeight;
+        next.height = currentWidth;
         if (operation.direction === "clockwise") {
           context.translate(next.width, 0);
           context.rotate(Math.PI / 2);
@@ -331,8 +378,8 @@ export function useImageEditor(source: ImageEditorSource) {
         }
         context.drawImage(current, 0, 0);
       } else if (operation.type === "flip") {
-        next.width = current.width;
-        next.height = current.height;
+        next.width = currentWidth;
+        next.height = currentHeight;
         if (operation.axis === "horizontal") {
           context.translate(next.width, 0);
           context.scale(-1, 1);
@@ -342,26 +389,32 @@ export function useImageEditor(source: ImageEditorSource) {
         }
         context.drawImage(current, 0, 0);
       } else {
-        const x = Math.max(0, Math.round(operation.x * current.width));
-        const y = Math.max(0, Math.round(operation.y * current.height));
+        const x = Math.max(0, Math.round(operation.x * currentWidth));
+        const y = Math.max(0, Math.round(operation.y * currentHeight));
         const width = Math.max(
           1,
-          Math.min(current.width - x, Math.round(operation.width * current.width))
+          Math.min(currentWidth - x, Math.round(operation.width * currentWidth))
         );
         const height = Math.max(
           1,
-          Math.min(current.height - y, Math.round(operation.height * current.height))
+          Math.min(currentHeight - y, Math.round(operation.height * currentHeight))
         );
         next.width = width;
         next.height = height;
         context.drawImage(current, x, y, width, height, 0, 0, width, height);
       }
       current = next;
+      currentWidth = next.width;
+      currentHeight = next.height;
     }
 
-    geometryCanvas = current;
-    outputWidth.value = current.width;
-    outputHeight.value = current.height;
+    geometryCanvas = current as HTMLCanvasElement;
+    outputWidth.value = currentWidth;
+    outputHeight.value = currentHeight;
+  }
+
+  function geometrySource(): CanvasImageSource | null {
+    return geometryCanvas ?? sourceBitmap;
   }
 
   function resizePreview() {
@@ -379,13 +432,18 @@ export function useImageEditor(source: ImageEditorSource) {
     canvas.setDimensions({ width: previewWidth.value, height: previewHeight.value });
     canvas.setViewportTransform([scale, 0, 0, scale, 0, 0]);
     annotationObjects().forEach(prepareAnnotationObject);
+    if (activeTool.value === "draw" || activeTool.value === "erase") {
+      canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
+      updateDrawingCursor();
+    }
     updateCropControlScale();
     renderBasePreview();
     canvas.requestRenderAll();
   }
 
   function renderBasePreview() {
-    if (!baseCanvas || !geometryCanvas) return;
+    const imageSource = geometrySource();
+    if (!baseCanvas || !imageSource) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     baseCanvas.width = Math.max(1, Math.floor(previewWidth.value * dpr));
     baseCanvas.height = Math.max(1, Math.floor(previewHeight.value * dpr));
@@ -393,17 +451,35 @@ export function useImageEditor(source: ImageEditorSource) {
     baseCanvas.style.height = `${previewHeight.value}px`;
     const context = baseCanvas.getContext("2d");
     if (!context) return;
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    context.clearRect(0, 0, previewWidth.value, previewHeight.value);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, baseCanvas.width, baseCanvas.height);
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
-    context.filter = imageFilter(adjustments);
-    context.drawImage(geometryCanvas, 0, 0, previewWidth.value, previewHeight.value);
-    context.filter = "none";
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    if (!hasImageAdjustments(adjustments)) {
+      context.drawImage(imageSource, 0, 0, previewWidth.value, previewHeight.value);
+      return;
+    }
+
+    previewAdjustmentCanvas ??= document.createElement("canvas");
+    previewAdjustmentCanvas.width = previewWidth.value;
+    previewAdjustmentCanvas.height = previewHeight.value;
+    const adjustmentContext = previewAdjustmentCanvas.getContext("2d");
+    if (!adjustmentContext) return;
+    drawAdjustedImage(
+      adjustmentContext,
+      imageSource,
+      previewWidth.value,
+      previewHeight.value,
+      adjustments
+    );
+    context.drawImage(previewAdjustmentCanvas, 0, 0, previewWidth.value, previewHeight.value);
   }
 
   function setTool(tool: ImageEditorTool) {
     if (!canvas || !ready.value && tool !== "select") return;
+    closeTextContextMenu();
     if (activeTool.value === "crop" && tool !== "crop") clearCropOverlay();
     activeTool.value = tool;
     updateInteractionMode();
@@ -430,8 +506,47 @@ export function useImageEditor(source: ImageEditorSource) {
       canvas.discardActiveObject();
       canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
     }
-    canvas.defaultCursor = drawing ? "crosshair" : "default";
+    updateDrawingCursor();
     canvas.requestRenderAll();
+  }
+
+  function createDrawingCursor(eraser: boolean) {
+    const diameter = Math.max(2, brushSize.value * (eraser ? 1.6 : 1));
+    let cursorSize = Math.ceil(diameter + 8);
+    if (cursorSize % 2 === 0) cursorSize += 1;
+
+    const cursorCanvas = document.createElement("canvas");
+    cursorCanvas.width = cursorSize;
+    cursorCanvas.height = cursorSize;
+    const context = cursorCanvas.getContext("2d");
+    if (!context) return "crosshair";
+
+    const center = Math.floor(cursorSize / 2);
+    context.beginPath();
+    context.arc(center, center, diameter / 2, 0, Math.PI * 2);
+    context.fillStyle = eraser ? "rgba(241, 244, 248, 0.16)" : brushColor.value;
+    context.globalAlpha = eraser ? 1 : 0.22;
+    context.fill();
+    context.globalAlpha = 1;
+    context.lineWidth = 3;
+    context.strokeStyle = "rgba(4, 7, 11, 0.92)";
+    context.stroke();
+    context.lineWidth = 1;
+    context.strokeStyle = "rgba(255, 255, 255, 0.98)";
+    context.stroke();
+
+    return `url("${cursorCanvas.toDataURL("image/png")}") ${center} ${center}, crosshair`;
+  }
+
+  function updateDrawingCursor() {
+    if (!canvas) return;
+    const drawing = activeTool.value === "draw" || activeTool.value === "erase";
+    const cursor = drawing
+      ? createDrawingCursor(activeTool.value === "erase")
+      : "default";
+    canvas.freeDrawingCursor = cursor;
+    canvas.defaultCursor = cursor;
+    canvas.setCursor(cursor);
   }
 
   function createBrush(eraser: boolean): PencilBrush {
@@ -465,13 +580,17 @@ export function useImageEditor(source: ImageEditorSource) {
 
   function setBrushColor(color: string) {
     brushColor.value = color;
-    if (activeTool.value === "draw" && canvas) canvas.freeDrawingBrush = createBrush(false);
+    if (activeTool.value === "draw" && canvas) {
+      canvas.freeDrawingBrush = createBrush(false);
+      updateDrawingCursor();
+    }
   }
 
   function setBrushSize(size: number) {
     brushSize.value = size;
     if ((activeTool.value === "draw" || activeTool.value === "erase") && canvas) {
       canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
+      updateDrawingCursor();
     }
   }
 
@@ -537,7 +656,8 @@ export function useImageEditor(source: ImageEditorSource) {
   }
 
   function setAdjustment(adjustment: ImageAdjustment, value: number, commit = false) {
-    adjustments[adjustment] = Math.max(-100, Math.min(100, Math.round(value)));
+    const normalized = normalizeImageAdjustments({ ...adjustments, [adjustment]: value });
+    adjustments[adjustment] = normalized[adjustment];
     renderBasePreview();
     if (commit) commitHistory();
     else dirty.value = captureSnapshot().signature !== initialSignature;
@@ -557,13 +677,24 @@ export function useImageEditor(source: ImageEditorSource) {
 
   function clearCropOverlay() {
     if (!canvas) return;
-    cropShades.forEach((shade) => canvas?.remove(shade));
-    if (cropBox) canvas.remove(cropBox);
-    cropShades = [];
+    const editorCanvas = canvas;
+    const overlayObjects = [cropShade, cropBox].filter(
+      (object): object is FabricRect => object !== null
+    );
+    const activeObject = editorCanvas.getActiveObject();
+    if (activeObject && overlayObjects.some((object) => object === activeObject)) {
+      editorCanvas.discardActiveObject();
+    }
+    overlayObjects.forEach((object) => {
+      editorCanvas.remove(object);
+      transientObjects.delete(object);
+    });
+    if (cropShade) cropShade.clipPath = undefined;
+    cropShade = null;
+    cropShadeClip = null;
     cropBox = null;
-    transientObjects.clear();
-    canvas.uniformScaling = false;
-    canvas.requestRenderAll();
+    editorCanvas.uniformScaling = false;
+    editorCanvas.requestRenderAll();
   }
 
   function createCropOverlay() {
@@ -583,70 +714,122 @@ export function useImageEditor(source: ImageEditorSource) {
       else height = width / ratio;
     }
 
-    cropShades = Array.from({ length: 4 }, () =>
-      new fabricModule!.Rect({
-        evented: false,
-        excludeFromExport: true,
-        fill: "rgba(4, 7, 11, 0.62)",
-        selectable: false,
-        strokeWidth: 0
-      })
-    );
+    const left = (outputWidth.value - width) / 2;
+    const top = (outputHeight.value - height) / 2;
+    cropShadeClip = new fabricModule.Rect({
+      absolutePositioned: true,
+      evented: false,
+      excludeFromExport: true,
+      fill: "#000000",
+      height,
+      inverted: true,
+      left,
+      originX: "left",
+      originY: "top",
+      selectable: false,
+      strokeWidth: 0,
+      top,
+      width
+    });
+    cropShade = new fabricModule.Rect({
+      evented: false,
+      excludeFromExport: true,
+      fill: "rgba(4, 7, 11, 0.62)",
+      height: outputHeight.value,
+      left: 0,
+      originX: "left",
+      originY: "top",
+      selectable: false,
+      strokeWidth: 0,
+      top: 0,
+      width: outputWidth.value,
+      clipPath: cropShadeClip
+    });
     cropBox = new fabricModule.Rect({
+      borderColor: "rgba(241, 244, 248, 0.94)",
+      borderScaleFactor: 1.5,
       cornerColor: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+      cornerSize: 11,
+      cornerStrokeColor: "rgba(4, 7, 11, 0.82)",
       cornerStyle: "rect",
       evented: true,
       excludeFromExport: true,
       fill: "rgba(255, 255, 255, 0.001)",
       hasRotatingPoint: false,
-      left: (outputWidth.value - width) / 2,
+      left,
       lockRotation: true,
       lockScalingFlip: true,
       originX: "left",
       originY: "top",
+      padding: 1,
       selectable: true,
-      stroke: "rgba(241, 244, 248, 0.92)",
-      strokeUniform: true,
-      top: (outputHeight.value - height) / 2,
+      strokeWidth: 0,
+      top,
       transparentCorners: false,
       width,
       height
     });
     cropBox.setControlsVisibility({ mtr: false });
     if (ratio) cropBox.setControlsVisibility({ ml: false, mr: false, mt: false, mb: false });
-    cropBox.on("moving", constrainCropBox);
-    cropBox.on("scaling", constrainCropBox);
-    cropBox.on("modified", updateCropShades);
-    [...cropShades, cropBox].forEach((object) => transientObjects.add(object));
-    canvas.add(...cropShades, cropBox);
+    cropBox.on("moving", constrainCropBoxDuringTransform);
+    cropBox.on("scaling", constrainCropBoxDuringTransform);
+    cropBox.on("modified", finalizeCropBoxTransform);
+    [cropShade, cropBox].forEach((object) => transientObjects.add(object));
+    canvas.add(cropShade, cropBox);
     canvas.setActiveObject(cropBox);
     updateCropControlScale();
-    updateCropShades();
+    updateCropShade();
     canvas.requestRenderAll();
   }
 
-  function constrainCropBox() {
+  function clamp(value: number, minimum: number, maximum: number) {
+    return Math.min(maximum, Math.max(minimum, value));
+  }
+
+  function constrainCropBox(tolerance: number) {
     if (!cropBox) return;
+
+    const ratio = ratioValue(cropRatio.value);
+    const maxWidth = outputWidth.value + tolerance * 2;
+    const maxHeight = outputHeight.value + tolerance * 2;
     let { width: scaledWidth, height: scaledHeight } = cropSelectionBounds();
-    if (scaledWidth > outputWidth.value || scaledHeight > outputHeight.value) {
+    if (ratio && (scaledWidth > maxWidth || scaledHeight > maxHeight)) {
       const factor = Math.min(
-        outputWidth.value / scaledWidth,
-        outputHeight.value / scaledHeight
+        maxWidth / scaledWidth,
+        maxHeight / scaledHeight
       );
       cropBox.scaleX *= factor;
       cropBox.scaleY *= factor;
       ({ width: scaledWidth, height: scaledHeight } = cropSelectionBounds());
+    } else if (!ratio) {
+      if (scaledWidth > maxWidth) cropBox.scaleX *= maxWidth / scaledWidth;
+      if (scaledHeight > maxHeight) cropBox.scaleY *= maxHeight / scaledHeight;
+      ({ width: scaledWidth, height: scaledHeight } = cropSelectionBounds());
     }
-    cropBox.left = Math.max(
-      0,
-      Math.min(cropBox.left, outputWidth.value - scaledWidth)
+
+    cropBox.left = clamp(
+      cropBox.left,
+      -tolerance,
+      outputWidth.value - scaledWidth + tolerance
     );
-    cropBox.top = Math.max(
-      0,
-      Math.min(cropBox.top, outputHeight.value - scaledHeight)
+    cropBox.top = clamp(
+      cropBox.top,
+      -tolerance,
+      outputHeight.value - scaledHeight + tolerance
     );
+  }
+
+  function constrainCropBoxDuringTransform() {
+    const tolerance = CROP_EDGE_TOLERANCE_PX / Math.max(previewScale.value, 0.01);
+    constrainCropBox(tolerance);
+    updateCropShade();
+  }
+
+  function finalizeCropBoxTransform() {
+    if (!cropBox) return;
+    constrainCropBox(0);
     cropBox.setCoords();
-    updateCropShades();
+    updateCropShade();
   }
 
   function cropSelectionBounds() {
@@ -661,32 +844,31 @@ export function useImageEditor(source: ImageEditorSource) {
 
   function updateCropControlScale() {
     if (!cropBox) return;
-    const scale = Math.max(previewScale.value, 0.01);
     cropBox.set({
-      cornerSize: 11 / scale,
-      padding: 1 / scale,
-      strokeWidth: 1.5 / scale
+      borderScaleFactor: 1.5,
+      cornerSize: 11,
+      padding: 1
     });
     cropBox.setCoords();
   }
 
-  function updateCropShades() {
-    if (!cropBox || cropShades.length !== 4) return;
+  function updateCropShade() {
+    if (!cropBox || !cropShade || !cropShadeClip) return;
     const bounds = cropSelectionBounds();
-    const left = Math.max(0, bounds.left);
-    const top = Math.max(0, bounds.top);
-    const right = Math.min(outputWidth.value, left + bounds.width);
-    const bottom = Math.min(outputHeight.value, top + bounds.height);
-    const layouts = [
-      { left: 0, top: 0, width: outputWidth.value, height: top },
-      { left: 0, top: bottom, width: outputWidth.value, height: outputHeight.value - bottom },
-      { left: 0, top, width: left, height: bottom - top },
-      { left: right, top, width: outputWidth.value - right, height: bottom - top }
-    ];
-    cropShades.forEach((shade, index) => {
-      shade.set(layouts[index]);
-      shade.setCoords();
+    const left = clamp(bounds.left, 0, outputWidth.value);
+    const top = clamp(bounds.top, 0, outputHeight.value);
+    const right = clamp(bounds.left + bounds.width, 0, outputWidth.value);
+    const bottom = clamp(bounds.top + bounds.height, 0, outputHeight.value);
+    cropShadeClip.set({
+      height: Math.max(1, bottom - top),
+      left,
+      scaleX: 1,
+      scaleY: 1,
+      top,
+      width: Math.max(1, right - left)
     });
+    cropShadeClip.dirty = true;
+    cropShade.dirty = true;
     canvas?.requestRenderAll();
   }
 
@@ -773,9 +955,10 @@ export function useImageEditor(source: ImageEditorSource) {
 
   async function reset() {
     if (!canvas) return;
+    closeTextContextMenu();
     clearCropOverlay();
     operations = [];
-    Object.assign(adjustments, { brightness: 0, contrast: 0, saturation: 0 });
+    Object.assign(adjustments, DEFAULT_IMAGE_ADJUSTMENTS);
     canvas.clear();
     await rebuildGeometryCanvas();
     activeTool.value = "select";
@@ -788,7 +971,29 @@ export function useImageEditor(source: ImageEditorSource) {
     if (!canvas) return;
     const objects = canvas.getActiveObjects().filter((object) => !transientObjects.has(object));
     if (!objects.length) return;
+    if (contextTextObject && objects.includes(contextTextObject)) closeTextContextMenu();
     objects.forEach((object) => canvas?.remove(object));
+    canvas.discardActiveObject();
+    canvas.requestRenderAll();
+    syncSelectedObject();
+    commitHistory();
+  }
+
+  function closeTextContextMenu() {
+    textContextMenu.value = null;
+    contextTextObject = null;
+  }
+
+  function deleteContextText() {
+    if (!canvas || !contextTextObject || !canvas.getObjects().includes(contextTextObject)) {
+      closeTextContextMenu();
+      return;
+    }
+
+    const text = contextTextObject;
+    closeTextContextMenu();
+    if (text.isEditing) text.exitEditing();
+    canvas.remove(text);
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     syncSelectedObject();
@@ -851,7 +1056,8 @@ export function useImageEditor(source: ImageEditorSource) {
   }
 
   async function applyEdits(): Promise<ImageEditorApplyResult> {
-    if (!geometryCanvas) throw new Error("图片编辑器尚未加载完成。");
+    const imageSource = geometrySource();
+    if (!imageSource) throw new Error("图片编辑器尚未加载完成。");
     const document = currentDocument();
     if (isPristineImageEditorDocument(document)) return { pristine: true };
 
@@ -863,11 +1069,13 @@ export function useImageEditor(source: ImageEditorSource) {
       output.height = outputHeight.value;
       const context = output.getContext("2d");
       if (!context) throw new Error("当前设备无法导出该图片。");
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = "high";
-      context.filter = imageFilter(adjustments);
-      context.drawImage(geometryCanvas, 0, 0);
-      context.filter = "none";
+      drawAdjustedImage(
+        context,
+        imageSource,
+        outputWidth.value,
+        outputHeight.value,
+        adjustments
+      );
       const annotationCanvas = await exportAnnotations();
       if (annotationCanvas) context.drawImage(annotationCanvas, 0, 0);
 
@@ -893,6 +1101,7 @@ export function useImageEditor(source: ImageEditorSource) {
   }
 
   function dispose() {
+    closeTextContextMenu();
     resizeObserver?.disconnect();
     resizeObserver = null;
     if (canvas) void canvas.dispose();
@@ -904,6 +1113,11 @@ export function useImageEditor(source: ImageEditorSource) {
       geometryCanvas.height = 0;
     }
     geometryCanvas = null;
+    if (previewAdjustmentCanvas) {
+      previewAdjustmentCanvas.width = 0;
+      previewAdjustmentCanvas.height = 0;
+    }
+    previewAdjustmentCanvas = null;
   }
 
   onBeforeUnmount(dispose);
@@ -926,6 +1140,7 @@ export function useImageEditor(source: ImageEditorSource) {
     previewWidth: readonly(previewWidth),
     ready: readonly(ready),
     selectedIsText: readonly(selectedIsText),
+    textContextMenu: readonly(textContextMenu),
     textBold: readonly(textBold),
     textColor: readonly(textColor),
     textSize: readonly(textSize),
@@ -933,6 +1148,8 @@ export function useImageEditor(source: ImageEditorSource) {
     applyCrop,
     applyEdits,
     cancelCrop,
+    closeTextContextMenu,
+    deleteContextText,
     deleteSelected,
     flip,
     handleKeydown,
