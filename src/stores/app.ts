@@ -24,6 +24,7 @@ import type {
   GenerationSettings,
   GenerationStatus,
   GenerationTask,
+  GeneratedImage,
   ImageParams,
   PointLedgerEntry,
   PromptTemplate,
@@ -181,6 +182,12 @@ function extensionForMime(mimeType?: string) {
   return "png";
 }
 
+// 以服务端图片为准，按 asset id 合并本地的 localPath（仅同一资源才保留下载副本路径）。
+function mergeServerImage(serverImage: GeneratedImage, localImages: GeneratedImage[]): GeneratedImage {
+  const localMatch = localImages.find((local) => local.id === serverImage.id);
+  return localMatch?.localPath ? { ...serverImage, localPath: localMatch.localPath } : serverImage;
+}
+
 function parseSize(size: ImageParams["size"]) {
   if (size === "auto") return {};
   const match = /^(\d+)x(\d+)$/u.exec(size);
@@ -274,10 +281,14 @@ export const useAppStore = defineStore("app", () => {
       const localRecord = records.get(record.generationId);
       if (!localRecord) {
         records.set(record.generationId, record);
-      } else if (!localRecord.inputImage && record.inputImage) {
+      } else {
+        // 本地与服务端同时存在：图片相关字段以服务端为准，按 asset id 保留本地 localPath；其余字段维持本地。
         records.set(record.generationId, {
           ...localRecord,
+          images: record.images.map((image) => mergeServerImage(image, localRecord.images)),
           inputImage: record.inputImage
+            ? mergeServerImage(record.inputImage, localRecord.inputImage ? [localRecord.inputImage] : [])
+            : localRecord.inputImage
         });
       }
     });

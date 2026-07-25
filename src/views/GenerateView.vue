@@ -6,6 +6,10 @@ import GeneratorPanel from "@/components/GeneratorPanel.vue";
 import LoginModal from "@/components/LoginModal.vue";
 import ResultGrid from "@/components/ResultGrid.vue";
 import PromptTemplateModal from "@/components/PromptTemplateModal.vue";
+import {
+  stageImageEditorHandoff,
+  type ImageEditorHandoff
+} from "@/services/imageEditorHandoff";
 import { useAppStore } from "@/stores/app";
 import type {
   GenerationMode,
@@ -220,6 +224,11 @@ async function useAsReference(image: SelectedImageFile) {
   taskAttached.value = false;
   app.clearGenerationError();
 }
+
+async function editImage(handoff: ImageEditorHandoff) {
+  stageImageEditorHandoff(handoff);
+  await router.push("/editor");
+}
 </script>
 
 <template>
@@ -236,6 +245,7 @@ async function useAsReference(image: SelectedImageFile) {
       :recoverable-task="recoverableTask"
       :mode="mode"
       @cancel="cancelGeneration"
+      @edit-image="editImage"
       @restore-task="restoreTask"
       @use-as-reference="useAsReference"
     />

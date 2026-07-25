@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-toggle-devtools"
+description = "Allow the frontend to toggle the DevTools panel (debug builds only)."
+commands.allow = ["toggle-devtools"]

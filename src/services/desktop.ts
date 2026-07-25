@@ -66,6 +66,29 @@ function mimeTypeFromName(name: string) {
   return "image/png";
 }
 
+export function selectedImageFileFromFile(file: File): SelectedImageFile {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  const extensionMimeType = extension === "jpg" || extension === "jpeg"
+    ? "image/jpeg"
+    : extension === "webp"
+      ? "image/webp"
+      : extension === "png" ? "image/png" : null;
+  const mimeType = ["image/jpeg", "image/png", "image/webp"].includes(file.type)
+    ? file.type
+    : extensionMimeType;
+
+  if (!mimeType) throw new Error("仅支持 PNG、JPEG 和 WebP 图片。");
+
+  const normalizedFile = file.type === mimeType
+    ? file
+    : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
+  return {
+    name: normalizedFile.name,
+    path: normalizedFile.name,
+    file: normalizedFile
+  };
+}
+
 export async function chooseImageFile(): Promise<SelectedImageFile | null> {
   if (!isTauri) {
     return await new Promise((resolve) => {

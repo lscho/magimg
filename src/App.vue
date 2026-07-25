@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, shallowRef } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import {
   Coins,
@@ -9,11 +10,13 @@ import {
   LayoutTemplate,
   LogIn,
   Menu,
+  QrCode,
   Settings,
   Wand2
 } from "lucide-vue-next";
 import huanhuaMarkUrl from "@/assets/huanhua-mark.svg";
 import LoginModal from "@/components/LoginModal.vue";
+import QrcodeModal from "@/components/QrcodeModal.vue";
 import RechargeModal from "@/components/RechargeModal.vue";
 import CreditLogModal from "@/components/CreditLogModal.vue";
 import SettingsModal from "@/components/SettingsModal.vue";
@@ -45,13 +48,35 @@ const showLogin = shallowRef(false);
 const showRecharge = shallowRef(false);
 const showCreditLog = shallowRef(false);
 const showSettings = shallowRef(false);
+const showQrcode = shallowRef(false);
 const sidebarOpen = shallowRef(false);
 const formattedBalance = computed(() => new Intl.NumberFormat("zh-CN").format(app.balance.balance));
 
 onMounted(() => {
   void app.init();
   void checkForUpdates();
+  bindDevtoolsHotkey();
 });
+
+// 开发模式下用快捷键开关调试控制台：F12 或 Cmd/Ctrl+Shift+I
+// 仅在 Tauri 运行时 + Vite DEV 下生效，release 包与浏览器预览均不触发
+function bindDevtoolsHotkey() {
+  if (!import.meta.env.DEV || !("__TAURI_INTERNALS__" in window)) return;
+  const handler = async (event: KeyboardEvent) => {
+    const toggle =
+      event.key === "F12" ||
+      ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "i");
+    if (!toggle) return;
+    event.preventDefault();
+    try {
+      await invoke("toggle-devtools");
+    } catch (err) {
+      console.error("[devtools] 打开失败，请查看 tauri dev 终端日志:", err);
+    }
+  };
+  window.addEventListener("keydown", handler);
+  onUnmounted(() => window.removeEventListener("keydown", handler));
+}
 
 const currentMode = computed(() => route.params.mode);
 
@@ -147,6 +172,15 @@ function openRechargeFromCreditLog() {
             <CircleArrowUp :size="18" aria-hidden="true" />
             <span class="rail-tooltip" aria-hidden="true">发现新版本 {{ updateInfo.version }}</span>
           </button>
+          <button
+            class="account-settings-button"
+            type="button"
+            aria-label="加入群聊"
+            @click="showQrcode = true"
+          >
+            <QrCode :size="16" />
+            <span class="rail-tooltip" aria-hidden="true">加入群聊</span>
+          </button>
           <template v-if="app.isAuthenticated">
             <button
               class="account-settings-button"
@@ -170,6 +204,7 @@ function openRechargeFromCreditLog() {
       <main class="content"><RouterView /></main>
     </div>
 
+    <QrcodeModal v-if="showQrcode" @close="showQrcode = false" />
     <LoginModal v-if="showLogin" @close="showLogin = false" />
     <CreditLogModal v-if="showCreditLog" @close="showCreditLog = false" @recharge="openRechargeFromCreditLog" />
     <RechargeModal v-if="showRecharge" @close="showRecharge = false" />

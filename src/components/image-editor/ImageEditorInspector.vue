@@ -1,24 +1,31 @@
 <script setup lang="ts">
-import { Bold, Check, Plus, X } from "lucide-vue-next";
+import { shallowRef, watch } from "vue";
+import { Bold, Check, Minus, Plus, Scan, X } from "lucide-vue-next";
 import type {
+  CropDimension,
   CropRatio,
   ImageAdjustment,
   ImageAdjustments,
   ImageEditorTool
 } from "./types";
 
-defineProps<{
+const props = defineProps<{
   activeTool: ImageEditorTool;
   adjustments: Readonly<ImageAdjustments>;
   brushColor: string;
   brushSize: number;
   busy: boolean;
+  cropHeight: number;
   cropRatio: CropRatio;
+  cropWidth: number;
+  outputHeight: number;
   outputLabel: string;
+  outputWidth: number;
   selectedIsText: boolean;
   textBold: boolean;
   textColor: string;
   textSize: number;
+  zoomPercent: number;
 }>();
 
 const emit = defineEmits<{
@@ -28,10 +35,15 @@ const emit = defineEmits<{
   setAdjustment: [adjustment: ImageAdjustment, value: number, commit: boolean];
   setBrushColor: [color: string];
   setBrushSize: [size: number];
+  setCropDimension: [dimension: CropDimension, value: number];
   setCropRatio: [ratio: CropRatio];
   setTextColor: [color: string, commit: boolean];
   setTextSize: [size: number, commit: boolean];
+  setZoom: [percent: number];
   toggleTextBold: [];
+  fitPreview: [];
+  zoomIn: [];
+  zoomOut: [];
 }>();
 
 const cropRatios: Array<{ value: CropRatio; label: string }> = [
@@ -65,6 +77,24 @@ const colorSwatches = [
   "#E4A06B",
   "#EF7D88"
 ];
+const cropWidthDraft = shallowRef("");
+const cropHeightDraft = shallowRef("");
+
+watch(
+  () => props.cropWidth,
+  (value) => {
+    cropWidthDraft.value = String(value);
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.cropHeight,
+  (value) => {
+    cropHeightDraft.value = String(value);
+  },
+  { immediate: true }
+);
 
 function numberFromEvent(event: Event) {
   return Number((event.currentTarget as HTMLInputElement).value);
@@ -72,6 +102,44 @@ function numberFromEvent(event: Event) {
 
 function colorFromEvent(event: Event) {
   return (event.currentTarget as HTMLInputElement).value;
+}
+
+function cropDimensionDraft(dimension: CropDimension) {
+  return dimension === "width" ? cropWidthDraft : cropHeightDraft;
+}
+
+function cropDimensionMaximum(dimension: CropDimension) {
+  return dimension === "width" ? props.outputWidth : props.outputHeight;
+}
+
+function cropDimensionValue(dimension: CropDimension) {
+  return dimension === "width" ? props.cropWidth : props.cropHeight;
+}
+
+function cropDimensionIsInvalid(dimension: CropDimension) {
+  const rawValue = cropDimensionDraft(dimension).value;
+  const value = Number(rawValue);
+  return rawValue.trim() === "" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > cropDimensionMaximum(dimension);
+}
+
+function updateCropDimension(dimension: CropDimension, event: Event) {
+  const rawValue = (event.currentTarget as HTMLInputElement).value;
+  cropDimensionDraft(dimension).value = rawValue;
+  const value = Number(rawValue);
+  if (
+    rawValue.trim() === "" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > cropDimensionMaximum(dimension)
+  ) return;
+  emit("setCropDimension", dimension, value);
+}
+
+function normalizeCropDimension(dimension: CropDimension) {
+  cropDimensionDraft(dimension).value = String(cropDimensionValue(dimension));
 }
 </script>
 
@@ -83,6 +151,49 @@ function colorFromEvent(event: Event) {
     </header>
 
     <section v-if="activeTool === 'crop'" class="inspector-section">
+      <h3>裁剪尺寸</h3>
+      <div class="crop-size-fields">
+        <label>
+          <span>宽度</span>
+          <span class="crop-size-input" :class="{ invalid: cropDimensionIsInvalid('width') }">
+            <input
+              :value="cropWidthDraft"
+              type="number"
+              inputmode="numeric"
+              aria-label="裁剪宽度"
+              :aria-invalid="cropDimensionIsInvalid('width')"
+              min="1"
+              :max="outputWidth"
+              step="1"
+              :disabled="busy"
+              @input="updateCropDimension('width', $event)"
+              @blur="normalizeCropDimension('width')"
+              @keydown.enter.prevent="normalizeCropDimension('width')"
+            />
+            <em>px</em>
+          </span>
+        </label>
+        <label>
+          <span>高度</span>
+          <span class="crop-size-input" :class="{ invalid: cropDimensionIsInvalid('height') }">
+            <input
+              :value="cropHeightDraft"
+              type="number"
+              inputmode="numeric"
+              aria-label="裁剪高度"
+              :aria-invalid="cropDimensionIsInvalid('height')"
+              min="1"
+              :max="outputHeight"
+              step="1"
+              :disabled="busy"
+              @input="updateCropDimension('height', $event)"
+              @blur="normalizeCropDimension('height')"
+              @keydown.enter.prevent="normalizeCropDimension('height')"
+            />
+            <em>px</em>
+          </span>
+        </label>
+      </div>
       <h3>裁剪比例</h3>
       <div class="ratio-grid" role="group" aria-label="裁剪比例">
         <button
@@ -243,6 +354,51 @@ function colorFromEvent(event: Event) {
       </span>
     </section>
 
+    <section v-else-if="activeTool === 'pan'" class="inspector-section">
+      <h3>画布视图</h3>
+      <label class="range-control">
+        <span>
+          <strong>缩放</strong>
+          <output>{{ zoomPercent }}%</output>
+        </span>
+        <input
+          :value="zoomPercent"
+          type="range"
+          aria-label="画布缩放"
+          :aria-valuetext="`${zoomPercent}%`"
+          min="25"
+          max="400"
+          step="5"
+          :disabled="busy"
+          @input="emit('setZoom', numberFromEvent($event))"
+        />
+      </label>
+      <div class="zoom-button-group" role="group" aria-label="画布缩放操作">
+        <button
+          type="button"
+          title="缩小画布"
+          aria-label="缩小画布"
+          :disabled="busy || zoomPercent <= 25"
+          @click="emit('zoomOut')"
+        >
+          <Minus :size="15" aria-hidden="true" />
+        </button>
+        <button type="button" :disabled="busy" @click="emit('fitPreview')">
+          <Scan :size="15" aria-hidden="true" />
+          适应画布
+        </button>
+        <button
+          type="button"
+          title="放大画布"
+          aria-label="放大画布"
+          :disabled="busy || zoomPercent >= 400"
+          @click="emit('zoomIn')"
+        >
+          <Plus :size="15" aria-hidden="true" />
+        </button>
+      </div>
+    </section>
+
     <section v-else class="inspector-section selection-inspector">
       <h3>画布</h3>
       <dl>
@@ -362,6 +518,74 @@ function colorFromEvent(event: Event) {
   }
 }
 
+.crop-size-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+
+  > label {
+    min-width: 0;
+    display: grid;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+  }
+}
+
+.crop-size-input {
+  min-width: 0;
+  height: 36px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+
+  &:focus-within {
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  &.invalid {
+    border-color: rgba(239, 125, 136, 0.62);
+  }
+
+  input {
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px 0 9px;
+    border: 0;
+    border-radius: 0;
+    color: var(--text);
+    background: transparent;
+    box-shadow: none;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+
+    &:hover,
+    &:focus {
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      outline: 0;
+    }
+  }
+
+  em {
+    padding-right: 8px;
+    color: var(--muted);
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 600;
+  }
+}
+
 .inspector-actions {
   display: grid;
   grid-template-columns: 1fr 1.3fr;
@@ -370,6 +594,35 @@ function colorFromEvent(event: Event) {
   button {
     min-width: 0;
     padding-inline: 8px;
+  }
+}
+
+.zoom-button-group {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  gap: 7px;
+
+  button {
+    min-width: 0;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--soft);
+    background: var(--field);
+    font-size: 10px;
+    font-weight: 650;
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      border-color: var(--accent-border);
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+    }
   }
 }
 

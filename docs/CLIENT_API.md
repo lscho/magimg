@@ -51,6 +51,7 @@
 | `GET` | `/templates/:id` | 已发布模板详情 |
 | `GET` | `/version/latest` | 指定平台的最新普通安装包 |
 | `GET` | `/version/latest/tauri` | 指定平台的最新 Tauri 签名更新包 |
+| `GET` | `/config` | 读取后台「客户端配置」分组运营信息（如群聊二维码） |
 
 **鉴权接口（需 `Authorization: Bearer <token>`）**
 
@@ -65,6 +66,7 @@
 | `GET` | `/tasks` | 当前用户任务分页与筛选 |
 | `GET` | `/tasks/:id` | 当前用户任务详情 |
 | `POST` | `/tasks/:id/cancel` | 取消排队中任务并退款 |
+| `POST` | `/feedback` | 提交意见反馈 |
 
 ---
 
@@ -486,6 +488,43 @@ curl -i "https://api.example.com/api/client/v1/version/latest/tauri?platform=mac
 
 ---
 
+### 3.11 `GET /config`
+
+公开读取后台「客户端配置」分组下的全部配置值，供客户端展示运营信息（如群聊二维码）。
+
+**请求**：无参数，无需认证（与 `GET /capabilities` 一致，属于公开配置端点）。
+
+**成功响应（200）**：`ClientSettings`
+
+```json
+{
+  "groupQrcode": "https://example.com/qrcode.png"
+}
+```
+
+返回字段由后台「客户端配置」分组决定；当前仅有 `groupQrcode`（群聊二维码图片链接，http/https）。后台未保存该分组时返回空字符串默认值。该分组不含任何敏感凭据，故设为公开端点。
+
+**字段说明（`ClientSettings`）**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `groupQrcode` | string (URL) | 否 | 群聊二维码图片地址，客户端直接作为 `<img src>` 使用；未配置时返回空字符串 |
+
+**实现建议**
+
+- 存储：复用现有 `ls_config` 表，`name='other'`，JSON 字段包含 `groupQrcode`。
+- 图片托管：二维码图片上传至 CDN 或静态资源目录，配置中存储完整可访问 URL。
+- 缓存：客户端每次打开弹窗时请求，后端可设 `Cache-Control: public, max-age=300`。
+- 扩展：后续新增运营配置字段时，只需在对应组的 JSON 中追加 key，客户端按需读取，无需修改接口路径。
+
+**联调示例**
+
+```bash
+curl -i "https://api.example.com/api/client/v1/config"
+```
+
+---
+
 ## 4. 鉴权接口（需 `Authorization: Bearer <token>`）
 
 ### 4.1 `GET /me`
@@ -688,6 +727,44 @@ curl -i "https://api.example.com/api/client/v1/version/latest/tauri?platform=mac
 **成功响应（200）**：`GenerationTask`（取消后最新状态，`status: "cancelled"`）。
 
 **错误码**：404 `任务不存在`；409 `只有排队中的任务可以取消`（仅 `pending` 可取消）；401（未登录/过期）。
+
+---
+
+### 4.10 `POST /feedback`
+
+提交意见反馈。服务端记录反馈内容、可选联系方式、提交用户与来源 IP。反馈仅供后台查看，接口本身不返回历史列表。
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `content` | string | 是 | 反馈内容，1–2000 字符，首尾空白会被去除 |
+| `contact` | string | 否 | 联系方式（如 QQ / 微信 / 邮箱），最多 200 字符；留空或缺失则不记录 |
+
+**成功响应（200）**
+
+```json
+{
+  "id": "12",
+  "createdAt": "2026-07-24T12:00:00.000Z"
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | 新建反馈记录 ID |
+| `createdAt` | string | 创建时间（ISO 8601） |
+
+**错误码**
+
+| HTTP | `message` | 使用场景 |
+| --- | --- | --- |
+| 400 | `请求参数格式无效` | body 非对象 |
+| 400 | `反馈内容须为 1 到 2000 个字符` | 内容缺失或超长 |
+| 400 | `文本参数格式无效` | 联系方式超长 |
+| 401 | — | 未登录或 token 过期 |
+| 403 | `账号已停用` | 用户被禁用 |
+| 429 | `请求过于频繁，请稍后再试` | 反馈限流（`feedback-submit` 20 次/小时，维度为 scope + 客户端 IP） |
 
 ---
 

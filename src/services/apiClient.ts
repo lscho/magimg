@@ -5,6 +5,7 @@ import type {
   ClientAuthResponse,
   ClientGenerationMode,
   ClientPagination,
+  ClientSettings,
   ClientUser,
   CreateGenerationTaskInput,
   GenerationSettings,
@@ -274,5 +275,16 @@ export const apiClient = {
 
   cancelTask(id: string) {
     return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  },
+
+  config() {
+    return request<ClientSettings>("/config");
+  },
+
+  submitFeedback(content: string, contact?: string) {
+    return request<{ id: string; createdAt: string }>("/feedback", {
+      method: "POST",
+      body: JSON.stringify({ content, ...(contact ? { contact } : {}) })
+    });
   }
 };

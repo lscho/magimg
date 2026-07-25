@@ -17,6 +17,7 @@ import type {
 import {
   createEmptyImageEditorDocument,
   isPristineImageEditorDocument,
+  type CropDimension,
   type CropRatio,
   type ImageAdjustment,
   type ImageEditorApplyResult,
@@ -57,7 +58,7 @@ interface EditorSnapshot {
   signature: string;
 }
 
-interface TextContextMenuPosition {
+interface ContextMenuPosition {
   x: number;
   y: number;
 }
@@ -65,6 +66,13 @@ interface TextContextMenuPosition {
 const MAX_HISTORY = 30;
 const EMPTY_ANNOTATIONS = { objects: [] };
 const CROP_EDGE_TOLERANCE_PX = 4;
+const CROP_HANDLE_INSET_PX = 7;
+const CROP_OUTLINE_WIDTH_PX = 2;
+const MIN_ZOOM_PERCENT = 25;
+const MAX_ZOOM_PERCENT = 400;
+const ZOOM_BUTTON_STEP = 25;
+const PAN_VIEWPORT_PADDING_PX = 16;
+const PAN_MIN_VISIBLE_PX = 48;
 
 function cloneDocument(document: ImageEditorDocument): ImageEditorDocument {
   return JSON.parse(JSON.stringify(document)) as ImageEditorDocument;
@@ -92,16 +100,23 @@ export function useImageEditor(source: ImageEditorSource) {
   const error = shallowRef("");
   const activeTool = shallowRef<ImageEditorTool>("select");
   const cropRatio = shallowRef<CropRatio>("free");
+  const cropWidth = shallowRef(0);
+  const cropHeight = shallowRef(0);
   const outputWidth = shallowRef(1);
   const outputHeight = shallowRef(1);
   const previewWidth = shallowRef(1);
   const previewHeight = shallowRef(1);
   const previewScale = shallowRef(1);
+  const zoomPercent = shallowRef(100);
+  const panX = shallowRef(0);
+  const panY = shallowRef(0);
+  const panning = shallowRef(false);
   const canUndo = shallowRef(false);
   const canRedo = shallowRef(false);
   const dirty = shallowRef(false);
   const selectedIsText = shallowRef(false);
-  const textContextMenu = shallowRef<TextContextMenuPosition | null>(null);
+  const imageContextMenu = shallowRef<ContextMenuPosition | null>(null);
+  const textContextMenu = shallowRef<ContextMenuPosition | null>(null);
   const brushColor = shallowRef("#F1F4F8");
   const brushSize = shallowRef(8);
   const textColor = shallowRef("#F1F4F8");
@@ -120,12 +135,18 @@ export function useImageEditor(source: ImageEditorSource) {
   let cropBox: FabricRect | null = null;
   let cropShade: FabricRect | null = null;
   let cropShadeClip: FabricRect | null = null;
+  let cropOutline: FabricRect | null = null;
   let contextTextObject: FabricIText | null = null;
   let operations: ImageGeometryOperation[] = [];
   let history: EditorSnapshot[] = [];
   let historyIndex = -1;
   let initialSignature = "";
   let restoring = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginX = 0;
+  let panOriginY = 0;
+  let canvasOffsetFrame: number | null = null;
   const transientObjects = new Set<FabricObject>();
   const textListeners = new WeakSet<FabricIText>();
 
@@ -197,15 +218,24 @@ export function useImageEditor(source: ImageEditorSource) {
     canvas.on("selection:updated", syncSelectedObject);
     canvas.on("selection:cleared", syncSelectedObject);
     canvas.on("mouse:down", ({ e }) => {
-      if ((e as MouseEvent).button !== 2) closeTextContextMenu();
+      if ((e as MouseEvent).button !== 2) {
+        closeImageContextMenu();
+        closeTextContextMenu();
+      }
     });
     canvas.on("contextmenu", ({ e, target }) => {
       if (!target || target.type !== "i-text" || transientObjects.has(target)) {
         closeTextContextMenu();
+        const pointerEvent = e as MouseEvent;
+        imageContextMenu.value = {
+          x: pointerEvent.clientX,
+          y: pointerEvent.clientY
+        };
         return;
       }
 
       const pointerEvent = e as MouseEvent;
+      closeImageContextMenu();
       contextTextObject = target as FabricIText;
       canvas?.setActiveObject(contextTextObject);
       syncSelectedObject();
@@ -417,20 +447,46 @@ export function useImageEditor(source: ImageEditorSource) {
     return geometryCanvas ?? sourceBitmap;
   }
 
+  function panLimit(previewSize: number, viewportSize: number) {
+    const innerSize = Math.max(1, viewportSize - PAN_VIEWPORT_PADDING_PX * 2);
+    if (previewSize <= innerSize) {
+      return Math.max(0, (viewportSize - previewSize) / 2 - PAN_VIEWPORT_PADDING_PX);
+    }
+    return Math.max(0, (previewSize - viewportSize) / 2 + PAN_MIN_VISIBLE_PX);
+  }
+
+  function constrainPan() {
+    if (!viewport) return;
+    const limitX = panLimit(previewWidth.value, viewport.clientWidth);
+    const limitY = panLimit(previewHeight.value, viewport.clientHeight);
+    panX.value = clamp(panX.value, -limitX, limitX);
+    panY.value = clamp(panY.value, -limitY, limitY);
+  }
+
+  function scheduleCanvasOffset() {
+    if (canvasOffsetFrame !== null) cancelAnimationFrame(canvasOffsetFrame);
+    canvasOffsetFrame = requestAnimationFrame(() => {
+      canvasOffsetFrame = null;
+      canvas?.calcOffset();
+    });
+  }
+
   function resizePreview() {
     if (!viewport || !canvas || !baseCanvas) return;
     const availableWidth = Math.max(120, viewport.clientWidth - 32);
     const availableHeight = Math.max(120, viewport.clientHeight - 32);
-    const scale = Math.max(
+    const fitScale = Math.max(
       0.01,
       Math.min(availableWidth / outputWidth.value, availableHeight / outputHeight.value)
     );
+    const scale = fitScale * zoomPercent.value / 100;
     previewScale.value = scale;
     previewWidth.value = Math.max(1, Math.floor(outputWidth.value * scale));
     previewHeight.value = Math.max(1, Math.floor(outputHeight.value * scale));
 
     canvas.setDimensions({ width: previewWidth.value, height: previewHeight.value });
     canvas.setViewportTransform([scale, 0, 0, scale, 0, 0]);
+    constrainPan();
     annotationObjects().forEach(prepareAnnotationObject);
     if (activeTool.value === "draw" || activeTool.value === "erase") {
       canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
@@ -439,6 +495,76 @@ export function useImageEditor(source: ImageEditorSource) {
     updateCropControlScale();
     renderBasePreview();
     canvas.requestRenderAll();
+    scheduleCanvasOffset();
+  }
+
+  function setZoom(nextPercent: number, anchor?: { clientX: number; clientY: number }) {
+    if (!viewport || !Number.isFinite(nextPercent)) return;
+    const normalized = clamp(Math.round(nextPercent), MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+    const previous = zoomPercent.value;
+    if (normalized === previous) return;
+
+    if (anchor) {
+      const bounds = viewport.getBoundingClientRect();
+      const anchorX = anchor.clientX - bounds.left - viewport.clientWidth / 2;
+      const anchorY = anchor.clientY - bounds.top - viewport.clientHeight / 2;
+      const ratio = normalized / previous;
+      panX.value = anchorX - (anchorX - panX.value) * ratio;
+      panY.value = anchorY - (anchorY - panY.value) * ratio;
+    }
+
+    zoomPercent.value = normalized;
+    resizePreview();
+  }
+
+  function zoomIn() {
+    setZoom(zoomPercent.value + ZOOM_BUTTON_STEP);
+  }
+
+  function zoomOut() {
+    setZoom(zoomPercent.value - ZOOM_BUTTON_STEP);
+  }
+
+  function fitPreview() {
+    zoomPercent.value = 100;
+    panX.value = 0;
+    panY.value = 0;
+    resizePreview();
+  }
+
+  function zoomFromWheel(event: WheelEvent) {
+    if (!ready.value || busy.value || !event.deltaY) return;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    setZoom(zoomPercent.value + direction * 10, {
+      clientX: event.clientX,
+      clientY: event.clientY
+    });
+  }
+
+  function startPan(clientX: number, clientY: number) {
+    if (activeTool.value !== "pan" || !ready.value || busy.value) return false;
+    panning.value = true;
+    panStartX = clientX;
+    panStartY = clientY;
+    panOriginX = panX.value;
+    panOriginY = panY.value;
+    updateDrawingCursor();
+    return true;
+  }
+
+  function movePan(clientX: number, clientY: number) {
+    if (!panning.value) return;
+    panX.value = panOriginX + clientX - panStartX;
+    panY.value = panOriginY + clientY - panStartY;
+    constrainPan();
+    scheduleCanvasOffset();
+  }
+
+  function endPan() {
+    if (!panning.value) return;
+    panning.value = false;
+    updateDrawingCursor();
+    scheduleCanvasOffset();
   }
 
   function renderBasePreview() {
@@ -479,6 +605,8 @@ export function useImageEditor(source: ImageEditorSource) {
 
   function setTool(tool: ImageEditorTool) {
     if (!canvas || !ready.value && tool !== "select") return;
+    endPan();
+    closeImageContextMenu();
     closeTextContextMenu();
     if (activeTool.value === "crop" && tool !== "crop") clearCropOverlay();
     activeTool.value = tool;
@@ -491,19 +619,23 @@ export function useImageEditor(source: ImageEditorSource) {
   function updateInteractionMode() {
     if (!canvas || !fabricModule) return;
     const drawing = activeTool.value === "draw" || activeTool.value === "erase";
+    const panMode = activeTool.value === "pan";
     canvas.isDrawingMode = drawing;
     canvas.selection = activeTool.value === "select" || activeTool.value === "text";
+    canvas.skipTargetFind = panMode;
 
     annotationObjects().forEach((object) => {
       const isEraser = object.globalCompositeOperation === "destination-out";
       object.set({
-        selectable: !isEraser && !drawing && activeTool.value !== "crop",
-        evented: !isEraser && !drawing && activeTool.value !== "crop"
+        selectable: !isEraser && !drawing && !panMode && activeTool.value !== "crop",
+        evented: !isEraser && !drawing && !panMode && activeTool.value !== "crop"
       });
     });
 
-    if (drawing) {
+    if (drawing || panMode) {
       canvas.discardActiveObject();
+    }
+    if (drawing) {
       canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
     }
     updateDrawingCursor();
@@ -541,11 +673,14 @@ export function useImageEditor(source: ImageEditorSource) {
   function updateDrawingCursor() {
     if (!canvas) return;
     const drawing = activeTool.value === "draw" || activeTool.value === "erase";
+    const panMode = activeTool.value === "pan";
     const cursor = drawing
       ? createDrawingCursor(activeTool.value === "erase")
-      : "default";
+      : panMode ? (panning.value ? "grabbing" : "grab") : "default";
     canvas.freeDrawingCursor = cursor;
     canvas.defaultCursor = cursor;
+    canvas.hoverCursor = panMode ? cursor : "move";
+    canvas.moveCursor = panMode ? cursor : "move";
     canvas.setCursor(cursor);
   }
 
@@ -678,7 +813,7 @@ export function useImageEditor(source: ImageEditorSource) {
   function clearCropOverlay() {
     if (!canvas) return;
     const editorCanvas = canvas;
-    const overlayObjects = [cropShade, cropBox].filter(
+    const overlayObjects = [cropShade, cropOutline, cropBox].filter(
       (object): object is FabricRect => object !== null
     );
     const activeObject = editorCanvas.getActiveObject();
@@ -692,7 +827,10 @@ export function useImageEditor(source: ImageEditorSource) {
     if (cropShade) cropShade.clipPath = undefined;
     cropShade = null;
     cropShadeClip = null;
+    cropOutline = null;
     cropBox = null;
+    cropWidth.value = 0;
+    cropHeight.value = 0;
     editorCanvas.uniformScaling = false;
     editorCanvas.requestRenderAll();
   }
@@ -745,9 +883,23 @@ export function useImageEditor(source: ImageEditorSource) {
       width: outputWidth.value,
       clipPath: cropShadeClip
     });
+    cropOutline = new fabricModule.Rect({
+      evented: false,
+      excludeFromExport: true,
+      fill: "transparent",
+      height,
+      left,
+      objectCaching: false,
+      originX: "left",
+      originY: "top",
+      selectable: false,
+      stroke: "rgba(241, 244, 248, 0.94)",
+      strokeWidth: 0,
+      top,
+      width
+    });
     cropBox = new fabricModule.Rect({
-      borderColor: "rgba(241, 244, 248, 0.94)",
-      borderScaleFactor: 1.5,
+      borderColor: "transparent",
       cornerColor: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
       cornerSize: 11,
       cornerStrokeColor: "rgba(4, 7, 11, 0.82)",
@@ -755,13 +907,14 @@ export function useImageEditor(source: ImageEditorSource) {
       evented: true,
       excludeFromExport: true,
       fill: "rgba(255, 255, 255, 0.001)",
+      hasBorders: false,
       hasRotatingPoint: false,
       left,
       lockRotation: true,
       lockScalingFlip: true,
       originX: "left",
       originY: "top",
-      padding: 1,
+      padding: 0,
       selectable: true,
       strokeWidth: 0,
       top,
@@ -774,11 +927,11 @@ export function useImageEditor(source: ImageEditorSource) {
     cropBox.on("moving", constrainCropBoxDuringTransform);
     cropBox.on("scaling", constrainCropBoxDuringTransform);
     cropBox.on("modified", finalizeCropBoxTransform);
-    [cropShade, cropBox].forEach((object) => transientObjects.add(object));
-    canvas.add(cropShade, cropBox);
+    [cropShade, cropOutline, cropBox].forEach((object) => transientObjects.add(object));
+    canvas.add(cropShade, cropOutline, cropBox);
     canvas.setActiveObject(cropBox);
     updateCropControlScale();
-    updateCropShade();
+    syncCropOverlay();
     canvas.requestRenderAll();
   }
 
@@ -822,14 +975,14 @@ export function useImageEditor(source: ImageEditorSource) {
   function constrainCropBoxDuringTransform() {
     const tolerance = CROP_EDGE_TOLERANCE_PX / Math.max(previewScale.value, 0.01);
     constrainCropBox(tolerance);
-    updateCropShade();
+    syncCropOverlay();
   }
 
   function finalizeCropBoxTransform() {
     if (!cropBox) return;
     constrainCropBox(0);
     cropBox.setCoords();
-    updateCropShade();
+    syncCropOverlay();
   }
 
   function cropSelectionBounds() {
@@ -842,18 +995,92 @@ export function useImageEditor(source: ImageEditorSource) {
     };
   }
 
+  function normalizedCropSelection() {
+    const bounds = cropSelectionBounds();
+    const left = clamp(Math.round(bounds.left), 0, Math.max(0, outputWidth.value - 1));
+    const top = clamp(Math.round(bounds.top), 0, Math.max(0, outputHeight.value - 1));
+    return {
+      left,
+      top,
+      width: clamp(Math.round(bounds.width), 1, outputWidth.value - left),
+      height: clamp(Math.round(bounds.height), 1, outputHeight.value - top)
+    };
+  }
+
+  function syncCropSelectionSize() {
+    if (!cropBox) {
+      cropWidth.value = 0;
+      cropHeight.value = 0;
+      return;
+    }
+    const bounds = normalizedCropSelection();
+    cropWidth.value = bounds.width;
+    cropHeight.value = bounds.height;
+  }
+
+  function setCropDimension(dimension: CropDimension, value: number) {
+    if (!cropBox || !canvas || !Number.isFinite(value)) return;
+
+    const bounds = cropSelectionBounds();
+    const width = dimension === "width"
+      ? clamp(Math.round(value), 1, outputWidth.value)
+      : clamp(bounds.width, 1, outputWidth.value);
+    const height = dimension === "height"
+      ? clamp(Math.round(value), 1, outputHeight.value)
+      : clamp(bounds.height, 1, outputHeight.value);
+    const centerX = bounds.left + bounds.width / 2;
+    const centerY = bounds.top + bounds.height / 2;
+
+    cropRatio.value = "free";
+    canvas.uniformScaling = false;
+    cropBox.setControlsVisibility({
+      ml: true,
+      mr: true,
+      mt: true,
+      mb: true,
+      mtr: false
+    });
+    cropBox.set({
+      left: centerX - width / 2,
+      top: centerY - height / 2,
+      scaleX: width / Math.max(cropBox.width, 1),
+      scaleY: height / Math.max(cropBox.height, 1)
+    });
+    constrainCropBox(0);
+    updateCropControlScale();
+    syncCropOverlay();
+  }
+
   function updateCropControlScale() {
     if (!cropBox) return;
     cropBox.set({
-      borderScaleFactor: 1.5,
       cornerSize: 11,
-      padding: 1
+      padding: 0
+    });
+
+    const inset = CROP_HANDLE_INSET_PX;
+    const controlOffsets: Record<string, readonly [number, number]> = {
+      tl: [inset, inset],
+      mt: [0, inset],
+      tr: [-inset, inset],
+      ml: [inset, 0],
+      mr: [-inset, 0],
+      bl: [inset, -inset],
+      mb: [0, -inset],
+      br: [-inset, -inset]
+    };
+    Object.entries(controlOffsets).forEach(([key, [offsetX, offsetY]]) => {
+      const control = cropBox?.controls[key];
+      if (!control) return;
+      control.offsetX = offsetX;
+      control.offsetY = offsetY;
     });
     cropBox.setCoords();
+    syncCropOverlay();
   }
 
-  function updateCropShade() {
-    if (!cropBox || !cropShade || !cropShadeClip) return;
+  function syncCropOverlay() {
+    if (!cropBox || !cropShade || !cropShadeClip || !cropOutline) return;
     const bounds = cropSelectionBounds();
     const left = clamp(bounds.left, 0, outputWidth.value);
     const top = clamp(bounds.top, 0, outputHeight.value);
@@ -869,18 +1096,36 @@ export function useImageEditor(source: ImageEditorSource) {
     });
     cropShadeClip.dirty = true;
     cropShade.dirty = true;
+
+    const scale = Math.max(previewScale.value, 0.01);
+    const strokeWidth = CROP_OUTLINE_WIDTH_PX / scale;
+    const inset = (CROP_OUTLINE_WIDTH_PX / 2 + 0.5) / scale;
+    cropOutline.set({
+      height: Math.max(0, bottom - top - inset * 2),
+      left: left + inset,
+      scaleX: 1,
+      scaleY: 1,
+      strokeWidth,
+      top: top + inset,
+      width: Math.max(0, right - left - inset * 2)
+    });
+    cropOutline.dirty = true;
+    syncCropSelectionSize();
     canvas?.requestRenderAll();
   }
 
   async function applyCrop() {
     if (!cropBox) return;
-    const bounds = cropSelectionBounds();
+    constrainCropBox(0);
+    cropBox.setCoords();
+    syncCropOverlay();
+    const bounds = normalizedCropSelection();
     const oldWidth = outputWidth.value;
     const oldHeight = outputHeight.value;
-    const x = Math.max(0, Math.round(bounds.left));
-    const y = Math.max(0, Math.round(bounds.top));
-    const width = Math.max(1, Math.min(oldWidth - x, Math.round(bounds.width)));
-    const height = Math.max(1, Math.min(oldHeight - y, Math.round(bounds.height)));
+    const x = bounds.left;
+    const y = bounds.top;
+    const width = bounds.width;
+    const height = bounds.height;
     if (x === 0 && y === 0 && width === oldWidth && height === oldHeight) {
       setTool("select");
       return;
@@ -962,7 +1207,7 @@ export function useImageEditor(source: ImageEditorSource) {
     canvas.clear();
     await rebuildGeometryCanvas();
     activeTool.value = "select";
-    resizePreview();
+    fitPreview();
     updateInteractionMode();
     commitHistory();
   }
@@ -982,6 +1227,10 @@ export function useImageEditor(source: ImageEditorSource) {
   function closeTextContextMenu() {
     textContextMenu.value = null;
     contextTextObject = null;
+  }
+
+  function closeImageContextMenu() {
+    imageContextMenu.value = null;
   }
 
   function deleteContextText() {
@@ -1100,10 +1349,18 @@ export function useImageEditor(source: ImageEditorSource) {
     }
   }
 
+  function markApplied() {
+    initialSignature = captureSnapshot().signature;
+    syncHistoryFlags();
+  }
+
   function dispose() {
+    closeImageContextMenu();
     closeTextContextMenu();
     resizeObserver?.disconnect();
     resizeObserver = null;
+    if (canvasOffsetFrame !== null) cancelAnimationFrame(canvasOffsetFrame);
+    canvasOffsetFrame = null;
     if (canvas) void canvas.dispose();
     canvas = null;
     sourceBitmap?.close();
@@ -1130,41 +1387,59 @@ export function useImageEditor(source: ImageEditorSource) {
     busy: readonly(busy),
     canRedo: readonly(canRedo),
     canUndo: readonly(canUndo),
+    cropHeight: readonly(cropHeight),
     cropRatio: readonly(cropRatio),
+    cropWidth: readonly(cropWidth),
     dirty: readonly(dirty),
     error: readonly(error),
+    imageContextMenu: readonly(imageContextMenu),
     outputHeight: readonly(outputHeight),
     outputLabel,
     outputWidth: readonly(outputWidth),
     previewHeight: readonly(previewHeight),
     previewWidth: readonly(previewWidth),
+    panX: readonly(panX),
+    panY: readonly(panY),
+    panning: readonly(panning),
     ready: readonly(ready),
     selectedIsText: readonly(selectedIsText),
     textContextMenu: readonly(textContextMenu),
     textBold: readonly(textBold),
     textColor: readonly(textColor),
     textSize: readonly(textSize),
+    zoomPercent: readonly(zoomPercent),
     addText,
     applyCrop,
     applyEdits,
     cancelCrop,
+    closeImageContextMenu,
     closeTextContextMenu,
     deleteContextText,
     deleteSelected,
+    endPan,
+    fitPreview,
     flip,
     handleKeydown,
     initialize,
+    markApplied,
+    movePan,
     redo,
     reset,
     rotate,
     setAdjustment,
     setBrushColor,
     setBrushSize,
+    setCropDimension,
     setCropRatio,
     setTextColor,
     setTextSize,
     setTool,
+    setZoom,
+    startPan,
     toggleTextBold,
-    undo
+    undo,
+    zoomFromWheel,
+    zoomIn,
+    zoomOut
   };
 }

@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { onMounted, reactive, useTemplateRef } from "vue";
-import { FolderOpen, LogOut, Save, X } from "lucide-vue-next";
+import { onMounted, reactive, shallowRef, useTemplateRef } from "vue";
+import { FolderOpen, Headset, LogOut, Save, X } from "lucide-vue-next";
 import { chooseDirectory } from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
 import type { AppSettings } from "@/types";
+import FeedbackModal from "@/components/FeedbackModal.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const app = useAppStore();
 const dialog = useTemplateRef<HTMLElement>("dialog");
 const draft = reactive<AppSettings>({ ...app.settings, defaultParams: { ...app.settings.defaultParams } });
+const showFeedback = shallowRef(false);
 
 onMounted(() => {
   dialog.value?.focus();
@@ -105,10 +107,16 @@ async function logout() {
           </div>
 
           <footer class="settings-modal-footer">
-            <button v-if="app.isAuthenticated" class="ghost-button danger settings-logout-button" type="button" @click="logout">
-              <LogOut :size="16" />
-              退出登录
-            </button>
+            <div class="settings-footer-left">
+              <button v-if="app.isAuthenticated" class="ghost-button danger settings-logout-button" type="button" @click="logout">
+                <LogOut :size="16" />
+                退出登录
+              </button>
+              <button class="ghost-button settings-feedback-button" type="button" @click="showFeedback = true">
+                <Headset :size="16" />
+                帮助反馈
+              </button>
+            </div>
             <div class="settings-modal-actions">
               <button class="ghost-button settings-cancel-button" type="button" @click="emit('close')">取消</button>
               <button class="primary-small" type="submit">
@@ -120,6 +128,8 @@ async function logout() {
         </form>
       </section>
     </Transition>
+
+    <FeedbackModal v-if="showFeedback" @close="showFeedback = false" />
   </div>
 </template>
 
@@ -311,6 +321,12 @@ async function logout() {
   }
 }
 
+.settings-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .settings-modal-actions {
   display: flex;
   align-items: center;
@@ -329,6 +345,12 @@ async function logout() {
     border-color: rgba(239, 125, 136, 0.5);
     background: rgba(239, 125, 136, 0.09);
   }
+}
+
+.settings-feedback-button {
+  width: auto;
+  height: 38px;
+  padding: 0 13px;
 }
 
 .settings-cancel-button {

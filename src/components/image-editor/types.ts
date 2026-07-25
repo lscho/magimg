@@ -1,5 +1,6 @@
-export type ImageEditorTool = "select" | "crop" | "adjust" | "text" | "draw" | "erase";
+export type ImageEditorTool = "select" | "pan" | "crop" | "adjust" | "text" | "draw" | "erase";
 export type CropRatio = "free" | "original" | "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
+export type CropDimension = "width" | "height";
 export type ImageAdjustment = "brightness" | "contrast" | "saturation" | "grayscale";
 
 export interface ImageAdjustments {

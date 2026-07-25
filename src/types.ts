@@ -235,6 +235,10 @@ export interface CardRedeemResult {
   balance: number;
 }
 
+export interface ClientSettings {
+  groupQrcode: string;
+}
+
 export interface CreateGenerationTaskInput {
   mode?: ClientGenerationMode;
   prompt?: string;

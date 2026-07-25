@@ -4,7 +4,7 @@ import {
   Crop,
   Eraser,
   FlipHorizontal2,
-  FlipVertical2,
+  Hand,
   MousePointer2,
   Redo2,
   RefreshCcw,
@@ -40,7 +40,8 @@ const tools: Array<{
   label: string;
   icon: typeof MousePointer2;
 }> = [
-  { id: "select", label: "选择和移动", icon: MousePointer2 },
+  { id: "select", label: "选择", icon: MousePointer2 },
+  { id: "pan", label: "拖动", icon: Hand },
   { id: "crop", label: "裁剪", icon: Crop },
   { id: "adjust", label: "调整图片", icon: SlidersHorizontal },
   { id: "text", label: "添加文字", icon: Type },
@@ -50,7 +51,11 @@ const tools: Array<{
 </script>
 
 <template>
-  <aside class="editor-toolbar" role="toolbar" aria-label="图片编辑工具">
+  <aside
+    class="editor-toolbar"
+    role="toolbar"
+    aria-label="图片编辑工具"
+  >
     <div class="editor-tool-group">
       <button
         v-for="tool in tools"
@@ -92,22 +97,12 @@ const tools: Array<{
       <button
         class="editor-tool-button"
         type="button"
-        data-tooltip="水平翻转"
-        aria-label="水平翻转"
+        data-tooltip="翻转"
+        aria-label="水平翻转图片"
         :disabled="busy || !ready"
         @click="emit('flip', 'horizontal')"
       >
         <FlipHorizontal2 :size="18" aria-hidden="true" />
-      </button>
-      <button
-        class="editor-tool-button"
-        type="button"
-        data-tooltip="垂直翻转"
-        aria-label="垂直翻转"
-        :disabled="busy || !ready"
-        @click="emit('flip', 'vertical')"
-      >
-        <FlipVertical2 :size="18" aria-hidden="true" />
       </button>
     </div>
 
@@ -160,13 +155,13 @@ const tools: Array<{
 .editor-toolbar {
   position: relative;
   z-index: 2;
-  width: 54px;
+  width: 44px;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 8px;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
   border-right: 1px solid var(--line);
   background: var(--surface);
 }
@@ -174,13 +169,12 @@ const tools: Array<{
 .editor-tool-group {
   width: 100%;
   display: grid;
-  place-items: center;
-  gap: 5px;
+  place-items: stretch;
+  gap: 0;
 }
 
 .editor-transform-group,
 .editor-history-group {
-  padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 
@@ -190,12 +184,13 @@ const tools: Array<{
 
 .editor-tool-button {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 100%;
+  height: 36px;
   display: grid;
   place-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
   color: var(--muted);
   background: transparent;
   transition:
@@ -208,7 +203,7 @@ const tools: Array<{
     position: absolute;
     z-index: 30;
     top: 50%;
-    left: calc(100% + 9px);
+    left: calc(100% + 6px);
     width: max-content;
     max-width: 180px;
     padding: 5px 7px;
@@ -235,18 +230,17 @@ const tools: Array<{
 
   &:hover:not(:disabled),
   &:focus-visible {
-    border-color: var(--line-strong);
     color: var(--text);
     background: var(--surface-strong);
   }
 
   &:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    outline-offset: -2px;
   }
 
   &.active {
-    border-color: var(--accent-border);
+    border-left-color: var(--accent);
     color: var(--accent-strong);
     background: var(--accent-soft);
   }
@@ -262,18 +256,12 @@ const tools: Array<{
 
 @media (max-height: 760px) {
   .editor-toolbar {
-    gap: 6px;
-    padding-block: 7px;
+    gap: 0;
+    padding: 0;
   }
 
   .editor-tool-button {
-    width: 32px;
-    height: 32px;
-  }
-
-  .editor-transform-group,
-  .editor-history-group {
-    padding-top: 6px;
+    height: 31px;
   }
 }
 </style>
