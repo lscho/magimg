@@ -11,7 +11,6 @@ import {
   selectedImageFileFromFile
 } from "@/services/desktop";
 import { consumeCutoutHandoff } from "@/services/cutoutHandoff";
-import { CUTOUT_MODELS } from "@/services/cutoutModelManager";
 import type { CutoutResult, CutoutSelectionBox, SelectedImageFile } from "@/types";
 
 const inference = useCutoutInference();
@@ -127,21 +126,9 @@ function handleSelectionsChange(next: CutoutSelectionBox[]) {
   if (changed && inference.phase.value === "idle") results.value = [];
 }
 
-async function selectModel(modelId: string) {
-  const model = CUTOUT_MODELS.find((candidate) => candidate.id === modelId);
-  if (model) await inference.selectModel(model);
-}
-
-async function installModel(modelId: string) {
-  const model = CUTOUT_MODELS.find((candidate) => candidate.id === modelId);
-  if (model) await inference.installModel(model);
-}
-
-async function removeModel(modelId: string) {
-  const model = CUTOUT_MODELS.find((candidate) => candidate.id === modelId);
-  if (!model) return;
-  const confirmed = window.confirm(`确定移除本地模型“${model.name}”吗？之后可重新下载。`);
-  if (confirmed) await inference.uninstallModel(model);
+async function installResources() {
+  const installed = await inference.installResourcePackage();
+  if (installed) showMessage("AI 抠图资源已就绪");
 }
 
 async function segment() {
@@ -251,11 +238,10 @@ onBeforeUnmount(() => {
       />
       <CutoutResultPanel
         :results="results"
-        :models="CUTOUT_MODELS"
-        :active-model-id="inference.activeModel.value.id"
-        :model-statuses="inference.modelStatuses.value"
         :phase="inference.phase.value"
-        :download-progress="inference.downloadProgress.value"
+        :resource-status="inference.resourceStatus.value"
+        :resource-progress="inference.resourceProgress.value"
+        :resource-download-size-bytes="inference.resourceDownloadSizeBytes"
         :progress="inference.progress.value"
         :error="inference.error.value || actionError"
         :copying-id="copyingId"
@@ -264,9 +250,7 @@ onBeforeUnmount(() => {
         :has-image="Boolean(imageSource)"
         :selection-count="selections.length"
         :local-models-supported="inference.localModelsSupported"
-        @select-model="selectModel"
-        @install-model="installModel"
-        @remove-model="removeModel"
+        @install-resources="installResources"
         @segment="segment"
         @cancel="inference.cancel"
         @export-all="exportAll"

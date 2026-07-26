@@ -68,18 +68,21 @@ VITE_ENABLE_UPDATER=true
 
 图片编辑页不在左侧主导航展示，仅可从文生图或图生图的结果区域进入。进入页面后不显示独立页头、外边距或底部状态栏，而是直接显示与生成页一致的两栏工作台：主内容区包含 44px 单列图片工具栏和透明棋盘画布，右侧栏只显示图片尺寸、当前工具属性和“应用编辑”按钮。未载入图片时工具保持禁用，主内容区显示带边框的透明棋盘投放面和“拖放图片”文字；点击投放面仍可选择本地 PNG、JPEG、WebP，桌面 WebView 也支持标准文件拖放。应用后编辑器保持在页面内，可继续修改；图片右键菜单提供“复制”和“另存为”，两项操作均使用最近一次已应用的结果，JPEG/WebP 默认按 0.92 质量导出。该页面的原图、编辑文档和导出 Blob 只在当前页面存活，离开页面后释放，不写入 Pinia、创作历史或服务端。另存为在桌面端会打开系统文件对话框，浏览器预览使用浏览器下载；文生图结果图片仍支持右键复制、下载，或作为参考图直接进入图生图页面。设置了默认保存目录后，结果区会显示打开文件夹按钮。创作历史支持点击任务多选；任务卡右键可打开任务，或对首张结果图执行复制、保存和图生图，四项操作使用同一菜单层级。打开任务会恢复提示词、生成参数、图生图参考图和结果图片；图生图动作则把结果图作为新工作区的参考图。失败或无图片任务可批量删除，仅当所选任务均有结果图片时才显示批量下载。桌面端通过原生 HTTP 客户端读取远程图片并批量保存到所选目录，浏览器预览则使用浏览器的多文件下载。
 
-AI 抠图页（`/cutout`）在左侧主导航中位于“图生图”下方，也可从文生图/图生图结果区工具栏或图片编辑页右键菜单进入，沿用与生成页一致的两栏布局。页面始终显示透明棋盘工作台；无图片时不切换提示页，可通过左侧导入按钮或直接拖入 PNG、JPEG、WebP。框选使用原生 Pointer Capture，绘制时实时跟随指针；多个选区并存，序号位于选框内左上角，并支持单独删除、撤销与重做。右侧可按需下载 SAM ViT-H、ViT-L 两档本地模型、查看下载、校验与安装进度，并执行一键抠图和批量导出；ViT-L 是默认推荐档。
+AI 抠图页（`/cutout`）在左侧主导航中位于“图生图”下方，也可从文生图/图生图结果区工具栏或图片编辑页右键菜单进入，沿用与生成页一致的两栏布局。页面始终显示透明棋盘工作台；无图片时不切换提示页，可通过左侧导入按钮或直接拖入 PNG、JPEG、WebP。框选使用原生 Pointer Capture，绘制时实时跟随指针；多个选区并存，序号位于选框内左上角，并支持单独删除、撤销与重做。右侧不展示模型名称、档位或开关；仅当首次检测到资源不完整时显示一个资源包下载提示，SAM ViT-H 与 ViTMatte Small 通过同一操作补齐。两部分均安装后提示自动隐藏，后续进入页面不再重复显示。
 
-模型包流式写入本地后先按官方 SHA-256 校验 ZIP，再根据 ZIP 中央目录记录的精确压缩长度解压 encoder/decoder 两个 ONNX 文件，避免大型条目中的字节序列被误判为 data descriptor；解压结果按原始大小和 CRC32 校验。推理使用 Tauri/Rust 原生 `ort 2.0.0-rc.10` 与 ONNX Runtime 1.22，不再加载 `onnxruntime-web` 或 WASM：前端只通过 Raw IPC 发送约 8 MB 的预处理 RGB 数据，Rust 从 `appDataDir/models/` 白名单路径直接加载并再次校验 ONNX 文件，持有 decoder 与 image embedding。encoder 完成后立即释放大会话，同一任务的多个框选继续复用 embedding；取消操作会终止当前原生运行。每个结果按选区边界裁剪为透明 PNG，支持单个复制/保存；桌面批量导出只需选择一次目录。浏览器预览保留画布交互，但不能下载或运行本地模型。
+SAM 模型包流式写入本地后先按官方 SHA-256 校验 ZIP，再根据 ZIP 中央目录记录的精确压缩长度解压 encoder/decoder 两个 ONNX 文件，避免大型条目中的字节序列被误判为 data descriptor；解压结果按原始大小和 CRC32 校验。推理使用 Tauri/Rust 原生 `ort 2.0.0-rc.10` 与 ONNX Runtime 1.22，不再加载 `onnxruntime-web` 或 WASM：前端只通过 Raw IPC 发送预处理数据，Rust 从 `appDataDir/models/` 白名单路径直接加载并再次校验 ONNX 文件，持有 decoder 与 image embedding。encoder 完成后立即释放大会话，同一任务的多个框选继续复用 embedding；取消操作会终止当前原生运行。
 
-截至 2026-07，Meta 官方最新版本是 [SAM 3.1](https://github.com/facebookresearch/sam3)，权重发布在 [facebook/sam3.1](https://huggingface.co/facebook/sam3.1)。官方运行环境要求 Python 3.12+、PyTorch 2.7+ 与 CUDA 12.6+，权重下载需要 Hugging Face 授权，目前没有可直接用于本项目原生 encoder/decoder ONNX 契约的官方 ONNX 包，因此客户端没有将 SAM 3.1 错误接入为可运行档位。当前只内置以下两档量化 SAM 下载地址，按压缩包大小从大到小排列：
+基础链路由 SAM decoder 按 `iou_predictions` 选择评分最高的 mask，并把阈值附近的浮点 logits 转为 8 位软 alpha。客户端随后固定以 SAM mask 生成三值 trimap，在带上下文的选区裁剪上运行 ViTMatte；确定前景与外部背景会在推理后强制回填，封闭的主体内部缺口保留为未知区域交给 ViTMatte 判断，避免主体中间被错误抠空。优化后的 alpha 双线性恢复到原图坐标后与原图 alpha 相乘，最终按用户选区边界输出透明 PNG。每个结果支持单个复制/保存；桌面批量导出只需选择一次目录。浏览器预览保留画布交互，但不能下载或运行本地模型。
+
+截至 2026-07，Meta 官方最新版本是 [SAM 3.1](https://github.com/facebookresearch/sam3)，权重发布在 [facebook/sam3.1](https://huggingface.co/facebook/sam3.1)。官方运行环境要求 Python 3.12+、PyTorch 2.7+ 与 CUDA 12.6+，权重下载需要 Hugging Face 授权，目前没有可直接用于本项目原生 encoder/decoder ONNX 契约的官方 ONNX 包，因此客户端没有将 SAM 3.1 错误接入为可运行档位。当前资源包只保留以下量化 SAM 模型：
 
 | 档位 | 下载大小 | 内置下载地址 |
 | --- | ---: | --- |
 | SAM ViT-H | 422.0 MB | [sam_vit_h_4b8939_quant.zip](https://huggingface.co/vietanhdev/segment-anything-onnx-models/resolve/9effc01a9e135621d710d49159f1ffb0b6f724dc/sam_vit_h_4b8939_quant.zip) |
-| SAM ViT-L | 213.2 MB | [sam_vit_l_0b3195_quant.zip](https://huggingface.co/vietanhdev/segment-anything-onnx-models/resolve/9effc01a9e135621d710d49159f1ffb0b6f724dc/sam_vit_l_0b3195_quant.zip) |
 
-模型来源为 [vietanhdev/segment-anything-onnx-models](https://huggingface.co/vietanhdev/segment-anything-onnx-models)，下载地址固定到提交 `9effc01a9e135621d710d49159f1ffb0b6f724dc`，避免上游 `main` 内容变化导致模型包与客户端校验信息不一致。客户端将用户主动下载的文件保存在 `appDataDir/models/` 并通过 `model-manifest.json` 记录安装状态；模型不随安装包分发。
+模型来源为 [vietanhdev/segment-anything-onnx-models](https://huggingface.co/vietanhdev/segment-anything-onnx-models)，下载地址固定到提交 `9effc01a9e135621d710d49159f1ffb0b6f724dc`，避免上游 `main` 内容变化导致模型包与客户端校验信息不一致。旧 ViT-L 文件不会被主动删除，但客户端不再展示、下载或加载该档位。
+
+资源包同时包含 Apache-2.0 许可的 [Xenova/vitmatte-small-composition-1k](https://huggingface.co/Xenova/vitmatte-small-composition-1k)，下载 99.1 MB 的全精度 ONNX 文件并固定到提交 `6bc1297f6140f055a227b6d2cfe8c093281f35d2`：[model.onnx](https://huggingface.co/Xenova/vitmatte-small-composition-1k/resolve/6bc1297f6140f055a227b6d2cfe8c093281f35d2/onnx/model.onnx)。客户端校验精确大小 `103885865` 字节和 SHA-256 `bf28d2e0be2c073286e88d60ad649d7123da2749a2d99133fd1098d5887e0225`。统一资源入口的总下载量约为 521.1 MB，底层仍分别使用 `model-manifest.json` 与 `cutout-refiner-manifest.json` 持久化安装状态，因此能跳过已存在的部分并只补齐缺失资源；模型不随安装包分发。
 
 开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用通过原生 HTTP 插件请求该地址，不受 WebView CORS 限制；浏览器直接访问正式 API 时，后端仍需配置正常的 CORS 响应头。
 

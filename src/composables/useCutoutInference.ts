@@ -1,128 +1,214 @@
 import { computed, onBeforeUnmount, readonly, shallowRef } from "vue";
 import type {
-  CutoutModelDescriptor,
   CutoutModelStatus,
   CutoutResult,
   CutoutSelectionBox
 } from "@/types";
 import {
-  CUTOUT_MODELS,
+  CUTOUT_MODEL,
   downloadModel,
-  getModelStatuses,
-  removeModel,
+  getModelStatus,
   supportsLocalCutoutModels,
-  type ModelDownloadProgress
+  type ModelDownloadProgress,
+  type ModelInstallStage
 } from "@/services/cutoutModelManager";
+import {
+  CUTOUT_REFINER,
+  downloadRefiner,
+  getRefinerStatus
+} from "@/services/cutoutRefinerManager";
 import {
   cancelInferenceRun,
   decodeCutoutBox,
   encodeCutoutImage,
+  refineCutoutMask,
   releaseInferenceSession
 } from "@/services/cutoutInference";
 import { maskToTransparentPng } from "@/services/cutoutExport";
 
 export type CutoutPhase = "idle" | "downloading" | "verifying" | "installing" | "processing";
+export type CutoutResourceStatus = "checking" | CutoutModelStatus;
 
-const initialStatuses = Object.fromEntries(
-  CUTOUT_MODELS.map((model) => [model.id, "missing" as CutoutModelStatus])
-);
+export interface CutoutResourceProgress {
+  stage: ModelInstallStage;
+  percent: number;
+}
+
+export interface CutoutProgress {
+  current: number;
+  total: number;
+  stage: "segmenting" | "refining";
+}
+
+type ResourcePart = "segmenter" | "refiner";
+
+interface PendingResourcePart {
+  id: ResourcePart;
+  sizeBytes: number;
+  install: (
+    onProgress: (progress: ModelDownloadProgress) => void,
+    signal: AbortSignal
+  ) => Promise<void>;
+}
+
+const INSTALL_STAGE_INDEX: Record<ModelInstallStage, number> = {
+  downloading: 0,
+  verifying: 1,
+  installing: 2
+};
+const INSTALL_STAGE_COUNT = Object.keys(INSTALL_STAGE_INDEX).length;
+const RESOURCE_DOWNLOAD_SIZE_BYTES = CUTOUT_MODEL.sizeBytes + CUTOUT_REFINER.sizeBytes;
 
 /**
- * 管理逐模型安装状态与批量抠图。一次任务只运行一次 encoder，
- * 多个框选依次复用同一份 image embedding。
+ * 管理统一抠图资源包与批量抠图。资源包由 ViT-H 和 ViTMatte 组成，
+ * 一次安装只补齐缺失部分；一次推理只运行一次 encoder 并复用 embedding。
  */
 export function useCutoutInference() {
   const phase = shallowRef<CutoutPhase>("idle");
-  const activeModel = shallowRef<CutoutModelDescriptor>(
-    CUTOUT_MODELS.find((model) => model.recommended) ?? CUTOUT_MODELS.at(-1)!
-  );
-  const modelStatuses = shallowRef<Record<string, CutoutModelStatus>>({
-    ...initialStatuses
-  });
-  const downloadProgress = shallowRef<ModelDownloadProgress | null>(null);
-  const progress = shallowRef<{ current: number; total: number } | null>(null);
+  const segmenterStatus = shallowRef<CutoutModelStatus>("missing");
+  const refinerStatus = shallowRef<CutoutModelStatus>("missing");
+  const resourceStatusChecked = shallowRef(false);
+  const resourceProgress = shallowRef<CutoutResourceProgress | null>(null);
+  const progress = shallowRef<CutoutProgress | null>(null);
   const error = shallowRef("");
   const abortController = shallowRef<AbortController | null>(null);
   const localModelsSupported = supportsLocalCutoutModels();
 
-  const modelStatus = computed(
-    () => modelStatuses.value[activeModel.value.id] ?? "missing"
-  );
-
-  function setModelStatus(modelId: string, status: CutoutModelStatus) {
-    modelStatuses.value = { ...modelStatuses.value, [modelId]: status };
-  }
-
-  async function refreshModelStatuses() {
-    modelStatuses.value = await getModelStatuses();
-  }
-
-  async function selectModel(descriptor: CutoutModelDescriptor) {
-    if (phase.value !== "idle") return;
-    const previousModelId = activeModel.value.id;
-    if (previousModelId !== descriptor.id) {
-      await releaseInferenceSession(previousModelId).catch(() => undefined);
+  const resourceStatus = computed<CutoutResourceStatus>(() => {
+    if (!resourceStatusChecked.value) return "checking";
+    if (phase.value !== "idle" && phase.value !== "processing") return "downloading";
+    if (segmenterStatus.value === "ready" && refinerStatus.value === "ready") {
+      return "ready";
     }
-    activeModel.value = descriptor;
-    error.value = "";
-    const statuses = await getModelStatuses();
-    modelStatuses.value = statuses;
+    if (segmenterStatus.value === "error" || refinerStatus.value === "error") {
+      return "error";
+    }
+    return "missing";
+  });
+
+  function setResourcePartStatus(part: ResourcePart, status: CutoutModelStatus) {
+    if (part === "segmenter") segmenterStatus.value = status;
+    else refinerStatus.value = status;
   }
 
-  async function installModel(descriptor: CutoutModelDescriptor) {
+  async function refreshResourceStatus() {
+    try {
+      const [nextSegmenterStatus, nextRefinerStatus] = await Promise.all([
+        getModelStatus(CUTOUT_MODEL),
+        getRefinerStatus(CUTOUT_REFINER)
+      ]);
+      segmenterStatus.value = nextSegmenterStatus;
+      refinerStatus.value = nextRefinerStatus;
+    } catch (exception) {
+      segmenterStatus.value = "error";
+      refinerStatus.value = "error";
+      error.value = exception instanceof Error
+        ? exception.message
+        : "无法检查 AI 抠图资源包。";
+    } finally {
+      resourceStatusChecked.value = true;
+    }
+  }
+
+  function updateResourceProgress(
+    next: ModelDownloadProgress,
+    partSizeBytes: number,
+    completedWork: number,
+    totalWork: number
+  ) {
+    const partRatio = next.totalBytes > 0
+      ? Math.min(1, next.receivedBytes / next.totalBytes)
+      : 0;
+    const currentWork = (
+      INSTALL_STAGE_INDEX[next.stage] + partRatio
+    ) * partSizeBytes;
+    resourceProgress.value = {
+      stage: next.stage,
+      percent: Math.min(100, Math.round((completedWork + currentWork) / totalWork * 100))
+    };
+    phase.value = next.stage;
+  }
+
+  async function installResourcePackage() {
     if (phase.value !== "idle") return false;
-    activeModel.value = descriptor;
     error.value = "";
     if (!localModelsSupported) {
-      error.value = "浏览器预览不能安装本地模型，请在桌面客户端中使用。";
+      error.value = "浏览器预览不能安装 AI 抠图资源包，请在桌面客户端中使用。";
       return false;
     }
+
+    if (!resourceStatusChecked.value) await refreshResourceStatus();
+    const pendingParts: PendingResourcePart[] = [];
+    if (segmenterStatus.value !== "ready") {
+      pendingParts.push({
+        id: "segmenter",
+        sizeBytes: CUTOUT_MODEL.sizeBytes,
+        install: (onProgress, signal) => downloadModel(
+          CUTOUT_MODEL,
+          onProgress,
+          signal
+        )
+      });
+    }
+    if (refinerStatus.value !== "ready") {
+      pendingParts.push({
+        id: "refiner",
+        sizeBytes: CUTOUT_REFINER.sizeBytes,
+        install: (onProgress, signal) => downloadRefiner(
+          CUTOUT_REFINER,
+          onProgress,
+          signal
+        )
+      });
+    }
+    if (!pendingParts.length) return true;
 
     const controller = new AbortController();
     abortController.value = controller;
     phase.value = "downloading";
-    setModelStatus(descriptor.id, "downloading");
-    downloadProgress.value = {
-      stage: "downloading",
-      receivedBytes: 0,
-      totalBytes: descriptor.sizeBytes
-    };
+    resourceProgress.value = { stage: "downloading", percent: 0 };
+    const totalWork = pendingParts.reduce(
+      (sum, part) => sum + part.sizeBytes * INSTALL_STAGE_COUNT,
+      0
+    );
+    let completedWork = 0;
+    let activePart: PendingResourcePart | null = null;
+
     try {
-      await downloadModel(
-        descriptor,
-        (next) => {
-          downloadProgress.value = next;
-          phase.value = next.stage;
-        },
-        controller.signal
-      );
-      setModelStatus(descriptor.id, "ready");
+      for (const part of pendingParts) {
+        activePart = part;
+        setResourcePartStatus(part.id, "downloading");
+        await part.install(
+          (next) => updateResourceProgress(
+            next,
+            part.sizeBytes,
+            completedWork,
+            totalWork
+          ),
+          controller.signal
+        );
+        completedWork += part.sizeBytes * INSTALL_STAGE_COUNT;
+        setResourcePartStatus(part.id, "ready");
+      }
+      resourceProgress.value = { stage: "installing", percent: 100 };
       return true;
     } catch (exception) {
-      setModelStatus(descriptor.id, controller.signal.aborted ? "missing" : "error");
+      if (activePart) {
+        setResourcePartStatus(
+          activePart.id,
+          controller.signal.aborted ? "missing" : "error"
+        );
+      }
       error.value = controller.signal.aborted
-        ? "模型安装已取消。"
+        ? "资源包安装已取消。"
         : exception instanceof Error
           ? exception.message
-          : "模型安装失败。";
+          : "AI 抠图资源包安装失败。";
       return false;
     } finally {
       phase.value = "idle";
-      downloadProgress.value = null;
+      resourceProgress.value = null;
       abortController.value = null;
-    }
-  }
-
-  async function uninstallModel(descriptor: CutoutModelDescriptor) {
-    if (phase.value !== "idle") return;
-    error.value = "";
-    await releaseInferenceSession(descriptor.id);
-    try {
-      await removeModel(descriptor);
-      setModelStatus(descriptor.id, "missing");
-    } catch (exception) {
-      setModelStatus(descriptor.id, "error");
-      error.value = exception instanceof Error ? exception.message : "模型移除失败。";
     }
   }
 
@@ -140,28 +226,33 @@ export function useCutoutInference() {
     onResult: (result: CutoutResult) => void
   ): Promise<CutoutResult[]> {
     if (phase.value !== "idle") return [];
-    const descriptor = activeModel.value;
     if (!selections.length) {
       error.value = "请先在画布上框选要抠取的元素。";
       return [];
     }
 
     phase.value = "processing";
-    progress.value = { current: 0, total: selections.length };
+    progress.value = { current: 1, total: selections.length, stage: "segmenting" };
     error.value = "";
     const controller = new AbortController();
     abortController.value = controller;
     const results: CutoutResult[] = [];
 
     try {
-      const status = await getModelStatuses();
-      modelStatuses.value = status;
-      if (status[descriptor.id] !== "ready") {
-        error.value = "请先下载当前抠图模型。";
+      const [nextSegmenterStatus, nextRefinerStatus] = await Promise.all([
+        getModelStatus(CUTOUT_MODEL),
+        getRefinerStatus(CUTOUT_REFINER)
+      ]);
+      segmenterStatus.value = nextSegmenterStatus;
+      refinerStatus.value = nextRefinerStatus;
+      resourceStatusChecked.value = true;
+      if (nextSegmenterStatus !== "ready" || nextRefinerStatus !== "ready") {
+        error.value = "请先下载完整的 AI 抠图资源包。";
         return [];
       }
+
       const embedding = await encodeCutoutImage(
-        descriptor,
+        CUTOUT_MODEL,
         image,
         imageWidth,
         imageHeight,
@@ -172,10 +263,28 @@ export function useCutoutInference() {
           throw new DOMException("抠图已取消。", "AbortError");
         }
         const selection = selections[index];
-        progress.value = { current: index, total: selections.length };
+        progress.value = {
+          current: index + 1,
+          total: selections.length,
+          stage: "segmenting"
+        };
         const mask = await decodeCutoutBox(
-          descriptor,
+          CUTOUT_MODEL,
           embedding,
+          selection,
+          controller.signal
+        );
+        progress.value = {
+          current: index + 1,
+          total: selections.length,
+          stage: "refining"
+        };
+        const refinedMask = await refineCutoutMask(
+          CUTOUT_REFINER,
+          image,
+          imageWidth,
+          imageHeight,
+          mask,
           selection,
           controller.signal
         );
@@ -183,7 +292,7 @@ export function useCutoutInference() {
           image,
           imageWidth,
           imageHeight,
-          mask,
+          refinedMask,
           selection
         );
         const result: CutoutResult = {
@@ -197,7 +306,11 @@ export function useCutoutInference() {
         };
         results.push(result);
         onResult(result);
-        progress.value = { current: results.length, total: selections.length };
+        progress.value = {
+          current: results.length,
+          total: selections.length,
+          stage: "refining"
+        };
       }
       return results;
     } catch (exception) {
@@ -214,7 +327,7 @@ export function useCutoutInference() {
     }
   }
 
-  void refreshModelStatuses();
+  void refreshResourceStatus();
 
   onBeforeUnmount(() => {
     abortController.value?.abort();
@@ -223,17 +336,14 @@ export function useCutoutInference() {
 
   return {
     phase: readonly(phase),
-    activeModel: readonly(activeModel),
-    modelStatuses: readonly(modelStatuses),
-    modelStatus,
-    downloadProgress: readonly(downloadProgress),
+    resourceStatus,
+    resourceProgress: readonly(resourceProgress),
+    resourceDownloadSizeBytes: RESOURCE_DOWNLOAD_SIZE_BYTES,
     progress: readonly(progress),
     error: readonly(error),
     localModelsSupported,
-    selectModel,
-    refreshModelStatuses,
-    installModel,
-    uninstallModel,
+    refreshResourceStatus,
+    installResourcePackage,
     segmentSelections,
     cancel
   };

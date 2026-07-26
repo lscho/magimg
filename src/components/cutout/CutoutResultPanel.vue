@@ -9,23 +9,22 @@ import {
   Sparkles,
   X
 } from "lucide-vue-next";
-import CutoutModelSelector from "./CutoutModelSelector.vue";
-import type { CutoutPhase } from "@/composables/useCutoutInference";
-import type { ModelDownloadProgress } from "@/services/cutoutModelManager";
+import CutoutResourceNotice from "./CutoutResourceNotice.vue";
 import type {
-  CutoutModelDescriptor,
-  CutoutModelStatus,
-  CutoutResult
-} from "@/types";
+  CutoutPhase,
+  CutoutProgress,
+  CutoutResourceProgress,
+  CutoutResourceStatus
+} from "@/composables/useCutoutInference";
+import type { CutoutResult } from "@/types";
 
 const props = defineProps<{
   results: CutoutResult[];
-  models: readonly CutoutModelDescriptor[];
-  activeModelId: string;
-  modelStatuses: Readonly<Record<string, CutoutModelStatus>>;
   phase: CutoutPhase;
-  downloadProgress: ModelDownloadProgress | null;
-  progress: { current: number; total: number } | null;
+  resourceStatus: CutoutResourceStatus;
+  resourceProgress: CutoutResourceProgress | null;
+  resourceDownloadSizeBytes: number;
+  progress: CutoutProgress | null;
   error: string;
   copyingId: string | null;
   savingId: string | null;
@@ -36,9 +35,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  selectModel: [modelId: string];
-  installModel: [modelId: string];
-  removeModel: [modelId: string];
+  installResources: [];
   segment: [];
   cancel: [];
   exportAll: [];
@@ -47,22 +44,25 @@ const emit = defineEmits<{
   removeResult: [id: string];
 }>();
 
-const activeModelStatus = computed(
-  () => props.modelStatuses[props.activeModelId] ?? "missing"
-);
 const isWorking = computed(() => props.phase !== "idle");
 const canSegment = computed(
   () =>
     props.phase === "idle" &&
     props.hasImage &&
     props.selectionCount > 0 &&
-    activeModelStatus.value === "ready"
+    props.resourceStatus === "ready"
 );
 const segmentPercent = computed(() => {
   const progress = props.progress;
   if (!progress?.total) return 0;
   return Math.min(100, Math.round(progress.current / progress.total * 100));
 });
+const processingLabel = computed(
+  () => props.progress?.stage === "refining" ? "正在精修" : "正在分割"
+);
+const processingButtonLabel = computed(
+  () => props.progress?.stage === "refining" ? "精修中" : "分割中"
+);
 </script>
 
 <template>
@@ -75,89 +75,93 @@ const segmentPercent = computed(() => {
       <p>原生推理 · 透明 PNG</p>
     </header>
 
-    <CutoutModelSelector
-      :models="models"
-      :active-model-id="activeModelId"
-      :model-statuses="modelStatuses"
-      :phase="phase"
-      :download-progress="downloadProgress"
-      :local-models-supported="localModelsSupported"
-      @select-model="emit('selectModel', $event)"
-      @install-model="emit('installModel', $event)"
-      @remove-model="emit('removeModel', $event)"
-    />
+    <div class="cutout-result-body">
+      <CutoutResourceNotice
+        v-if="resourceStatus !== 'checking' && resourceStatus !== 'ready'"
+        :status="resourceStatus"
+        :phase="phase"
+        :progress="resourceProgress"
+        :download-size-bytes="resourceDownloadSizeBytes"
+        :local-models-supported="localModelsSupported"
+        @install="emit('installResources')"
+      />
 
-    <section class="cutout-results-section" aria-label="抠图结果列表">
-      <div class="cutout-results-heading">
-        <h3>结果</h3>
-        <span class="cutout-results-count">{{ results.length }}</span>
-      </div>
-      <p v-if="phase === 'processing' && progress" class="cutout-segment-progress" role="status">
-        <span>正在抠图 {{ progress.current }} / {{ progress.total }}</span>
-        <span class="cutout-progress-bar" aria-hidden="true">
-          <span :style="{ width: `${segmentPercent}%` }" />
-        </span>
-      </p>
-      <ul v-if="results.length" class="cutout-result-list">
-        <li v-for="result in results" :key="result.id" class="cutout-result-item">
-          <div class="cutout-result-thumb">
-            <img :src="result.thumbnailUrl" :alt="`抠图结果 ${result.width}×${result.height}`" />
-          </div>
-          <div class="cutout-result-info">
-            <strong>{{ result.baseName }}</strong>
-            <span>{{ result.width }} × {{ result.height }} px</span>
-            <div class="cutout-result-actions">
-              <button
-                class="cutout-mini-button"
-                type="button"
-                title="复制透明素材"
-                aria-label="复制透明素材"
-                :disabled="copyingId === result.id"
-                @click="emit('copyResult', result)"
-              >
-                <LoaderCircle
-                  v-if="copyingId === result.id"
-                  class="cutout-spinner"
-                  :size="14"
-                  aria-hidden="true"
-                />
-                <Clipboard v-else :size="14" aria-hidden="true" />
-              </button>
-              <button
-                class="cutout-mini-button"
-                type="button"
-                title="保存透明素材"
-                aria-label="保存透明素材"
-                :disabled="savingId === result.id"
-                @click="emit('saveResult', result)"
-              >
-                <LoaderCircle
-                  v-if="savingId === result.id"
-                  class="cutout-spinner"
-                  :size="14"
-                  aria-hidden="true"
-                />
-                <Download v-else :size="14" aria-hidden="true" />
-              </button>
-              <button
-                class="cutout-mini-button"
-                type="button"
-                title="移除结果"
-                aria-label="移除结果"
-                :disabled="isWorking"
-                @click="emit('removeResult', result.id)"
-              >
-                <X :size="14" aria-hidden="true" />
-              </button>
+      <section class="cutout-results-section" aria-label="抠图结果列表">
+        <div class="cutout-results-heading">
+          <h3>结果</h3>
+          <span class="cutout-results-count">{{ results.length }}</span>
+        </div>
+        <p
+          v-if="phase === 'processing' && progress"
+          class="cutout-segment-progress"
+          role="status"
+        >
+          <span>{{ processingLabel }} {{ progress.current }} / {{ progress.total }}</span>
+          <span class="cutout-progress-bar" aria-hidden="true">
+            <span :style="{ width: `${segmentPercent}%` }" />
+          </span>
+        </p>
+        <ul v-if="results.length" class="cutout-result-list">
+          <li v-for="result in results" :key="result.id" class="cutout-result-item">
+            <div class="cutout-result-thumb">
+              <img :src="result.thumbnailUrl" :alt="`抠图结果 ${result.width}×${result.height}`" />
             </div>
-          </div>
-        </li>
-      </ul>
-      <div v-else-if="phase !== 'processing'" class="cutout-results-empty">
-        <PackageOpen :size="26" aria-hidden="true" />
-        <span>暂无结果</span>
-      </div>
-    </section>
+            <div class="cutout-result-info">
+              <strong>{{ result.baseName }}</strong>
+              <span>{{ result.width }} × {{ result.height }} px</span>
+              <div class="cutout-result-actions">
+                <button
+                  class="cutout-mini-button"
+                  type="button"
+                  title="复制透明素材"
+                  aria-label="复制透明素材"
+                  :disabled="copyingId === result.id"
+                  @click="emit('copyResult', result)"
+                >
+                  <LoaderCircle
+                    v-if="copyingId === result.id"
+                    class="cutout-spinner"
+                    :size="14"
+                    aria-hidden="true"
+                  />
+                  <Clipboard v-else :size="14" aria-hidden="true" />
+                </button>
+                <button
+                  class="cutout-mini-button"
+                  type="button"
+                  title="保存透明素材"
+                  aria-label="保存透明素材"
+                  :disabled="savingId === result.id"
+                  @click="emit('saveResult', result)"
+                >
+                  <LoaderCircle
+                    v-if="savingId === result.id"
+                    class="cutout-spinner"
+                    :size="14"
+                    aria-hidden="true"
+                  />
+                  <Download v-else :size="14" aria-hidden="true" />
+                </button>
+                <button
+                  class="cutout-mini-button"
+                  type="button"
+                  title="移除结果"
+                  aria-label="移除结果"
+                  :disabled="isWorking"
+                  @click="emit('removeResult', result.id)"
+                >
+                  <X :size="14" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </li>
+        </ul>
+        <div v-else-if="phase !== 'processing'" class="cutout-results-empty">
+          <PackageOpen :size="26" aria-hidden="true" />
+          <span>暂无结果</span>
+        </div>
+      </section>
+    </div>
 
     <div class="cutout-result-footer">
       <p v-if="error" class="cutout-result-error" role="alert">{{ error }}</p>
@@ -183,7 +187,7 @@ const segmentPercent = computed(() => {
             aria-hidden="true"
           />
           <Sparkles v-else :size="16" aria-hidden="true" />
-          {{ phase === "processing" ? "抠图中" : "一键抠图" }}
+          {{ phase === "processing" ? processingButtonLabel : "一键抠图" }}
         </button>
         <button
           class="cutout-primary-button cutout-export-all"
@@ -210,10 +214,17 @@ const segmentPercent = computed(() => {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border-left: 1px solid var(--line);
   background: var(--surface);
+}
+
+.cutout-result-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .cutout-result-header {
@@ -249,6 +260,7 @@ const segmentPercent = computed(() => {
 
 .cutout-results-section {
   min-height: 0;
+  flex: 1;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   align-content: start;

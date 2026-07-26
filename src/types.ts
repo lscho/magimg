@@ -361,6 +361,20 @@ export interface CutoutModelDescriptor {
   description?: string;
 }
 
+/** 统一抠图资源包中用于处理 SAM 输出的本地 alpha 优化模型。 */
+export interface CutoutRefinerDescriptor {
+  id: string;
+  name: string;
+  /** 固定版本的 ONNX 下载地址。 */
+  url: string;
+  /** 安装到 appDataDir/models/ 后的文件名。 */
+  fileName: string;
+  /** ONNX 文件大小与 SHA-256，用于下载完整性校验。 */
+  sizeBytes: number;
+  sha256: string;
+  description: string;
+}
+
 /** 模型在客户端的安装状态。 */
 export type CutoutModelStatus = "missing" | "downloading" | "ready" | "error";
 

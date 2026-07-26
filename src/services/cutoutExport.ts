@@ -1,4 +1,5 @@
 import type { CutoutSelectionBox } from "@/types";
+import { cutoutSelectionBounds } from "@/services/cutoutGeometry";
 
 function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number) {
   return new Promise<Blob>((resolve, reject) => {
@@ -12,7 +13,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: num
 
 /**
  * 将原图与 mask 合成为透明背景 PNG，并按选区 bbox 裁剪输出。
- * mask 尺寸需与原图一致；mask=0 处 alpha 置 0。
+ * mask 尺寸需与原图一致，取值 0..255；输出 alpha 与原图 alpha 相乘。
  */
 export async function maskToTransparentPng(
   image: CanvasImageSource,
@@ -28,10 +29,8 @@ export async function maskToTransparentPng(
   }
 
   // 按选区 bbox 裁剪，输出仅包含抠出元素的透明 PNG。
-  const boxX = Math.max(0, Math.min(imageWidth - 1, Math.round(sourceBox.x)));
-  const boxY = Math.max(0, Math.min(imageHeight - 1, Math.round(sourceBox.y)));
-  const boxW = Math.max(1, Math.min(imageWidth - boxX, Math.round(sourceBox.width)));
-  const boxH = Math.max(1, Math.min(imageHeight - boxY, Math.round(sourceBox.height)));
+  const bounds = cutoutSelectionBounds(imageWidth, imageHeight, sourceBox);
+  const { x: boxX, y: boxY, width: boxW, height: boxH } = bounds;
 
   const outputCanvas = document.createElement("canvas");
   outputCanvas.width = boxW;
@@ -48,7 +47,9 @@ export async function maskToTransparentPng(
     const pixelRow = y * boxW;
     for (let x = 0; x < boxW; x += 1) {
       const alphaIndex = (pixelRow + x) * 4 + 3;
-      pixels[alphaIndex] = mask[maskRow + x] > 0 ? pixels[alphaIndex] : 0;
+      pixels[alphaIndex] = Math.round(
+        (pixels[alphaIndex] * mask[maskRow + x]) / 255
+      );
     }
   }
   outputContext.putImageData(imageData, 0, 0);

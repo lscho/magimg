@@ -28,6 +28,7 @@ pub fn run() {
             toggle_devtools,
             cutout::cutout_encode,
             cutout::cutout_decode,
+            cutout::cutout_refine,
             cutout::cutout_cancel,
             cutout::cutout_release
         ])

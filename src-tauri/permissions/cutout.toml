@@ -4,6 +4,7 @@ description = "Allow the main window to run and release the native cutout infere
 commands.allow = [
   "cutout_encode",
   "cutout_decode",
+  "cutout_refine",
   "cutout_cancel",
   "cutout_release",
 ]

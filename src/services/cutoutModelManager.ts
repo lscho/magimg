@@ -44,47 +44,29 @@ for (let value = 0; value < CRC32_TABLE.length; value += 1) {
 }
 
 /**
- * 采用当前 Tauri/Rust 原生 ONNX Runtime 双模型契约的量化模型，从大到小排列。
- * SAM 3.1 是当前官方最新版本，但其官方权重需要 PyTorch/CUDA，暂无可直接用于
- * 本客户端双 ONNX（encoder + decoder）契约的官方运行包。
+ * 当前资源包固定使用 ViT-H。SAM 3.1 官方权重仍不兼容本客户端的
+ * encoder + decoder ONNX 契约，因此不作为可运行档位。
  */
-export const CUTOUT_MODELS: readonly CutoutModelDescriptor[] = [
-  {
-    id: "sam-vit-h-quant",
-    name: "SAM ViT-H",
-    archiveFileName: "sam_vit_h_4b8939_quant.zip",
-    encoderArchiveEntry: "sam_vit_h_4b8939.encoder.quant.onnx",
-    decoderArchiveEntry: "sam_vit_h_4b8939.decoder.quant.onnx",
-    url: `${MODEL_REPOSITORY}/sam_vit_h_4b8939_quant.zip`,
-    sizeBytes: 442_519_065,
-    archiveSha256: "b5ac1197e6ef960a5b8a0c722d4d0ad186460594db3822734441fbe375629584",
-    encoderSizeBytes: 656_832_738,
-    encoderCrc32: 0xaa6ceee8,
-    decoderSizeBytes: 8_742_607,
-    decoderCrc32: 0x2a5d9f1d,
-    inputWidth: 1024,
-    inputHeight: 682,
-    description: "最高精度，适合边缘细节复杂的图片。"
-  },
-  {
-    id: "sam-vit-l-quant",
-    name: "SAM ViT-L",
-    archiveFileName: "sam_vit_l_0b3195_quant.zip",
-    encoderArchiveEntry: "sam_vit_l_0b3195.encoder.quant.onnx",
-    decoderArchiveEntry: "sam_vit_l_0b3195.decoder.quant.onnx",
-    url: `${MODEL_REPOSITORY}/sam_vit_l_0b3195_quant.zip`,
-    sizeBytes: 223_604_628,
-    archiveSha256: "37accba48a5657047381e73f36075a00e308309c7527f1ba0934e1237a7ec715",
-    encoderSizeBytes: 332_583_297,
-    encoderCrc32: 0xb6059872,
-    decoderSizeBytes: 8_742_607,
-    decoderCrc32: 0xbd998887,
-    inputWidth: 1024,
-    inputHeight: 682,
-    recommended: true,
-    description: "推荐档，高精度并兼顾本地占用。"
-  }
-];
+export const CUTOUT_MODEL: CutoutModelDescriptor = {
+  id: "sam-vit-h-quant",
+  name: "SAM ViT-H",
+  archiveFileName: "sam_vit_h_4b8939_quant.zip",
+  encoderArchiveEntry: "sam_vit_h_4b8939.encoder.quant.onnx",
+  decoderArchiveEntry: "sam_vit_h_4b8939.decoder.quant.onnx",
+  url: `${MODEL_REPOSITORY}/sam_vit_h_4b8939_quant.zip`,
+  sizeBytes: 442_519_065,
+  archiveSha256: "b5ac1197e6ef960a5b8a0c722d4d0ad186460594db3822734441fbe375629584",
+  encoderSizeBytes: 656_832_738,
+  encoderCrc32: 0xaa6ceee8,
+  decoderSizeBytes: 8_742_607,
+  decoderCrc32: 0x2a5d9f1d,
+  inputWidth: 1024,
+  inputHeight: 682,
+  recommended: true,
+  description: "高精度分割，适合边缘细节复杂的图片。"
+};
+
+export const CUTOUT_MODELS: readonly CutoutModelDescriptor[] = [CUTOUT_MODEL];
 
 export type CutoutModelFileKind = "encoder" | "decoder";
 export type ModelInstallStage = "downloading" | "verifying" | "installing";

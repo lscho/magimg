@@ -8,7 +8,7 @@
 
 - `gpt-image-2` 文生图与图生图参数配置。
 - 本地 PNG、JPEG、WebP 图片编辑与临时预览。
-- 基于量化 SAM ViT-H/L 本地模型与 Tauri/Rust 原生 ONNX Runtime 的 AI 抠图，支持多框选与透明 PNG 导出。
+- 基于量化 SAM ViT-H、ViTMatte 与 Tauri/Rust 原生 ONNX Runtime 的 AI 抠图，支持多框选与透明 PNG 导出。
 - 提示词模板广场和生成页内模板选择。
 - 登录、注册、积分余额、积分日志和充值套餐。
 - 本地历史、设置持久化、输出目录选择和自动保存。
@@ -55,7 +55,7 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - 项目目前没有自动化单元测试或 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
 - 任务接口使用 camelCase 的 `outputFormat`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。
-- AI 抠图为纯客户端本地能力，使用 Rust `ort 2.0.0-rc.10` 与原生 ONNX Runtime 1.22 运行量化 SAM ViT-H/L，不依赖正式 API，也不再使用 `onnxruntime-web`/WASM。两档 Hugging Face ZIP 地址内置在 `cutoutModelManager.ts`，由用户主动选择下载；下载包流式写入本地后先按官方 SHA-256 校验 ZIP，再解压为 encoder/decoder 两个 ONNX 文件并按原始大小和 CRC32 校验，最终保存到 `appDataDir/models/` 并写入 `model-manifest.json`，不随安装包分发。Rust 只从该目录的模型白名单加载文件并在会话创建前再次校验大小和 CRC32；前端通过 Raw IPC 发送预处理 RGB，Rust 持有 decoder 与 embedding，encoder 完成后释放。同一任务只编码图片一次，多选区复用 embedding；取消会终止当前 ONNX Runtime 运行。浏览器预览不能下载与加载模型。官方最新 SAM 3.1 需要 PyTorch/CUDA、授权权重且暂无适配当前链路的官方 ONNX，不能描述为客户端已支持。旧 ViT-B/MobileSAM 文件不会自动删除，但不再展示、下载或加载。框选坐标统一存图像坐标系，结果按选区 bbox 裁剪导出透明 PNG。路由 `/cutout` 在主导航中位于图生图下方，也可从文生图/图生图结果区与图片编辑页右键菜单进入。
+- AI 抠图为纯客户端本地能力，使用 Rust `ort 2.0.0-rc.10` 与原生 ONNX Runtime 1.22 运行量化 SAM ViT-H 和全精度 `Xenova/vitmatte-small-composition-1k`，不依赖正式 API，也不再使用 `onnxruntime-web`/WASM。右侧不展示模型列表或开关；仅在 ViT-H 与 ViTMatte 任一缺失时显示统一资源包下载提示，两部分均就绪后提示隐藏。一次安装会跳过已就绪部分，并以连续总进度补齐其余资源。SAM ZIP 固定到提交 `9effc01a9e135621d710d49159f1ffb0b6f724dc`，流式写入后先按 SHA-256 校验，再解压 encoder/decoder 并按原始大小和 CRC32 校验，安装状态写入 `model-manifest.json`；ViTMatte 固定到提交 `6bc1297f6140f055a227b6d2cfe8c093281f35d2`（103885865 字节），由 `cutoutRefinerManager.ts` 按 SHA-256 校验并通过 `cutout-refiner-manifest.json` 管理。模型统一保存到 `appDataDir/models/`，不随安装包分发。Rust 只从该目录的白名单加载文件并在会话创建前再次校验；前端通过 Raw IPC 发送预处理数据，Rust 持有 decoder、embedding 与优化模型会话，encoder 完成后释放。同一任务只编码图片一次，多选区复用 embedding；取消会终止当前 ONNX Runtime 运行。固定链路为 SAM -> 三值 trimap -> ViTMatte：decoder 按 `iou_predictions` 选取最佳候选并输出软 alpha，选区包含少量上下文，确定前景与外部连通背景强制回填，封闭内部缺口保持未知以避免主体被抠穿，再将 alpha 双线性恢复并与原图 alpha 相乘。浏览器预览不能下载与加载模型。官方最新 SAM 3.1 需要 PyTorch/CUDA、授权权重且暂无适配当前链路的官方 ONNX，不能描述为客户端已支持。旧 ViT-L/ViT-B/MobileSAM 文件不会自动删除，但不再展示、下载或加载。框选坐标统一存图像坐标系，结果按选区 bbox 裁剪导出透明 PNG。路由 `/cutout` 在主导航中位于图生图下方，也可从文生图/图生图结果区与图片编辑页右键菜单进入。
 
 若任务涉及上述缺口，应明确区分“补实现”和“调整现有实现”，并同步相关文档。
 
