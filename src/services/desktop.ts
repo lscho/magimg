@@ -91,7 +91,7 @@ export function selectedImageFileFromFile(file: File): SelectedImageFile {
 
 export async function chooseImageFile(): Promise<SelectedImageFile | null> {
   if (!isTauri) {
-    return await new Promise((resolve) => {
+    return await new Promise((resolve, reject) => {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/jpeg,image/png,image/webp";
@@ -101,11 +101,19 @@ export async function chooseImageFile(): Promise<SelectedImageFile | null> {
         input.remove();
         resolve(selected);
       };
+      const fail = (exception: unknown) => {
+        input.remove();
+        reject(exception);
+      };
       input.addEventListener(
         "change",
         () => {
           const file = input.files?.[0];
-          finish(file ? { name: file.name, path: file.name, file } : null);
+          try {
+            finish(file ? selectedImageFileFromFile(file) : null);
+          } catch (exception) {
+            fail(exception);
+          }
         },
         { once: true }
       );
@@ -308,6 +316,53 @@ export async function saveImageBlobAs(
 
   await writeImageFile(path, new Uint8Array(await blob.arrayBuffer()));
   return path;
+}
+
+export interface LocalImageDownload {
+  blob: Blob;
+  suggestedName: string;
+  mimeType?: string;
+}
+
+export async function saveImageBlobsToDirectory(
+  downloads: LocalImageDownload[]
+): Promise<BatchDownloadResult> {
+  if (!downloads.length) {
+    return { savedCount: 0, directory: null, cancelled: false };
+  }
+
+  if (!isTauri) {
+    for (const download of downloads) {
+      const mimeType = download.mimeType || download.blob.type || "image/png";
+      const blobUrl = URL.createObjectURL(download.blob);
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = safeImageFilename(download.suggestedName, mimeType);
+      anchor.click();
+      URL.revokeObjectURL(blobUrl);
+    }
+    return { savedCount: downloads.length, directory: null, cancelled: false };
+  }
+
+  const directory = await open({
+    directory: true,
+    multiple: false,
+    title: "选择透明素材保存目录"
+  });
+  if (typeof directory !== "string") {
+    return { savedCount: 0, directory: null, cancelled: true };
+  }
+
+  await mkdir(directory, { recursive: true }).catch(() => undefined);
+  for (const download of downloads) {
+    const mimeType = download.mimeType || download.blob.type || "image/png";
+    const filename = safeImageFilename(download.suggestedName, mimeType);
+    await writeImageFile(
+      `${directory}/${filename}`,
+      new Uint8Array(await download.blob.arrayBuffer())
+    );
+  }
+  return { savedCount: downloads.length, directory, cancelled: false };
 }
 
 export interface BatchImageDownload {

@@ -10,6 +10,7 @@ import {
   stageImageEditorHandoff,
   type ImageEditorHandoff
 } from "@/services/imageEditorHandoff";
+import { stageCutoutHandoff, type CutoutHandoff } from "@/services/cutoutHandoff";
 import { useAppStore } from "@/stores/app";
 import type {
   GenerationMode,
@@ -229,6 +230,11 @@ async function editImage(handoff: ImageEditorHandoff) {
   stageImageEditorHandoff(handoff);
   await router.push("/editor");
 }
+
+async function cutoutImage(handoff: CutoutHandoff) {
+  stageCutoutHandoff(handoff);
+  await router.push("/cutout");
+}
 </script>
 
 <template>
@@ -246,6 +252,7 @@ async function editImage(handoff: ImageEditorHandoff) {
       :mode="mode"
       @cancel="cancelGeneration"
       @edit-image="editImage"
+      @cutout-image="cutoutImage"
       @restore-task="restoreTask"
       @use-as-reference="useAsReference"
     />

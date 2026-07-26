@@ -2307,6 +2307,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allow the main window to run and release the native cutout inference session.",
+          "type": "string",
+          "const": "allow-cutout-inference",
+          "markdownDescription": "Allow the main window to run and release the native cutout inference session."
+        },
+        {
           "description": "Allow the frontend to toggle the DevTools panel (debug builds only).",
           "type": "string",
           "const": "allow-toggle-devtools",

@@ -324,3 +324,67 @@ export interface LocalDatabase {
   hiddenHistoryIds: string[];
   session: UserSession | null;
 }
+
+/* ---------- AI 抠图（客户端本地模型） ---------- */
+
+/**
+ * 客户端抠图模型描述符。
+ * 模型包由用户主动下载到 appDataDir/models/，不随安装包分发。
+ */
+export interface CutoutModelDescriptor {
+  id: string;
+  name: string;
+  /** 内置模型包下载地址（HTTP/HTTPS）。 */
+  url: string;
+  /** 模型包文件名。 */
+  archiveFileName: string;
+  /** 模型包内 encoder 文件名。 */
+  encoderArchiveEntry: string;
+  /** 模型包内 decoder 文件名。 */
+  decoderArchiveEntry: string;
+  /** 预期压缩包大小（字节），用于下载进度与完整性校验。 */
+  sizeBytes: number;
+  /** 官方模型包 SHA-256，用于解压前校验落盘文件。 */
+  archiveSha256: string;
+  /** 解压后 encoder 的预期大小与 ZIP CRC32。 */
+  encoderSizeBytes: number;
+  encoderCrc32: number;
+  /** 解压后 decoder 的预期大小与 ZIP CRC32。 */
+  decoderSizeBytes: number;
+  decoderCrc32: number;
+  /** Encoder 预处理画布的最大宽高。 */
+  inputWidth: number;
+  inputHeight: number;
+  /** 是否是默认推荐档位。 */
+  recommended?: boolean;
+  /** 简短说明，展示给用户。 */
+  description?: string;
+}
+
+/** 模型在客户端的安装状态。 */
+export type CutoutModelStatus = "missing" | "downloading" | "ready" | "error";
+
+/** 图像坐标系下的框选区域（左上角 + 宽高，单位为像素）。 */
+export interface CutoutSelectionBox {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** 单次抠图结果：透明 PNG Blob 及其来源选区。 */
+export interface CutoutResult {
+  id: string;
+  /** 透明背景 PNG。 */
+  blob: Blob;
+  /** 结果缩略图 DataURL，用于右侧结果区展示。 */
+  thumbnailUrl: string;
+  /** 输出像素宽高。 */
+  width: number;
+  height: number;
+  /** 来源选区（图像坐标系），便于定位与命名。 */
+  sourceBox: CutoutSelectionBox;
+  /** 建议文件名（不含扩展名）。 */
+  baseName: string;
+}

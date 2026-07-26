@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, shallowRef } from "vue";
+import { useRouter } from "vue-router";
 import ImageEditorEmptyWorkspace from "@/components/image-editor/ImageEditorEmptyWorkspace.vue";
 import ImageEditorWorkspace from "@/components/image-editor/ImageEditorWorkspace.vue";
 import type {
@@ -11,6 +12,7 @@ import { preloadImageEditorRuntime } from "@/components/image-editor/useImageEdi
 import {
   chooseImageFile,
   copyImageBlobToClipboard,
+  imageBlobToSelectedFile,
   saveImageBlobAs,
   selectedImageFileFromFile
 } from "@/services/desktop";
@@ -18,8 +20,10 @@ import {
   consumeImageEditorHandoff,
   type ImageEditorHandoff
 } from "@/services/imageEditorHandoff";
+import { stageCutoutHandoff } from "@/services/cutoutHandoff";
 import type { SelectedImageFile } from "@/types";
 
+const router = useRouter();
 const selectedFile = shallowRef<SelectedImageFile | null>(null);
 const editedBlob = shallowRef<Blob | null>(null);
 const editorDocument = shallowRef<ImageEditorDocument | undefined>();
@@ -29,6 +33,7 @@ const editorSessionKey = shallowRef(0);
 const selecting = shallowRef(false);
 const copying = shallowRef(false);
 const saving = shallowRef(false);
+const cuttingOut = shallowRef(false);
 const actionError = shallowRef("");
 const actionMessage = shallowRef("");
 let actionMessageTimer: number | undefined;
@@ -169,6 +174,26 @@ async function saveImage() {
   }
 }
 
+async function cutoutImage() {
+  if (!currentBlob.value || cuttingOut.value) return;
+  cuttingOut.value = true;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    const selected = imageBlobToSelectedFile(
+      currentBlob.value,
+      `${fileBaseName.value}-edited`,
+      mimeType.value
+    );
+    stageCutoutHandoff({ selectedFile: selected });
+    await router.push("/cutout");
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "无法进入抠图，请稍后重试。";
+  } finally {
+    cuttingOut.value = false;
+  }
+}
+
 const handoff = consumeImageEditorHandoff();
 if (handoff) {
   loadSelectedImage(handoff.selectedFile, {
@@ -191,12 +216,14 @@ onBeforeUnmount(() => {
         :key="editorSessionKey"
         class="embedded-image-editor"
         :copying="copying"
+        :cutting-out="cuttingOut"
         :image-actions-enabled="isEdited"
         :saving="saving"
         :source="editorSource"
         presentation="page"
         @apply="applyEditorResult"
         @copy-image="copyImage"
+        @cutout-image="cutoutImage"
         @save-image="saveImage"
       />
       <ImageEditorEmptyWorkspace

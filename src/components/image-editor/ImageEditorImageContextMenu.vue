@@ -7,11 +7,12 @@ import {
   useTemplateRef,
   watch
 } from "vue";
-import { Clipboard, Download, LoaderCircle } from "lucide-vue-next";
+import { Clipboard, Download, LoaderCircle, Scissors } from "lucide-vue-next";
 
 const props = defineProps<{
   copying: boolean;
   saving: boolean;
+  cuttingOut: boolean;
   x: number;
   y: number;
 }>();
@@ -20,6 +21,7 @@ const emit = defineEmits<{
   close: [];
   copy: [];
   save: [];
+  cutout: [];
 }>();
 
 const menu = useTemplateRef<HTMLElement>("menu");
@@ -119,6 +121,16 @@ onBeforeUnmount(() => {
       <LoaderCircle v-if="saving" class="menu-spinner" :size="15" aria-hidden="true" />
       <Download v-else :size="15" aria-hidden="true" />
       <span>另存为</span>
+    </button>
+    <button
+      type="button"
+      role="menuitem"
+      :disabled="cuttingOut"
+      @click="emit('cutout')"
+    >
+      <LoaderCircle v-if="cuttingOut" class="menu-spinner" :size="15" aria-hidden="true" />
+      <Scissors v-else :size="15" aria-hidden="true" />
+      <span>AI 抠图</span>
     </button>
   </div>
 </template>

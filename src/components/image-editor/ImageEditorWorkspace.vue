@@ -21,12 +21,14 @@ import { useImageEditor } from "./useImageEditor";
 
 const props = withDefaults(defineProps<{
   copying?: boolean;
+  cuttingOut?: boolean;
   imageActionsEnabled?: boolean;
   saving?: boolean;
   source: ImageEditorSource;
   presentation?: "dialog" | "page";
 }>(), {
   copying: false,
+  cuttingOut: false,
   imageActionsEnabled: false,
   presentation: "page",
   saving: false
@@ -36,6 +38,7 @@ const emit = defineEmits<{
   apply: [result: ImageEditorApplyResult];
   close: [];
   copyImage: [];
+  cutoutImage: [];
   saveImage: [];
 }>();
 
@@ -202,10 +205,11 @@ function closeImageContextMenu(focusCanvas = false) {
   if (focusCanvas) nextTick(() => viewport.value?.focus());
 }
 
-function runImageAction(action: "copy" | "save") {
+function runImageAction(action: "copy" | "save" | "cutout") {
   closeImageContextMenu();
   if (action === "copy") emit("copyImage");
-  else emit("saveImage");
+  else if (action === "save") emit("saveImage");
+  else emit("cutoutImage");
 }
 
 function requestClose() {
@@ -389,11 +393,13 @@ defineExpose({ requestClose });
     <ImageEditorImageContextMenu
       v-if="imageActionsEnabled && editor.imageContextMenu.value"
       :copying="copying"
+      :cutting-out="cuttingOut"
       :saving="saving"
       :x="editor.imageContextMenu.value.x"
       :y="editor.imageContextMenu.value.y"
       @close="closeImageContextMenu(true)"
       @copy="runImageAction('copy')"
+      @cutout="runImageAction('cutout')"
       @save="runImageAction('save')"
     />
 

@@ -1,6 +1,9 @@
+mod cutout;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(cutout::CutoutState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -21,7 +24,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![toggle_devtools])
+        .invoke_handler(tauri::generate_handler![
+            toggle_devtools,
+            cutout::cutout_encode,
+            cutout::cutout_decode,
+            cutout::cutout_cancel,
+            cutout::cutout_release
+        ])
         .run(tauri::generate_context!())
         .expect("error while running huanhua ai");
 }

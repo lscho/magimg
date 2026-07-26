@@ -7,7 +7,8 @@ import {
   FolderOpen,
   LoaderCircle,
   Pencil,
-  RotateCcw
+  RotateCcw,
+  Scissors
 } from "lucide-vue-next";
 import GenerationEmptyState from "@/components/GenerationEmptyState.vue";
 import ResultImageContextMenu from "@/components/ResultImageContextMenu.vue";
@@ -21,6 +22,7 @@ import {
   saveRemoteImageAs
 } from "@/services/desktop";
 import type { ImageEditorHandoff } from "@/services/imageEditorHandoff";
+import type { CutoutHandoff } from "@/services/cutoutHandoff";
 import { preloadImageEditorRuntime } from "@/components/image-editor/useImageEditor";
 import type {
   GeneratedImage,
@@ -41,6 +43,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   cancel: [];
   editImage: [handoff: ImageEditorHandoff];
+  cutoutImage: [handoff: CutoutHandoff];
   restoreTask: [];
   useAsReference: [image: SelectedImageFile];
 }>();
@@ -64,6 +67,7 @@ const recoverableTaskLabel = computed(() => {
 const saving = shallowRef(false);
 const copying = shallowRef(false);
 const loadingEditor = shallowRef(false);
+const loadingCutout = shallowRef(false);
 const actionError = shallowRef("");
 const actionMessage = shallowRef("");
 const contextMenuTarget = shallowRef<{ image: GeneratedImage; index: number } | null>(null);
@@ -311,6 +315,29 @@ async function openEditor() {
   }
 }
 
+async function openCutout() {
+  const originalImage = resultImages.value[0];
+  if (!originalImage || !props.record) return;
+  loadingCutout.value = true;
+  actionError.value = "";
+  actionMessage.value = "";
+  try {
+    const originalBlob = await getOriginalImageBlob(originalImage);
+    const mimeType = originalImage.mimeType || originalBlob.type || "image/png";
+    emit("cutoutImage", {
+      selectedFile: imageBlobToSelectedFile(
+        originalBlob,
+        suggestedImageName(0),
+        mimeType
+      )
+    });
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "图片读取失败，请稍后重试。";
+  } finally {
+    loadingCutout.value = false;
+  }
+}
+
 async function openSaveDirectory() {
   actionError.value = "";
   try {
@@ -411,6 +438,17 @@ onBeforeUnmount(() => {
         >
           <LoaderCircle v-if="loadingEditor" class="saving-spinner" :size="16" />
           <Pencil v-else :size="16" />
+        </button>
+        <button
+          class="icon-button result-tool"
+          type="button"
+          title="AI 抠图"
+          aria-label="AI 抠图"
+          :disabled="loadingCutout"
+          @click="openCutout"
+        >
+          <LoaderCircle v-if="loadingCutout" class="saving-spinner" :size="16" />
+          <Scissors v-else :size="16" />
         </button>
         <button
           class="icon-button result-tool"

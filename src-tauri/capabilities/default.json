@@ -10,6 +10,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
     "allow-toggle-devtools",
+    "allow-cutout-inference",
     "dialog:default",
     "os:allow-arch",
     "os:allow-platform",
@@ -19,8 +20,21 @@
     "updater:allow-check",
     "updater:allow-download-and-install",
     "fs:default",
+    "fs:allow-create",
+    "fs:allow-open",
+    "fs:allow-read",
+    "fs:allow-seek",
+    "fs:allow-remove",
+    "fs:allow-write",
     "fs:allow-mkdir",
     "fs:allow-write-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/models" },
+        { "path": "$APPDATA/models/*" }
+      ]
+    },
     {
       "identifier": "http:default",
       "allow": [

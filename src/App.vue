@@ -11,6 +11,7 @@ import {
   LogIn,
   Menu,
   QrCode,
+  Scissors,
   Settings,
   Wand2
 } from "lucide-vue-next";
@@ -149,6 +150,10 @@ function openRechargeFromCreditLog() {
           >
             <ImagePlus :size="17" />
             <span class="rail-tooltip" aria-hidden="true">图生图</span>
+          </RouterLink>
+          <RouterLink class="nav-item" to="/cutout" aria-label="AI 抠图" @click="closeSidebar">
+            <Scissors :size="17" />
+            <span class="rail-tooltip" aria-hidden="true">AI 抠图</span>
           </RouterLink>
           <RouterLink class="nav-item nav-item-spaced" to="/templates" aria-label="模板广场" @click="closeSidebar">
             <LayoutTemplate :size="17" />

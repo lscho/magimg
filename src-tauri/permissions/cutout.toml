@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-cutout-inference"
+description = "Allow the main window to run and release the native cutout inference session."
+commands.allow = [
+  "cutout_encode",
+  "cutout_decode",
+  "cutout_cancel",
+  "cutout_release",
+]
