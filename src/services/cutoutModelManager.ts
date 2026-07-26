@@ -3,72 +3,80 @@ import {
   create,
   exists,
   mkdir,
-  open,
   readFile,
   remove,
-  SeekMode,
   writeFile,
   type FileHandle
 } from "@tauri-apps/plugin-fs";
-import { Inflate } from "fflate";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { fetchHttp } from "@/services/desktop";
-import type { CutoutModelDescriptor, CutoutModelStatus } from "@/types";
+import type {
+  CutoutModelDescriptor,
+  CutoutModelFileDescriptor,
+  CutoutModelStatus
+} from "@/types";
 
-const MODEL_REVISION = "9effc01a9e135621d710d49159f1ffb0b6f724dc";
+const MODEL_REVISION = "bab18593f44e652f04cf18b60b3690f60e8996b0";
 const MODEL_REPOSITORY =
-  `https://huggingface.co/vietanhdev/segment-anything-onnx-models/resolve/${MODEL_REVISION}`;
+  `https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/resolve/${MODEL_REVISION}/onnx`;
 const MODELS_DIR_NAME = "models";
 const MANIFEST_FILENAME = "model-manifest.json";
-const MANIFEST_VERSION = 2;
-const ARCHIVE_READ_CHUNK_BYTES = 512 * 1024;
-const ZIP_EOCD_SIGNATURE = 0x06054b50;
-const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
-const ZIP_LOCAL_FILE_SIGNATURE = 0x04034b50;
-const ZIP_EOCD_BYTES = 22;
-const ZIP_MAX_COMMENT_BYTES = 0xffff;
-const ZIP_CENTRAL_DIRECTORY_HEADER_BYTES = 46;
-const ZIP_LOCAL_FILE_HEADER_BYTES = 30;
-const ZIP_COMPRESSION_STORED = 0;
-const ZIP_COMPRESSION_DEFLATE = 8;
-const ZIP_ENCRYPTED_FLAG = 0x0001;
+const MANIFEST_VERSION = 3;
 
-const CRC32_TABLE = new Uint32Array(256);
-for (let value = 0; value < CRC32_TABLE.length; value += 1) {
-  let crc = value;
-  for (let bit = 0; bit < 8; bit += 1) {
-    crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+/** 历史版本遗留的模型文件，安装时顺带清理。 */
+const OBSOLETE_MODEL_FILE_NAMES = [
+  "prompt_encoder_mask_decoder_quantized.onnx",
+  "prompt_encoder_mask_decoder_quantized.onnx_data"
+] as const;
+
+const MODEL_FILES = [
+  {
+    fileName: "vision_encoder_quantized.onnx",
+    url: `${MODEL_REPOSITORY}/vision_encoder_quantized.onnx`,
+    sizeBytes: 861_193,
+    sha256: "dadc94ee17c53bd55d98d15836cdd7d9d7eb80162d4b8bbcbd10e1a5dfeff50e"
+  },
+  {
+    fileName: "vision_encoder_quantized.onnx_data",
+    url: `${MODEL_REPOSITORY}/vision_encoder_quantized.onnx_data`,
+    sizeBytes: 98_862_416,
+    sha256: "ecef22cbdb519a7e153b7e4ddec37e64404229d38f5190bf76db20775c003a79"
+  },
+  {
+    fileName: "prompt_encoder_mask_decoder.onnx",
+    url: `${MODEL_REPOSITORY}/prompt_encoder_mask_decoder.onnx`,
+    sizeBytes: 213_114,
+    sha256: "f39eeec20243ed1c8f2cd013812e77813d937ddbc800fa4bc703761adc7e63cd"
+  },
+  {
+    fileName: "prompt_encoder_mask_decoder.onnx_data",
+    url: `${MODEL_REPOSITORY}/prompt_encoder_mask_decoder.onnx_data`,
+    sizeBytes: 20_958_208,
+    sha256: "445cd3f72a218815db10e336f4f1c46a6eb2713a0160a85af5365134607f32a7"
   }
-  CRC32_TABLE[value] = crc >>> 0;
-}
+] as const satisfies readonly CutoutModelFileDescriptor[];
 
 /**
- * 当前资源包固定使用 ViT-H。SAM 3.1 官方权重仍不兼容本客户端的
- * encoder + decoder ONNX 契约，因此不作为可运行档位。
+ * 当前资源包固定使用 SAM 2.1 Hiera Base+：encoder 用动态量化版控制体积，
+ * decoder 用全精度版保证掩码边缘质量（仅多约 12MB）。SAM 3.1 官方权重仍
+ * 不兼容本客户端的原生 ONNX 契约，因此不作为可运行档位。
  */
 export const CUTOUT_MODEL: CutoutModelDescriptor = {
-  id: "sam-vit-h-quant",
-  name: "SAM ViT-H",
-  archiveFileName: "sam_vit_h_4b8939_quant.zip",
-  encoderArchiveEntry: "sam_vit_h_4b8939.encoder.quant.onnx",
-  decoderArchiveEntry: "sam_vit_h_4b8939.decoder.quant.onnx",
-  url: `${MODEL_REPOSITORY}/sam_vit_h_4b8939_quant.zip`,
-  sizeBytes: 442_519_065,
-  archiveSha256: "b5ac1197e6ef960a5b8a0c722d4d0ad186460594db3822734441fbe375629584",
-  encoderSizeBytes: 656_832_738,
-  encoderCrc32: 0xaa6ceee8,
-  decoderSizeBytes: 8_742_607,
-  decoderCrc32: 0x2a5d9f1d,
+  id: "sam2.1-hiera-base-plus-quantized",
+  name: "SAM 2.1 Hiera Base+",
+  files: MODEL_FILES,
+  sizeBytes: MODEL_FILES.reduce((total, file) => total + file.sizeBytes, 0),
   inputWidth: 1024,
-  inputHeight: 682,
+  inputHeight: 1024,
+  maskWidth: 256,
+  maskHeight: 256,
   recommended: true,
-  description: "高精度分割，适合边缘细节复杂的图片。"
+  description: "提升复杂主体、遮挡区域与内部结构的分割完整性。"
 };
 
 export const CUTOUT_MODELS: readonly CutoutModelDescriptor[] = [CUTOUT_MODEL];
 
-export type CutoutModelFileKind = "encoder" | "decoder";
 export type ModelInstallStage = "downloading" | "verifying" | "installing";
 
 export interface ModelDownloadProgress {
@@ -79,9 +87,8 @@ export interface ModelDownloadProgress {
 
 interface InstalledModelRecord {
   id: string;
-  archiveSizeBytes: number;
-  encoderFileName: string;
-  decoderFileName: string;
+  sizeBytes: number;
+  fileNames: string[];
   installedAt: string;
 }
 
@@ -90,19 +97,9 @@ interface ModelManifest {
   installed: Record<string, InstalledModelRecord>;
 }
 
-interface ZipCentralDirectory {
-  offset: number;
-  entries: ZipEntry[];
-}
-
-interface ZipEntry {
-  name: string;
-  flags: number;
-  compression: number;
-  crc32: number;
-  compressedSize: number;
-  uncompressedSize: number;
-  localHeaderOffset: number;
+interface DownloadedModelFile {
+  descriptor: CutoutModelFileDescriptor;
+  sha256: string;
 }
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -127,33 +124,8 @@ async function resolveModelsDir(): Promise<string | null> {
   return cachedModelsDir;
 }
 
-function installedFileName(descriptor: CutoutModelDescriptor, kind: CutoutModelFileKind) {
-  return `${descriptor.id}.${kind}.onnx`;
-}
-
-function modelFileIntegrity(
-  descriptor: CutoutModelDescriptor,
-  kind: CutoutModelFileKind
-) {
-  return kind === "encoder"
-    ? { sizeBytes: descriptor.encoderSizeBytes, crc32: descriptor.encoderCrc32 }
-    : { sizeBytes: descriptor.decoderSizeBytes, crc32: descriptor.decoderCrc32 };
-}
-
-function updateCrc32(previous: number, bytes: Uint8Array): number {
-  let crc = previous ^ 0xffffffff;
-  for (let index = 0; index < bytes.byteLength; index += 1) {
-    crc = CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-async function modelLocalPath(
-  descriptor: CutoutModelDescriptor,
-  modelsDir: string,
-  kind: CutoutModelFileKind
-) {
-  return join(modelsDir, installedFileName(descriptor, kind));
+async function modelLocalPath(modelsDir: string, fileName: string) {
+  return join(modelsDir, fileName);
 }
 
 async function manifestPath(modelsDir: string) {
@@ -190,6 +162,18 @@ async function writeManifest(modelsDir: string, manifest: ModelManifest): Promis
   );
 }
 
+function expectedFileNames(descriptor: CutoutModelDescriptor) {
+  return descriptor.files.map((file) => file.fileName);
+}
+
+function hasExpectedFiles(record: InstalledModelRecord, descriptor: CutoutModelDescriptor) {
+  const expected = expectedFileNames(descriptor);
+  return record.id === descriptor.id &&
+    record.sizeBytes === descriptor.sizeBytes &&
+    record.fileNames.length === expected.length &&
+    record.fileNames.every((fileName, index) => fileName === expected[index]);
+}
+
 export function findModelDescriptor(modelId: string): CutoutModelDescriptor | undefined {
   return CUTOUT_MODELS.find((model) => model.id === modelId);
 }
@@ -201,25 +185,14 @@ export async function getModelStatus(
   if (!modelsDir) return "missing";
 
   try {
-    const [encoderPath, decoderPath, manifest] = await Promise.all([
-      modelLocalPath(descriptor, modelsDir, "encoder"),
-      modelLocalPath(descriptor, modelsDir, "decoder"),
-      readManifest(modelsDir)
-    ]);
+    const manifest = await readManifest(modelsDir);
     const record = manifest.installed[descriptor.id];
-    if (
-      !record ||
-      record.archiveSizeBytes !== descriptor.sizeBytes ||
-      record.encoderFileName !== installedFileName(descriptor, "encoder") ||
-      record.decoderFileName !== installedFileName(descriptor, "decoder")
-    ) {
-      return "missing";
-    }
-    const [hasEncoder, hasDecoder] = await Promise.all([
-      exists(encoderPath),
-      exists(decoderPath)
-    ]);
-    return hasEncoder && hasDecoder ? "ready" : "missing";
+    if (!record || !hasExpectedFiles(record, descriptor)) return "missing";
+    const filePaths = await Promise.all(
+      descriptor.files.map((file) => modelLocalPath(modelsDir, file.fileName))
+    );
+    const fileStatuses = await Promise.all(filePaths.map((path) => exists(path)));
+    return fileStatuses.every(Boolean) ? "ready" : "missing";
   } catch {
     return "error";
   }
@@ -241,345 +214,17 @@ async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function readExactlyAt(
-  handle: FileHandle,
-  offset: number,
-  byteLength: number
-): Promise<Uint8Array> {
-  if (
-    !Number.isSafeInteger(offset) ||
-    offset < 0 ||
-    !Number.isSafeInteger(byteLength) ||
-    byteLength < 0
-  ) {
-    throw new Error("模型包目录包含无效偏移。");
-  }
-
-  await handle.seek(offset, SeekMode.Start);
-  const bytes = new Uint8Array(byteLength);
-  let bytesReadTotal = 0;
-  while (bytesReadTotal < byteLength) {
-    const bytesRead = await handle.read(bytes.subarray(bytesReadTotal));
-    if (bytesRead === null || bytesRead <= 0) {
-      throw new Error("模型包目录不完整，请重新下载。");
-    }
-    bytesReadTotal += bytesRead;
-  }
-  return bytes;
-}
-
-function decodeZipEntryName(bytes: Uint8Array): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch (exception) {
-    throw new Error("模型包目录中的文件名无法识别。", { cause: exception });
-  }
-}
-
-async function readZipCentralDirectory(
-  archive: FileHandle,
-  archiveSize: number
-): Promise<ZipCentralDirectory> {
-  const tailSize = Math.min(
-    archiveSize,
-    ZIP_EOCD_BYTES + ZIP_MAX_COMMENT_BYTES
-  );
-  if (tailSize < ZIP_EOCD_BYTES) {
-    throw new Error("模型包不是有效的 ZIP 文件，请重新下载。");
-  }
-
-  const tailOffset = archiveSize - tailSize;
-  const tail = await readExactlyAt(archive, tailOffset, tailSize);
-  const tailView = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
-  let eocdOffset = -1;
-  for (let offset = tail.byteLength - ZIP_EOCD_BYTES; offset >= 0; offset -= 1) {
-    if (tailView.getUint32(offset, true) !== ZIP_EOCD_SIGNATURE) continue;
-    const commentLength = tailView.getUint16(offset + 20, true);
-    if (offset + ZIP_EOCD_BYTES + commentLength === tail.byteLength) {
-      eocdOffset = offset;
-      break;
-    }
-  }
-  if (eocdOffset < 0) {
-    throw new Error("模型包缺少 ZIP 中央目录，请重新下载。");
-  }
-
-  const diskNumber = tailView.getUint16(eocdOffset + 4, true);
-  const centralDirectoryDisk = tailView.getUint16(eocdOffset + 6, true);
-  const diskEntryCount = tailView.getUint16(eocdOffset + 8, true);
-  const entryCount = tailView.getUint16(eocdOffset + 10, true);
-  const centralDirectorySize = tailView.getUint32(eocdOffset + 12, true);
-  const centralDirectoryOffset = tailView.getUint32(eocdOffset + 16, true);
-  if (diskNumber !== 0 || centralDirectoryDisk !== 0 || diskEntryCount !== entryCount) {
-    throw new Error("模型包使用了不支持的分卷 ZIP 格式。");
-  }
-  if (
-    entryCount === 0xffff ||
-    centralDirectorySize === 0xffffffff ||
-    centralDirectoryOffset === 0xffffffff
-  ) {
-    throw new Error("模型包使用了不支持的 ZIP64 格式。");
-  }
-
-  const absoluteEocdOffset = tailOffset + eocdOffset;
-  if (
-    centralDirectoryOffset > absoluteEocdOffset ||
-    centralDirectorySize > absoluteEocdOffset - centralDirectoryOffset
-  ) {
-    throw new Error("模型包中央目录越界，请重新下载。");
-  }
-
-  const directoryBytes = await readExactlyAt(
-    archive,
-    centralDirectoryOffset,
-    centralDirectorySize
-  );
-  const directoryView = new DataView(
-    directoryBytes.buffer,
-    directoryBytes.byteOffset,
-    directoryBytes.byteLength
-  );
-  const entries: ZipEntry[] = [];
-  let offset = 0;
-  for (let index = 0; index < entryCount; index += 1) {
-    if (
-      offset + ZIP_CENTRAL_DIRECTORY_HEADER_BYTES > directoryBytes.byteLength ||
-      directoryView.getUint32(offset, true) !== ZIP_CENTRAL_DIRECTORY_SIGNATURE
-    ) {
-      throw new Error("模型包中央目录损坏，请重新下载。");
-    }
-
-    const fileNameLength = directoryView.getUint16(offset + 28, true);
-    const extraFieldLength = directoryView.getUint16(offset + 30, true);
-    const commentLength = directoryView.getUint16(offset + 32, true);
-    const recordLength =
-      ZIP_CENTRAL_DIRECTORY_HEADER_BYTES +
-      fileNameLength +
-      extraFieldLength +
-      commentLength;
-    if (recordLength > directoryBytes.byteLength - offset) {
-      throw new Error("模型包中央目录条目不完整，请重新下载。");
-    }
-
-    const compressedSize = directoryView.getUint32(offset + 20, true);
-    const uncompressedSize = directoryView.getUint32(offset + 24, true);
-    const localHeaderOffset = directoryView.getUint32(offset + 42, true);
-    const diskStart = directoryView.getUint16(offset + 34, true);
-    if (
-      compressedSize === 0xffffffff ||
-      uncompressedSize === 0xffffffff ||
-      localHeaderOffset === 0xffffffff
-    ) {
-      throw new Error("模型包条目使用了不支持的 ZIP64 格式。");
-    }
-    if (diskStart !== 0) {
-      throw new Error("模型包条目位于不支持的 ZIP 分卷中。");
-    }
-
-    const fileNameOffset = offset + ZIP_CENTRAL_DIRECTORY_HEADER_BYTES;
-    entries.push({
-      name: decodeZipEntryName(
-        directoryBytes.subarray(fileNameOffset, fileNameOffset + fileNameLength)
-      ),
-      flags: directoryView.getUint16(offset + 8, true),
-      compression: directoryView.getUint16(offset + 10, true),
-      crc32: directoryView.getUint32(offset + 16, true),
-      compressedSize,
-      uncompressedSize,
-      localHeaderOffset
-    });
-    offset += recordLength;
-  }
-
-  if (offset !== directoryBytes.byteLength) {
-    throw new Error("模型包中央目录包含无法识别的数据。");
-  }
-  return { offset: centralDirectoryOffset, entries };
-}
-
-function findModelZipEntry(
-  directory: ZipCentralDirectory,
-  expectedName: string
-): ZipEntry {
-  const matches = directory.entries.filter((entry) => {
-    const entryName = entry.name.replaceAll("\\", "/").split("/").pop();
-    return entryName === expectedName;
-  });
-  if (matches.length !== 1) {
-    throw new Error(
-      matches.length === 0
-        ? `模型包缺少 ${expectedName}。`
-        : `模型包包含重复的 ${expectedName}。`
-    );
-  }
-  return matches[0];
-}
-
-function validateModelZipEntry(
-  descriptor: CutoutModelDescriptor,
-  kind: CutoutModelFileKind,
-  entry: ZipEntry
-) {
-  if (entry.flags & ZIP_ENCRYPTED_FLAG) {
-    throw new Error(`模型包中的 ${kind} 文件已加密，无法安装。`);
-  }
-  if (
-    entry.compression !== ZIP_COMPRESSION_STORED &&
-    entry.compression !== ZIP_COMPRESSION_DEFLATE
-  ) {
-    throw new Error(
-      `模型包格式异常（不支持 ZIP 压缩方法 ${entry.compression}）。`
-    );
-  }
-  const integrity = modelFileIntegrity(descriptor, kind);
-  if (
-    entry.uncompressedSize !== integrity.sizeBytes ||
-    entry.crc32 !== integrity.crc32 ||
-    (entry.compression === ZIP_COMPRESSION_STORED &&
-      entry.compressedSize !== entry.uncompressedSize)
-  ) {
-    throw new Error(`模型包中的 ${kind} 文件信息校验失败，请重新下载。`);
-  }
-}
-
-async function resolveZipEntryDataOffset(
-  archive: FileHandle,
-  entry: ZipEntry,
-  centralDirectoryOffset: number
-): Promise<number> {
-  const localHeader = await readExactlyAt(
-    archive,
-    entry.localHeaderOffset,
-    ZIP_LOCAL_FILE_HEADER_BYTES
-  );
-  const localView = new DataView(
-    localHeader.buffer,
-    localHeader.byteOffset,
-    localHeader.byteLength
-  );
-  if (localView.getUint32(0, true) !== ZIP_LOCAL_FILE_SIGNATURE) {
-    throw new Error(`模型包中的 ${entry.name} 本地文件头损坏。`);
-  }
-
-  const flags = localView.getUint16(6, true);
-  const compression = localView.getUint16(8, true);
-  const fileNameLength = localView.getUint16(26, true);
-  const extraFieldLength = localView.getUint16(28, true);
-  if (flags !== entry.flags || compression !== entry.compression) {
-    throw new Error(`模型包中的 ${entry.name} 文件头信息不一致。`);
-  }
-
-  const variableHeader = await readExactlyAt(
-    archive,
-    entry.localHeaderOffset + ZIP_LOCAL_FILE_HEADER_BYTES,
-    fileNameLength + extraFieldLength
-  );
-  const localName = decodeZipEntryName(variableHeader.subarray(0, fileNameLength));
-  if (localName !== entry.name) {
-    throw new Error(`模型包中的 ${entry.name} 文件名信息不一致。`);
-  }
-
-  const dataOffset =
-    entry.localHeaderOffset +
-    ZIP_LOCAL_FILE_HEADER_BYTES +
-    fileNameLength +
-    extraFieldLength;
-  if (
-    dataOffset > centralDirectoryOffset ||
-    entry.compressedSize > centralDirectoryOffset - dataOffset
-  ) {
-    throw new Error(`模型包中的 ${entry.name} 压缩数据越界。`);
-  }
-  return dataOffset;
-}
-
-async function extractZipEntry(
-  archive: FileHandle,
-  output: FileHandle,
-  entry: ZipEntry,
-  kind: CutoutModelFileKind,
-  centralDirectoryOffset: number,
-  onCompressedBytes: (byteLength: number) => void,
-  signal?: AbortSignal
-): Promise<{ sizeBytes: number; crc32: number }> {
-  const dataOffset = await resolveZipEntryDataOffset(
-    archive,
-    entry,
-    centralDirectoryOffset
-  );
-  await archive.seek(dataOffset, SeekMode.Start);
-
-  const state = { sizeBytes: 0, crc32: 0 };
-  let writeQueue = Promise.resolve();
-  let reachedFinalBlock = entry.compression === ZIP_COMPRESSION_STORED;
-  const consumeOutput = (bytes: Uint8Array) => {
-    if (!bytes.byteLength) return;
-    if (bytes.byteLength > entry.uncompressedSize - state.sizeBytes) {
-      throw new Error(`模型包中的 ${kind} 文件解压大小异常。`);
-    }
-    const stableBytes = bytes.slice();
-    state.sizeBytes += stableBytes.byteLength;
-    state.crc32 = updateCrc32(state.crc32, stableBytes);
-    writeQueue = writeQueue.then(() => writeAll(output, stableBytes));
-  };
-  const inflate = entry.compression === ZIP_COMPRESSION_DEFLATE
-    ? new Inflate((bytes, final) => {
-        consumeOutput(bytes);
-        reachedFinalBlock ||= final;
-      })
-    : null;
-
-  let remainingBytes = entry.compressedSize;
-  const buffer = new Uint8Array(
-    Math.min(ARCHIVE_READ_CHUNK_BYTES, Math.max(1, remainingBytes))
-  );
-  while (remainingBytes > 0) {
-    if (signal?.aborted) throw new DOMException("模型安装已取消。", "AbortError");
-    const requestedBytes = Math.min(buffer.byteLength, remainingBytes);
-    const bytesRead = await archive.read(buffer.subarray(0, requestedBytes));
-    if (bytesRead === null || bytesRead <= 0) {
-      throw new Error(`模型包中的 ${kind} 压缩数据不完整，请重新下载。`);
-    }
-
-    remainingBytes -= bytesRead;
-    const input = buffer.slice(0, bytesRead);
-    try {
-      if (inflate) inflate.push(input, remainingBytes === 0);
-      else consumeOutput(input);
-    } catch (exception) {
-      throw new Error(`模型包中的 ${kind} 文件解压失败，请重新下载。`, {
-        cause: exception
-      });
-    }
-    await writeQueue;
-    onCompressedBytes(bytesRead);
-  }
-
-  if (inflate && entry.compressedSize === 0) {
-    try {
-      inflate.push(new Uint8Array(), true);
-    } catch (exception) {
-      throw new Error(`模型包中的 ${kind} 文件解压失败，请重新下载。`, {
-        cause: exception
-      });
-    }
-  }
-  await writeQueue;
-  if (!reachedFinalBlock) {
-    throw new Error(`模型包中的 ${kind} 压缩数据未正常结束，请重新下载。`);
-  }
-  return state;
-}
-
-async function downloadArchive(
-  descriptor: CutoutModelDescriptor,
-  archivePath: string,
+async function downloadModelFile(
+  file: CutoutModelFileDescriptor,
+  outputPath: string,
+  completedBytes: number,
+  totalBytes: number,
   onProgress?: (progress: ModelDownloadProgress) => void,
   signal?: AbortSignal
-) {
+): Promise<DownloadedModelFile> {
   let response: Response;
   try {
-    response = await fetchHttp(descriptor.url, { signal });
+    response = await fetchHttp(file.url, { signal });
   } catch (exception) {
     if (signal?.aborted) throw new DOMException("模型下载已取消。", "AbortError");
     throw new Error("模型下载失败：无法连接下载源，请检查网络后重试。", {
@@ -591,152 +236,58 @@ async function downloadArchive(
   }
 
   const reader = response.body.getReader();
-  let archive: FileHandle | null = null;
+  const digest = sha256.create();
+  let output: FileHandle | null = null;
   let receivedBytes = 0;
   try {
-    archive = await create(archivePath);
+    output = await create(outputPath);
     for (;;) {
       if (signal?.aborted) throw new DOMException("模型下载已取消。", "AbortError");
       const { done, value } = await reader.read();
       if (done) break;
       if (!value?.byteLength) continue;
-      await writeAll(archive, value);
+      if (value.byteLength > file.sizeBytes - receivedBytes) {
+        throw new Error(`模型文件 ${file.fileName} 大小异常，请重新下载。`);
+      }
+      await writeAll(output, value);
+      digest.update(value);
       receivedBytes += value.byteLength;
       onProgress?.({
         stage: "downloading",
-        receivedBytes,
-        totalBytes: descriptor.sizeBytes
+        receivedBytes: completedBytes + receivedBytes,
+        totalBytes
       });
     }
   } finally {
-    await archive?.close().catch(() => undefined);
+    await output?.close().catch(() => undefined);
     await reader.cancel().catch(() => undefined);
   }
 
-  if (receivedBytes !== descriptor.sizeBytes) {
+  if (receivedBytes !== file.sizeBytes) {
     throw new Error(
-      `模型包不完整（预期 ${descriptor.sizeBytes} 字节，实际 ${receivedBytes} 字节）。`
+      `模型文件 ${file.fileName} 不完整（预期 ${file.sizeBytes} 字节，实际 ${receivedBytes} 字节）。`
     );
   }
+  return { descriptor: file, sha256: bytesToHex(digest.digest()) };
 }
 
-async function verifyArchive(
-  descriptor: CutoutModelDescriptor,
-  archivePath: string,
-  onProgress?: (progress: ModelDownloadProgress) => void,
-  signal?: AbortSignal
+function verifyDownloadedFiles(
+  downloaded: DownloadedModelFile[],
+  totalBytes: number,
+  onProgress?: (progress: ModelDownloadProgress) => void
 ) {
-  let archive: FileHandle | null = null;
   let verifiedBytes = 0;
-  const digest = sha256.create();
-
-  try {
-    archive = await open(archivePath, { read: true });
-    const buffer = new Uint8Array(ARCHIVE_READ_CHUNK_BYTES);
-    for (;;) {
-      if (signal?.aborted) throw new DOMException("模型校验已取消。", "AbortError");
-      const bytesRead = await archive.read(buffer);
-      if (bytesRead === null) break;
-      if (bytesRead <= 0) continue;
-      digest.update(buffer.subarray(0, bytesRead));
-      verifiedBytes += bytesRead;
-      onProgress?.({
-        stage: "verifying",
-        receivedBytes: Math.min(verifiedBytes, descriptor.sizeBytes),
-        totalBytes: descriptor.sizeBytes
-      });
+  onProgress?.({ stage: "verifying", receivedBytes: 0, totalBytes });
+  for (const file of downloaded) {
+    if (file.sha256 !== file.descriptor.sha256) {
+      throw new Error(`模型文件 ${file.descriptor.fileName} 校验失败，请重新下载。`);
     }
-  } finally {
-    await archive?.close().catch(() => undefined);
-  }
-
-  const actualSha256 = bytesToHex(digest.digest());
-  if (
-    verifiedBytes !== descriptor.sizeBytes ||
-    actualSha256 !== descriptor.archiveSha256
-  ) {
-    throw new Error("模型包校验失败，下载内容已损坏，请重试。");
+    verifiedBytes += file.descriptor.sizeBytes;
+    onProgress?.({ stage: "verifying", receivedBytes: verifiedBytes, totalBytes });
   }
 }
 
-async function extractArchive(
-  descriptor: CutoutModelDescriptor,
-  archivePath: string,
-  encoderPath: string,
-  decoderPath: string,
-  onProgress?: (progress: ModelDownloadProgress) => void,
-  signal?: AbortSignal
-) {
-  let archive: FileHandle | null = null;
-
-  try {
-    archive = await open(archivePath, { read: true });
-    const directory = await readZipCentralDirectory(archive, descriptor.sizeBytes);
-    const entries = {
-      encoder: findModelZipEntry(directory, descriptor.encoderArchiveEntry),
-      decoder: findModelZipEntry(directory, descriptor.decoderArchiveEntry)
-    };
-    validateModelZipEntry(descriptor, "encoder", entries.encoder);
-    validateModelZipEntry(descriptor, "decoder", entries.decoder);
-
-    const totalCompressedBytes =
-      entries.encoder.compressedSize + entries.decoder.compressedSize;
-    let processedCompressedBytes = 0;
-    const onCompressedBytes = (byteLength: number) => {
-      processedCompressedBytes += byteLength;
-      const ratio = totalCompressedBytes > 0
-        ? processedCompressedBytes / totalCompressedBytes
-        : 1;
-      onProgress?.({
-        stage: "installing",
-        receivedBytes: Math.round(Math.min(1, ratio) * descriptor.sizeBytes),
-        totalBytes: descriptor.sizeBytes
-      });
-    };
-
-    for (const kind of ["encoder", "decoder"] as const) {
-      if (signal?.aborted) throw new DOMException("模型安装已取消。", "AbortError");
-      const outputPath = kind === "encoder" ? encoderPath : decoderPath;
-      let output: FileHandle | null = null;
-      let state: { sizeBytes: number; crc32: number } | null = null;
-      try {
-        output = await create(outputPath);
-        state = await extractZipEntry(
-          archive,
-          output,
-          entries[kind],
-          kind,
-          directory.offset,
-          onCompressedBytes,
-          signal
-        );
-      } finally {
-        await output?.close().catch(() => undefined);
-      }
-
-      const integrity = modelFileIntegrity(descriptor, kind);
-      if (
-        !state ||
-        state.sizeBytes !== integrity.sizeBytes ||
-        state.crc32 !== integrity.crc32
-      ) {
-        throw new Error(`模型包中的 ${kind} 文件校验失败，请重新下载。`);
-      }
-    }
-    onProgress?.({
-      stage: "installing",
-      receivedBytes: descriptor.sizeBytes,
-      totalBytes: descriptor.sizeBytes
-    });
-  } finally {
-    await archive?.close().catch(() => undefined);
-  }
-}
-
-/**
- * 流式下载模型包，再根据 ZIP 中央目录记录的精确长度按块解压
- * encoder/decoder，避免扫描 data descriptor 和让大模型包整体驻留内存。
- */
+/** 流式下载并逐文件校验 SAM 2.1 ONNX 与 external-data。 */
 export async function downloadModel(
   descriptor: CutoutModelDescriptor,
   onProgress?: (progress: ModelDownloadProgress) => void,
@@ -749,49 +300,59 @@ export async function downloadModel(
   if (!modelsDir) throw new Error("无法获取应用数据目录。");
   await mkdir(modelsDir, { recursive: true });
 
-  const [archivePath, encoderPath, decoderPath] = await Promise.all([
-    join(modelsDir, `${descriptor.id}.download.zip`),
-    modelLocalPath(descriptor, modelsDir, "encoder"),
-    modelLocalPath(descriptor, modelsDir, "decoder")
-  ]);
-  await Promise.all([
-    remove(archivePath).catch(() => undefined),
-    remove(encoderPath).catch(() => undefined),
-    remove(decoderPath).catch(() => undefined)
-  ]);
+  const filePaths = await Promise.all(
+    descriptor.files.map((file) => modelLocalPath(modelsDir, file.fileName))
+  );
+  await Promise.all(filePaths.map((path) => remove(path).catch(() => undefined)));
+  await Promise.all(
+    OBSOLETE_MODEL_FILE_NAMES.map(async (fileName) =>
+      remove(await modelLocalPath(modelsDir, fileName)).catch(() => undefined)
+    )
+  );
 
   try {
-    onProgress?.({ stage: "downloading", receivedBytes: 0, totalBytes: descriptor.sizeBytes });
-    await downloadArchive(descriptor, archivePath, onProgress, signal);
-    onProgress?.({ stage: "verifying", receivedBytes: 0, totalBytes: descriptor.sizeBytes });
-    await verifyArchive(descriptor, archivePath, onProgress, signal);
-    onProgress?.({ stage: "installing", receivedBytes: 0, totalBytes: descriptor.sizeBytes });
-    await extractArchive(
-      descriptor,
-      archivePath,
-      encoderPath,
-      decoderPath,
-      onProgress,
-      signal
-    );
+    const downloaded: DownloadedModelFile[] = [];
+    let completedBytes = 0;
+    onProgress?.({
+      stage: "downloading",
+      receivedBytes: 0,
+      totalBytes: descriptor.sizeBytes
+    });
+    for (let index = 0; index < descriptor.files.length; index += 1) {
+      const file = descriptor.files[index];
+      downloaded.push(await downloadModelFile(
+        file,
+        filePaths[index],
+        completedBytes,
+        descriptor.sizeBytes,
+        onProgress,
+        signal
+      ));
+      completedBytes += file.sizeBytes;
+    }
+    verifyDownloadedFiles(downloaded, descriptor.sizeBytes, onProgress);
 
+    onProgress?.({
+      stage: "installing",
+      receivedBytes: 0,
+      totalBytes: descriptor.sizeBytes
+    });
     const manifest = await readManifest(modelsDir);
     manifest.installed[descriptor.id] = {
       id: descriptor.id,
-      archiveSizeBytes: descriptor.sizeBytes,
-      encoderFileName: installedFileName(descriptor, "encoder"),
-      decoderFileName: installedFileName(descriptor, "decoder"),
+      sizeBytes: descriptor.sizeBytes,
+      fileNames: expectedFileNames(descriptor),
       installedAt: new Date().toISOString()
     };
     await writeManifest(modelsDir, manifest);
+    onProgress?.({
+      stage: "installing",
+      receivedBytes: descriptor.sizeBytes,
+      totalBytes: descriptor.sizeBytes
+    });
   } catch (exception) {
-    await Promise.all([
-      remove(encoderPath).catch(() => undefined),
-      remove(decoderPath).catch(() => undefined)
-    ]);
+    await Promise.all(filePaths.map((path) => remove(path).catch(() => undefined)));
     throw exception;
-  } finally {
-    await remove(archivePath).catch(() => undefined);
   }
 }
 
@@ -799,14 +360,10 @@ export async function removeModel(descriptor: CutoutModelDescriptor): Promise<vo
   if (!isTauri) return;
   const modelsDir = await resolveModelsDir();
   if (!modelsDir) return;
-  const [encoderPath, decoderPath] = await Promise.all([
-    modelLocalPath(descriptor, modelsDir, "encoder"),
-    modelLocalPath(descriptor, modelsDir, "decoder")
-  ]);
-  await Promise.all([
-    remove(encoderPath).catch(() => undefined),
-    remove(decoderPath).catch(() => undefined)
-  ]);
+  const filePaths = await Promise.all(
+    descriptor.files.map((file) => modelLocalPath(modelsDir, file.fileName))
+  );
+  await Promise.all(filePaths.map((path) => remove(path).catch(() => undefined)));
   const manifest = await readManifest(modelsDir);
   delete manifest.installed[descriptor.id];
   await writeManifest(modelsDir, manifest);

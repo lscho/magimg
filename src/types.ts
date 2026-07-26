@@ -334,31 +334,30 @@ export interface LocalDatabase {
 export interface CutoutModelDescriptor {
   id: string;
   name: string;
-  /** 内置模型包下载地址（HTTP/HTTPS）。 */
-  url: string;
-  /** 模型包文件名。 */
-  archiveFileName: string;
-  /** 模型包内 encoder 文件名。 */
-  encoderArchiveEntry: string;
-  /** 模型包内 decoder 文件名。 */
-  decoderArchiveEntry: string;
-  /** 预期压缩包大小（字节），用于下载进度与完整性校验。 */
+  /** 固定版本的 ONNX 与 external-data 文件。 */
+  files: readonly CutoutModelFileDescriptor[];
+  /** 全部模型文件的下载总大小（字节）。 */
   sizeBytes: number;
-  /** 官方模型包 SHA-256，用于解压前校验落盘文件。 */
-  archiveSha256: string;
-  /** 解压后 encoder 的预期大小与 ZIP CRC32。 */
-  encoderSizeBytes: number;
-  encoderCrc32: number;
-  /** 解压后 decoder 的预期大小与 ZIP CRC32。 */
-  decoderSizeBytes: number;
-  decoderCrc32: number;
-  /** Encoder 预处理画布的最大宽高。 */
+  /** Encoder 固定输入尺寸。 */
   inputWidth: number;
   inputHeight: number;
+  /** Decoder 低分辨率 logits 尺寸。 */
+  maskWidth: number;
+  maskHeight: number;
   /** 是否是默认推荐档位。 */
   recommended?: boolean;
   /** 简短说明，展示给用户。 */
   description?: string;
+}
+
+export interface CutoutModelFileDescriptor {
+  /** 固定版本的下载地址。 */
+  url: string;
+  /** 保存在 appDataDir/models/ 下的原始文件名。 */
+  fileName: string;
+  /** 文件大小与 SHA-256，用于流式下载后的完整性校验。 */
+  sizeBytes: number;
+  sha256: string;
 }
 
 /** 统一抠图资源包中用于处理 SAM 输出的本地 alpha 优化模型。 */
@@ -385,6 +384,13 @@ export interface CutoutSelectionBox {
   y: number;
   width: number;
   height: number;
+}
+
+/** 图像坐标系下的点提示：label 为 1 表示前景点，0 表示背景点。 */
+export interface CutoutPointPrompt {
+  x: number;
+  y: number;
+  label: 0 | 1;
 }
 
 /** 单次抠图结果：透明 PNG Blob 及其来源选区。 */

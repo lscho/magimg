@@ -60,7 +60,7 @@ const INSTALL_STAGE_COUNT = Object.keys(INSTALL_STAGE_INDEX).length;
 const RESOURCE_DOWNLOAD_SIZE_BYTES = CUTOUT_MODEL.sizeBytes + CUTOUT_REFINER.sizeBytes;
 
 /**
- * 管理统一抠图资源包与批量抠图。资源包由 ViT-H 和 ViTMatte 组成，
+ * 管理统一抠图资源包与批量抠图。资源包由 SAM 2.1 Base+ 和 ViTMatte 组成，
  * 一次安装只补齐缺失部分；一次推理只运行一次 encoder 并复用 embedding。
  */
 export function useCutoutInference() {
