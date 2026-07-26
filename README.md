@@ -72,6 +72,8 @@ AI 抠图页（`/cutout`）在左侧主导航中位于“图生图”下方，�
 
 SAM 模型包流式写入本地后先按官方 SHA-256 校验 ZIP，再根据 ZIP 中央目录记录的精确压缩长度解压 encoder/decoder 两个 ONNX 文件，避免大型条目中的字节序列被误判为 data descriptor；解压结果按原始大小和 CRC32 校验。推理使用 Tauri/Rust 原生 `ort 2.0.0-rc.10` 与 ONNX Runtime 1.22，不再加载 `onnxruntime-web` 或 WASM：前端只通过 Raw IPC 发送预处理数据，Rust 从 `appDataDir/models/` 白名单路径直接加载并再次校验 ONNX 文件，持有 decoder 与 image embedding。encoder 完成后立即释放大会话，同一任务的多个框选继续复用 embedding；取消操作会终止当前原生运行。
 
+Windows 的官方 ONNX Runtime 二进制依赖 Microsoft Visual C++ 运行库。桌面正式构建会从目标架构的 MSVC v143 工具链中提取 `Microsoft.VC143.CRT`，并将其中的 DLL 作为 app-local 资源放在主程序同目录；安装和自动更新均不要求用户另行安装 VC++ Redistributable。Windows 打包机必须安装对应架构的 MSVC v143 C++ Build Tools；脚本无法自动定位时，可将 `MSVC_CRT_DIR` 指向目标架构的 `Microsoft.VC143.CRT` 目录。
+
 基础链路由 SAM decoder 按 `iou_predictions` 选择评分最高的 mask，并把阈值附近的浮点 logits 转为 8 位软 alpha。客户端随后固定以 SAM mask 生成三值 trimap，在带上下文的选区裁剪上运行 ViTMatte；确定前景与外部背景会在推理后强制回填，封闭的主体内部缺口保留为未知区域交给 ViTMatte 判断，避免主体中间被错误抠空。优化后的 alpha 双线性恢复到原图坐标后与原图 alpha 相乘，最终按用户选区边界输出透明 PNG。每个结果支持单个复制/保存；桌面批量导出只需选择一次目录。浏览器预览保留画布交互，但不能下载或运行本地模型。
 
 截至 2026-07，Meta 官方最新版本是 [SAM 3.1](https://github.com/facebookresearch/sam3)，权重发布在 [facebook/sam3.1](https://huggingface.co/facebook/sam3.1)。官方运行环境要求 Python 3.12+、PyTorch 2.7+ 与 CUDA 12.6+，权重下载需要 Hugging Face 授权，目前没有可直接用于本项目原生 encoder/decoder ONNX 契约的官方 ONNX 包，因此客户端没有将 SAM 3.1 错误接入为可运行档位。当前资源包只保留以下量化 SAM 模型：

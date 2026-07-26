@@ -1,4 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Huanhua AI"
+  "productName": "Huanhua AI",
+  "bundle": {
+    "resources": {
+      "windows-runtime/*.dll": ""
+    }
+  }
 }

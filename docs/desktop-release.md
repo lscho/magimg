@@ -18,6 +18,8 @@ Tauri 默认会为 Intel 和 Apple Silicon 生成同名的 macOS updater；Actio
 
 Windows 构建通过 `src-tauri/tauri.windows.conf.json` 使用英文产品名 `Huanhua AI`，默认安装目录和 NSIS 文件名均为英文；窗口标题仍使用“幻画 AI”。macOS 不应用该覆盖。首次发布英文目录版本时，需要从上一版中文目录安装包完成真实升级和卸载测试，检查旧目录与卸载项是否残留。
 
+原生 AI 抠图使用的官方 ONNX Runtime 1.22 Windows DLL 依赖 MSVC C++ 运行库。`beforeBuildCommand` 会调用 `scripts/prepare-windows-runtime.mjs`，从目标架构的 MSVC v143 工具链中复制完整 `Microsoft.VC143.CRT` DLL 集；Tauri 随后通过 Windows 专属资源映射将这些 DLL 放到应用主程序同目录。该 app-local 部署同时覆盖首次安装和 NSIS 自动更新，无需管理员权限或联网安装前置组件。Windows runner 必须安装对应架构的 MSVC v143 C++ Build Tools；自建 runner 无法自动定位时，应设置 `MSVC_CRT_DIR` 为架构专属的 `Microsoft.VC143.CRT` 目录。
+
 ## 2. 一次性配置
 
 正式构建读取仓库根目录 `.env.production`：
@@ -49,13 +51,14 @@ COS 和后台登记配置放在名为 `production-release` 的 GitHub Environmen
 
 1. 从标签提取 SemVer，并写入 Tauri 正式构建配置。
 2. 将构建时的 API 地址固化为 `/api/client/v1/version/latest/tauri?platform={{target}}`。
-3. 为四个平台构建普通安装包、updater 包和 `.sig`。
-4. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
-5. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
-6. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
-7. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。1 MiB 以上文件自动使用 1 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次，覆盖所有安装包和 updater。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
-8. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
-9. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
+3. Windows 构建按 `x64` 或 `arm64` 暂存 MSVC v143 app-local 运行库；找不到完整 CRT 时立即失败，避免发布启动即报 `MSVCP140.dll` 缺失的安装包。
+4. 为四个平台构建普通安装包、updater 包和 `.sig`。
+5. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
+6. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
+7. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
+8. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。1 MiB 以上文件自动使用 1 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次，覆盖所有安装包和 updater。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
+9. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
+10. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
 
 手动运行 workflow 也会生成四个平台 Artifact 和发布清单，但不会创建 GitHub Release、上传 COS 或登记后台。Artifact 保留 14 天。COS、CDN 或后台接口任一步失败都会使标签 workflow 失败；再次运行同一标签只会校验已有对象并更新未发布草稿。
 
@@ -130,6 +133,7 @@ website 的 `POST /api/internal/desktop-releases` 只接受 256 KB 内的 JSON �
 - updater 文件没有经过二次压缩或内容修改。
 - 下载 URL 无需 Cookie、Token 或登录，能从公网稳定访问。
 - Windows URL 指向已签名的 NSIS `.exe`，macOS URL 指向 `.app.tar.gz`。
+- 在未预装 VC++ Redistributable 的干净 Windows x64/ARM64 环境安装并启动，确认不会出现 `MSVCP140.dll`、`VCRUNTIME140.dll` 或 `VCRUNTIME140_1.dll` 缺失提示。
 - `/version/latest/tauri` 返回原始 JSON，不套 `{ "data": ... }`。
 - 无已发布版本时返回 `204 No Content`，不能返回 `404`。
 

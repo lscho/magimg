@@ -1,13 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="250 270 560 560" fill="none">
-  <path
-    d="M612 352H418C351 352 310 397 310 464V642C310 711 353 756 422 756H610C679 756 722 713 722 644V506"
-    stroke="#7898F5"
-    stroke-width="86"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="240 214 544 544" fill="none">
+  <defs>
+    <linearGradient id="mark-gradient" x1="296" y1="270" x2="728" y2="702" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DD4BF" />
+      <stop offset="0.5" stop-color="#8B5CF6" />
+      <stop offset="1" stop-color="#E879F9" />
+    </linearGradient>
+  </defs>
+
+  <circle
+    cx="512"
+    cy="486"
+    r="219"
+    stroke="url(#mark-gradient)"
+    stroke-width="52"
     stroke-linecap="round"
-    stroke-linejoin="round"
+    stroke-dasharray="1030 386"
+    transform="rotate(-45 512 486)"
   />
   <path
-    d="M706 292C711 342 740 371 792 376C740 381 711 410 706 462C701 410 672 381 620 376C672 371 701 342 706 292Z"
-    fill="#65CFE0"
+    d="M358 666C461 580 563 580 666 666"
+    stroke="url(#mark-gradient)"
+    stroke-width="52"
+    stroke-linecap="round"
   />
+  <circle cx="666" cy="332" r="45" fill="#F5C97B" />
 </svg>
