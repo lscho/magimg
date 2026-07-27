@@ -12,6 +12,8 @@ import type {
   GenerationTask,
   GenerationTaskStatus,
   GenerationTemplate,
+  MattingChargeResult,
+  MattingRefundResult,
   PointLedgerEntry,
   TemplateCategory
 } from "@/types";
@@ -275,6 +277,21 @@ export const apiClient = {
 
   cancelTask(id: string) {
     return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  },
+
+  chargeMatting() {
+    return request<MattingChargeResult>("/matting", {
+      method: "POST",
+      body: JSON.stringify({}),
+      idempotencyKey: idempotencyKey()
+    });
+  },
+
+  refundMatting(mattingId: string) {
+    return request<MattingRefundResult>(
+      `/matting/${encodeURIComponent(mattingId)}/refund`,
+      { method: "POST" }
+    );
   },
 
   config() {

@@ -146,6 +146,7 @@ export interface ClientPagination<T> {
 export interface GenerationSettings {
   textToImageCost: number;
   imageToImageCost: number;
+  mattingCost: number;
   cardPurchaseUrl?: string;
   maxAttempts: number;
   uploadMaxBytes: number;
@@ -158,6 +159,17 @@ export interface GenerationSettings {
     minPixels: number;
     maxPixels: number;
   };
+}
+
+export interface MattingChargeResult {
+  mattingId: string;
+  cost: number;
+  balance: number;
+}
+
+export interface MattingRefundResult {
+  cost: number;
+  balance: number;
 }
 
 export interface TemplateCategory {
@@ -218,7 +230,13 @@ export interface GenerationTask {
   finishedAt?: string;
 }
 
-export type PointLedgerType = "cardRedeem" | "taskCharge" | "taskRefund" | "adminAdjustment";
+export type PointLedgerType =
+  | "cardRedeem"
+  | "taskCharge"
+  | "taskRefund"
+  | "mattingCharge"
+  | "mattingRefund"
+  | "adminAdjustment";
 
 export interface PointLedgerEntry {
   id: string;

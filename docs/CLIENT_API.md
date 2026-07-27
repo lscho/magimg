@@ -244,6 +244,7 @@ Authorization: Bearer <client-token>
 {
   "textToImageCost": 10,
   "imageToImageCost": 15,
+  "mattingCost": 5,
   "cardPurchaseUrl": "https://example.com/cards",
   "maxAttempts": 3,
   "uploadMaxBytes": 5242880,
@@ -261,7 +262,7 @@ Authorization: Bearer <client-token>
 
 `cardPurchaseUrl` 为可选的卡密购买页面地址。客户端仅在该值为有效的 `http` 或 `https` 地址时显示“购买卡密”；Tauri 桌面端使用系统浏览器打开，Web 端使用新窗口打开。
 
-> 默认值除 `cardPurchaseUrl` 外为上例（文生图 10 点、图生图 15 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400）。实际值以服务端 `ls_config.name='generation'` 配置为准。
+> 默认值除 `cardPurchaseUrl` 外为上例（文生图 10 点、图生图 15 点、AI 抠图 5 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400）。实际值以服务端 `ls_config.name='generation'` 配置为准；`mattingCost` 取值 1–1,000,000 正整数。
 
 ---
 
@@ -768,6 +769,92 @@ curl -i "https://api.example.com/api/client/v1/config"
 
 ---
 
+### 4.11 `POST /matting`
+
+AI 抠图预扣积分。客户端在**本地抠图开始前**调用，服务端扣 `mattingCost` 积分并返回扣费流水 ID（`mattingId`）。抠图在客户端本地完成，服务端不参与抠图本身。
+
+**两阶段计费流程**：
+
+1. 客户端发起抠图前调用本接口预扣积分，拿到 `mattingId`。
+2. 客户端本地执行抠图。
+3. 抠图**成功**：无需再调用，扣费生效。
+4. 抠图**失败**：用 `mattingId` 调 `POST /matting/:id/refund` 退回原扣费金额。
+
+**请求头**
+
+| 头部 | 必填 | 说明 |
+| --- | --- | --- |
+| `Authorization` | 是 | `Bearer <token>` |
+| `Idempotency-Key` | 是 | 8–100 字符，`[A-Za-z0-9._:-]+`；同一键重复调用只扣一次，返回首次结果 |
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `inputAssetId` | string | 否 | 输入图片 ID（正整数字符串），用于对账；提供时校验归属当前用户 |
+
+**成功响应（200）**
+
+```json
+{
+  "mattingId": "128",
+  "cost": 5,
+  "balance": 95
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `mattingId` | string | 扣费流水 ID，用于后续失败退款 |
+| `cost` | number | 本次扣除积分（= `mattingCost`） |
+| `balance` | number | 扣费后余额 |
+
+**幂等**：`Idempotency-Key` 作为积分流水的 `reference_id`，`uk_point_reference (user_id, type, reference_type, reference_id)` 唯一索引兜底，同一幂等键并发重复请求只扣一次。网络重试（不确定服务端是否扣费）用同一幂等键；重新尝试（已确定失败想再抠一次）用新幂等键。
+
+**错误码**：400 `Idempotency-Key 格式无效` / `请求参数格式无效` / `输入图片 ID格式无效`；401（未登录/过期）；403 `账号已停用`；404 `输入图片不存在`；409 `积分不足`；429（限流，`matting-charge` 30 次/60 秒）。
+
+> `mattingCost` 由服务端从 `ls_config.name='generation'` 权威读取，客户端无法篡改单价。默认 5，取值 1–1,000,000 正整数，经 `GET /capabilities` 下发。
+
+---
+
+### 4.12 `POST /matting/:id/refund`
+
+AI 抠图失败退款。客户端本地抠图失败后，用预扣返回的 `mattingId` 调用本接口，退回**原扣费金额**（取自原扣费流水，非当前配置，防配置变更后退错）。
+
+**路径参数**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | 预扣接口返回的 `mattingId`（扣费流水 ID） |
+
+**请求头**
+
+| 头部 | 必填 | 说明 |
+| --- | --- | --- |
+| `Authorization` | 是 | `Bearer <token>` |
+
+**成功响应（200）**
+
+```json
+{
+  "cost": 5,
+  "balance": 100
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `cost` | number | 本次退回积分（= 原扣费金额） |
+| `balance` | number | 退款后余额 |
+
+**幂等**：退款流水的 `reference_id` 复用原扣费的幂等键，`uk_point_reference` 唯一索引兜底，同一抠图任务只能退一次。并发重复请求或重试只退一次，返回首次退款结果。
+
+**错误码**：400 `抠图任务 ID格式无效`；401（未登录/过期）；403 `账号已停用`；404 `抠图扣费记录不存在`（`mattingId` 不存在或不属于当前用户）；429（限流，`matting-refund` 30 次/60 秒）。
+
+> **已知权衡**：退款由客户端驱动，客户端抠图成功后仍可调用退款接口退回积分（无法服务端验证抠图结果）。这与生成任务失败退款同性质，且抠图无服务端算力成本，影响有限。
+
+---
+
 ## 5. 数据模型（DTO）
 
 > 以下类型定义见 `app/types/client.ts`。
@@ -780,7 +867,7 @@ curl -i "https://api.example.com/api/client/v1/config"
 | `GenerationTaskStatus` | `'pending'` \| `'processing'` \| `'succeeded'` \| `'failed'` \| `'cancelled'` |
 | `TemplateStatus` | `'draft'` \| `'published'` |
 | `ClientUserStatus` | `'active'` \| `'disabled'` |
-| `PointLedgerType` | `'cardRedeem'` \| `'taskCharge'` \| `'taskRefund'` \| `'adminAdjustment'` |
+| `PointLedgerType` | `'cardRedeem'` \| `'taskCharge'` \| `'taskRefund'` \| `'mattingCharge'` \| `'mattingRefund'` \| `'adminAdjustment'` |
 | 质量档位 | `'auto'` \| `'low'` \| `'medium'` \| `'high'` |
 
 ### 5.2 对象类型
@@ -813,6 +900,7 @@ interface ClientPagination<T> {
 interface GenerationSettings {
   textToImageCost: number
   imageToImageCost: number
+  mattingCost: number
   cardPurchaseUrl?: string
   maxAttempts: number
   uploadMaxBytes: number
@@ -825,6 +913,17 @@ interface GenerationSettings {
     minPixels: number
     maxPixels: number
   }
+}
+
+interface MattingChargeResult {
+  mattingId: string                  // 扣费流水 ID，用于失败退款
+  cost: number                       // 本次扣除积分（= mattingCost）
+  balance: number                    // 扣费后余额
+}
+
+interface MattingRefundResult {
+  cost: number                       // 本次退回积分（= 原扣费金额）
+  balance: number                    // 退款后余额
 }
 
 interface TemplateCategory {

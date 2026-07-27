@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef } from "vue";
+import { computed, onBeforeUnmount, shallowRef, watch } from "vue";
 import CutoutResultPanel from "@/components/cutout/CutoutResultPanel.vue";
 import CutoutWorkspace from "@/components/cutout/CutoutWorkspace.vue";
+import LoginModal from "@/components/LoginModal.vue";
 import { useCutoutInference } from "@/composables/useCutoutInference";
 import {
   chooseImageFile,
@@ -11,8 +12,11 @@ import {
   selectedImageFileFromFile
 } from "@/services/desktop";
 import { consumeCutoutHandoff } from "@/services/cutoutHandoff";
+import { useAppStore } from "@/stores/app";
+import { ApiError } from "@/services/apiClient";
 import type { CutoutResult, CutoutSelectionBox, SelectedImageFile } from "@/types";
 
+const app = useAppStore();
 const inference = useCutoutInference();
 
 const selectedFile = shallowRef<SelectedImageFile | null>(null);
@@ -27,6 +31,8 @@ const savingId = shallowRef<string | null>(null);
 const exportingAll = shallowRef(false);
 const actionError = shallowRef("");
 const actionMessage = shallowRef("");
+const showLogin = shallowRef(false);
+const mattingInsufficient = shallowRef(false);
 let actionMessageTimer: number | undefined;
 
 const source = computed(() => {
@@ -40,6 +46,23 @@ const fileBaseName = computed(() => {
   const dotIndex = name.lastIndexOf(".");
   return dotIndex > 0 ? name.slice(0, dotIndex) : name;
 });
+
+const mattingCost = computed(() => app.capabilities.mattingCost);
+const insufficientCredits = computed(
+  () =>
+    app.isAuthenticated &&
+    (app.balance.balance < mattingCost.value || mattingInsufficient.value)
+);
+
+watch(
+  () => app.balance.balance,
+  (next) => {
+    if (mattingInsufficient.value && next >= mattingCost.value) {
+      mattingInsufficient.value = false;
+      if (actionError.value === "积分不足，请充值后继续抠图。") actionError.value = "";
+    }
+  }
+);
 
 function showMessage(message: string) {
   actionMessage.value = message;
@@ -132,6 +155,10 @@ async function installResources() {
 }
 
 async function segment() {
+  if (!app.isAuthenticated) {
+    showLogin.value = true;
+    return;
+  }
   if (!imageSource.value || inference.phase.value !== "idle") return;
   if (!selections.value.length) {
     actionError.value = "请先在画布上框选要抠取的元素。";
@@ -142,6 +169,23 @@ async function segment() {
   results.value = [];
   const requestedSelections = selections.value.map((selection) => ({ ...selection }));
   const produced: CutoutResult[] = [];
+
+  let mattingId: string | null = null;
+  try {
+    const charge = await app.chargeMatting();
+    mattingId = charge.mattingId;
+  } catch (exception) {
+    if (exception instanceof ApiError && exception.statusCode === 409) {
+      mattingInsufficient.value = true;
+      actionError.value = "积分不足，请充值后继续抠图。";
+    } else {
+      actionError.value = exception instanceof Error
+        ? exception.message
+        : "积分扣除失败，请稍后重试。";
+    }
+    return;
+  }
+
   await inference.segmentSelections(
     imageSource.value.source,
     imageSource.value.width,
@@ -153,7 +197,23 @@ async function segment() {
       results.value = [...produced];
     }
   );
+
+  if (inference.error.value && mattingId) {
+    try {
+      await app.refundMatting(mattingId);
+    } catch (exception) {
+      console.warn("抠图退款失败", exception);
+      actionError.value = "抠图失败且退款异常，请联系客服处理。";
+      return;
+    }
+  }
+
   if (results.value.length) showMessage(`已抠取 ${results.value.length} 个素材`);
+}
+
+function onLoginSuccess() {
+  showLogin.value = false;
+  void segment();
 }
 
 async function copyResult(result: CutoutResult) {
@@ -250,6 +310,10 @@ onBeforeUnmount(() => {
         :has-image="Boolean(imageSource)"
         :selection-count="selections.length"
         :local-models-supported="inference.localModelsSupported"
+        :cost="mattingCost"
+        :balance="app.balance.balance"
+        :is-logged-in="app.isAuthenticated"
+        :insufficient-credits="insufficientCredits"
         @install-resources="installResources"
         @segment="segment"
         @cancel="inference.cancel"
@@ -260,6 +324,7 @@ onBeforeUnmount(() => {
       />
     </div>
     <p v-if="actionMessage" class="cutout-view-feedback" role="status">{{ actionMessage }}</p>
+    <LoginModal v-if="showLogin" context="matting" @close="showLogin = false" @success="onLoginSuccess" />
   </section>
 </template>
 

@@ -6,7 +6,7 @@ import { useAppStore } from "@/stores/app";
 type AuthMode = "login" | "register" | "reset";
 
 const props = defineProps<{
-  context?: "generation";
+  context?: "generation" | "matting";
 }>();
 const emit = defineEmits<{ close: []; success: [] }>();
 const app = useAppStore();
@@ -28,9 +28,11 @@ const title = computed(() => {
   return "登录幻画 AI";
 });
 const needsCode = computed(() => mode.value !== "login");
-const description = computed(() =>
-  props.context === "generation" ? "登录后才能开始生成图片。" : "使用中国大陆手机号继续。"
-);
+const description = computed(() => {
+  if (props.context === "generation") return "登录后才能开始生成图片。";
+  if (props.context === "matting") return "登录后才能使用 AI 抠图。";
+  return "使用中国大陆手机号继续。";
+});
 const submitLabel = computed(() => {
   if (loading.value) return "处理中...";
   if (mode.value === "register") return "注册并登录";

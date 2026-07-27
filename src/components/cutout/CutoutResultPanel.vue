@@ -32,6 +32,10 @@ const props = defineProps<{
   hasImage: boolean;
   selectionCount: number;
   localModelsSupported: boolean;
+  cost: number;
+  balance: number;
+  isLoggedIn: boolean;
+  insufficientCredits: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -48,6 +52,8 @@ const isWorking = computed(() => props.phase !== "idle");
 const canSegment = computed(
   () =>
     props.phase === "idle" &&
+    props.isLoggedIn &&
+    !props.insufficientCredits &&
     props.hasImage &&
     props.selectionCount > 0 &&
     props.resourceStatus === "ready"
@@ -63,6 +69,21 @@ const processingLabel = computed(
 const processingButtonLabel = computed(
   () => props.progress?.stage === "refining" ? "精修中" : "分割中"
 );
+const missingCredits = computed(() => Math.max(0, props.cost - props.balance));
+const segmentButtonLabel = computed(() => {
+  if (props.phase === "processing") return processingButtonLabel.value;
+  if (!props.isLoggedIn) return "登录后抠图";
+  if (props.insufficientCredits) {
+    return missingCredits.value > 0
+      ? `积分不足，还需 ${missingCredits.value} 积分`
+      : "积分不足，请先充值";
+  }
+  return "一键抠图";
+});
+const segmentButtonDisabled = computed(
+  () => props.isLoggedIn && (props.insufficientCredits || !canSegment.value)
+);
+const visibleError = computed(() => (props.insufficientCredits ? "" : props.error));
 </script>
 
 <template>
@@ -164,7 +185,15 @@ const processingButtonLabel = computed(
     </div>
 
     <div class="cutout-result-footer">
-      <p v-if="error" class="cutout-result-error" role="alert">{{ error }}</p>
+      <p
+        v-if="isLoggedIn && !isWorking"
+        class="cutout-credits-info"
+        :class="{ 'is-insufficient': insufficientCredits }"
+      >
+        <span>预计消耗 {{ cost }} 积分</span>
+        <span class="cutout-credits-balance">余额 {{ balance }} 积分</span>
+      </p>
+      <p v-if="visibleError" class="cutout-result-error" role="alert">{{ visibleError }}</p>
       <div class="cutout-footer-actions" :class="{ 'has-cancel': isWorking }">
         <button
           v-if="isWorking"
@@ -176,8 +205,9 @@ const processingButtonLabel = computed(
         </button>
         <button
           class="cutout-primary-button"
+          :class="{ 'is-insufficient': isLoggedIn && insufficientCredits }"
           type="button"
-          :disabled="!canSegment"
+          :disabled="segmentButtonDisabled"
           @click="emit('segment')"
         >
           <LoaderCircle
@@ -187,7 +217,7 @@ const processingButtonLabel = computed(
             aria-hidden="true"
           />
           <Sparkles v-else :size="16" aria-hidden="true" />
-          {{ phase === "processing" ? processingButtonLabel : "一键抠图" }}
+          {{ segmentButtonLabel }}
         </button>
         <button
           class="cutout-primary-button cutout-export-all"
@@ -447,6 +477,31 @@ const processingButtonLabel = computed(
   background: var(--surface);
 }
 
+.cutout-credits-info {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+
+  &.is-insufficient {
+    color: var(--danger);
+  }
+}
+
+.cutout-credits-balance {
+  color: var(--soft);
+  font-weight: 500;
+}
+
+.is-insufficient .cutout-credits-balance {
+  color: var(--danger);
+}
+
 .cutout-result-error {
   margin: 0;
   color: var(--danger);
@@ -509,6 +564,18 @@ const processingButtonLabel = computed(
   &:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+  }
+
+  &.is-insufficient {
+    border: 1px solid var(--accent-border);
+    color: var(--accent-strong);
+    background: var(--accent-soft);
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      color: #0a0f15;
+      background: var(--accent);
+    }
   }
 }
 

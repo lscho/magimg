@@ -26,6 +26,7 @@ import type {
   GenerationTask,
   GeneratedImage,
   ImageParams,
+  MattingChargeResult,
   PointLedgerEntry,
   PromptTemplate,
   SelectedImageFile,
@@ -37,6 +38,7 @@ import type {
 const fallbackCapabilities: GenerationSettings = {
   textToImageCost: 10,
   imageToImageCost: 15,
+  mattingCost: 5,
   maxAttempts: 3,
   uploadMaxBytes: 5 * 1024 * 1024,
   supportedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
@@ -54,6 +56,8 @@ const pointKindMap: Record<PointLedgerEntry["type"], CreditTransactionKind> = {
   cardRedeem: "recharge",
   taskCharge: "generation",
   taskRefund: "refund",
+  mattingCharge: "generation",
+  mattingRefund: "refund",
   adminAdjustment: "adjustment"
 };
 
@@ -61,6 +65,8 @@ const pointDescriptionMap: Record<PointLedgerEntry["type"], string> = {
   cardRedeem: "卡密充值",
   taskCharge: "图片生成",
   taskRefund: "生成退款",
+  mattingCharge: "AI 抠图",
+  mattingRefund: "抠图退款",
   adminAdjustment: "余额调整"
 };
 
@@ -799,6 +805,20 @@ export const useAppStore = defineStore("app", () => {
     return result;
   }
 
+  async function chargeMatting(): Promise<MattingChargeResult> {
+    if (!session.value) throw new Error("请先登录后再使用 AI 抠图。");
+    const result = await apiClient.chargeMatting();
+    balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    return result;
+  }
+
+  async function refundMatting(mattingId: string): Promise<void> {
+    if (!session.value || !mattingId) return;
+    const result = await apiClient.refundMatting(mattingId);
+    balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    void refreshTransactions();
+  }
+
   function clearGenerationError() {
     error.value = "";
     generationErrorKind.value = "none";
@@ -911,6 +931,8 @@ export const useAppStore = defineStore("app", () => {
     cancelCurrentGeneration,
     clearGenerationError,
     redeemCard,
+    chargeMatting,
+    refundMatting,
     selectTemplate,
     consumeTemplate,
     resolveHistoryTask,
