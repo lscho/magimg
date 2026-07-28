@@ -33,7 +33,10 @@
       "identifier": "fs:scope",
       "allow": [
         { "path": "$APPDATA/models" },
-        { "path": "$APPDATA/models/*" }
+        { "path": "$APPDATA/models/*" },
+        { "path": "$APPDATA/cutout-history" },
+        { "path": "$APPDATA/cutout-history/*" },
+        { "path": "$APPDATA/cutout-history/**/*" }
       ]
     },
     {

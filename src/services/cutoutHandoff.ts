@@ -1,4 +1,8 @@
-import type { SelectedImageFile } from "@/types";
+import type {
+  CutoutResult,
+  CutoutSelectionBox,
+  SelectedImageFile
+} from "@/types";
 
 /**
  * AI 抠图页面的图片交接载荷。
@@ -6,6 +10,8 @@ import type { SelectedImageFile } from "@/types";
  */
 export interface CutoutHandoff {
   selectedFile: SelectedImageFile;
+  selections?: CutoutSelectionBox[];
+  results?: CutoutResult[];
 }
 
 let pendingHandoff: CutoutHandoff | null = null;

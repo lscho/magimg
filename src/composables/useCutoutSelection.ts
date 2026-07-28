@@ -39,7 +39,8 @@ function cloneSelections(selections: CutoutSelectionBox[]) {
  * 选框使用原生 pointer 事件和 DOM 覆盖层，坐标始终保存为原图像素。
  */
 export function useCutoutSelection(
-  imageSource: { blob: Blob; mimeType: string } | null
+  imageSource: { blob: Blob; mimeType: string } | null,
+  initialSelections: CutoutSelectionBox[] = []
 ) {
   const ready = shallowRef(false);
   const busy = shallowRef(false);
@@ -54,9 +55,12 @@ export function useCutoutSelection(
   const panX = shallowRef(0);
   const panY = shallowRef(0);
   const panning = shallowRef(false);
-  const selections = shallowRef<CutoutSelectionBox[]>([]);
+  const initialSelectionSnapshot = cloneSelections(initialSelections);
+  const selections = shallowRef<CutoutSelectionBox[]>(initialSelectionSnapshot);
   const draftBox = shallowRef<CutoutSelectionBox | null>(null);
-  const history = shallowRef<CutoutSelectionBox[][]>([[]]);
+  const history = shallowRef<CutoutSelectionBox[][]>([
+    cloneSelections(initialSelectionSnapshot)
+  ]);
   const historyIndex = shallowRef(0);
 
   let baseCanvas: HTMLCanvasElement | null = null;

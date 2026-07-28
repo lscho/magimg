@@ -1,6 +1,11 @@
 import { Store } from "@tauri-apps/plugin-store";
 import { defaultSettings } from "@/constants/defaults";
-import type { AppSettings, GenerationRecord, UserSession } from "@/types";
+import type {
+  AppSettings,
+  CutoutHistoryRecord,
+  GenerationRecord,
+  UserSession
+} from "@/types";
 
 const memoryStore = new Map<string, unknown>();
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -72,6 +77,13 @@ export const localDb = {
   writeHistory: (history: GenerationRecord[]) => writeJsonValue("history.json", "items", history),
   readHiddenHistoryIds: () => readJsonValue<string[]>("history.json", "hiddenTaskIds", []),
   writeHiddenHistoryIds: (ids: string[]) => writeJsonValue("history.json", "hiddenTaskIds", ids),
+  readCutoutHistory: () => isTauri
+    ? readJsonValue<CutoutHistoryRecord[]>("cutout-history.json", "items", [])
+    : Promise.resolve([]),
+  writeCutoutHistory: (history: CutoutHistoryRecord[]) => {
+    if (!isTauri) return Promise.reject(new Error("AI 抠图历史仅支持桌面客户端。"));
+    return writeJsonValue("cutout-history.json", "items", history);
+  },
   readSession: () => readJsonValue<UserSession | null>("auth-cache.json", "session", null),
   writeSession: (session: UserSession | null) => writeJsonValue("auth-cache.json", "session", session)
 };

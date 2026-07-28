@@ -426,3 +426,37 @@ export interface CutoutResult {
   /** 建议文件名（不含扩展名）。 */
   baseName: string;
 }
+
+/** 桌面本地抠图历史中的输入图片。 */
+export interface CutoutHistorySource {
+  /** 用户导入时的原始文件名，仅用于展示和恢复 File。 */
+  originalName: string;
+  /** 任务目录内由客户端生成的安全文件名。 */
+  storedFileName: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  width: number;
+  height: number;
+}
+
+/** 桌面本地抠图历史中的单个透明结果。 */
+export interface CutoutHistoryAsset {
+  id: string;
+  /** 任务目录内由客户端生成的安全文件名。 */
+  storedFileName: string;
+  baseName: string;
+  width: number;
+  height: number;
+  thumbnailUrl: string;
+  sourceBox: CutoutSelectionBox;
+}
+
+/** 一轮本地 AI 抠图任务；原图和结果二进制保存在 appDataDir。 */
+export interface CutoutHistoryRecord {
+  id: string;
+  mattingId: string;
+  source: CutoutHistorySource;
+  selections: CutoutSelectionBox[];
+  assets: CutoutHistoryAsset[];
+  costCredits: number;
+  createdAt: string;
+}

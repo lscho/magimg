@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from "vue";
+import { computed, nextTick, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   CircleAlert,
@@ -10,41 +10,68 @@ import {
   ChevronsRight,
   Clock3,
   ImagePlus,
+  Scissors,
   Wand2
 } from "lucide-vue-next";
+import CutoutHistoryTaskCard from "@/components/CutoutHistoryTaskCard.vue";
+import CutoutHistoryTaskContextMenu from "@/components/CutoutHistoryTaskContextMenu.vue";
 import HistorySelectionBar from "@/components/HistorySelectionBar.vue";
 import HistoryTaskCard from "@/components/HistoryTaskCard.vue";
 import HistoryTaskContextMenu from "@/components/HistoryTaskContextMenu.vue";
+import { stageCutoutHandoff } from "@/services/cutoutHandoff";
 import {
   copyRemoteImageToClipboard,
   remoteImageToSelectedFile,
+  saveImageBlobsToDirectory,
   saveRemoteImageAs,
   saveRemoteImagesToDirectory
 } from "@/services/desktop";
 import { useAppStore } from "@/stores/app";
-import type { GenerationMode, GenerationRecord, SelectedImageFile } from "@/types";
+import type {
+  CutoutHistoryRecord,
+  GenerationMode,
+  GenerationRecord,
+  SelectedImageFile
+} from "@/types";
+
+type HistoryTab = GenerationMode | "cutout";
+const historyTabs: HistoryTab[] = ["text-to-image", "image-to-image", "cutout"];
 
 const app = useAppStore();
 const router = useRouter();
 const pageSize = 12;
-const activeMode = shallowRef<GenerationMode>("text-to-image");
+const activeTab = shallowRef<HistoryTab>("text-to-image");
 const currentPage = shallowRef(1);
-const selectedGenerationIds = shallowRef<Set<string>>(new Set());
+const selectedTaskIds = shallowRef<Set<string>>(new Set());
 const downloading = shallowRef(false);
 const deleting = shallowRef(false);
 const actionMessage = shallowRef("");
 const actionError = shallowRef("");
 const contextMenuTarget = shallowRef<GenerationRecord | null>(null);
+const cutoutContextMenuTarget = shallowRef<CutoutHistoryRecord | null>(null);
 const contextMenuX = shallowRef(0);
 const contextMenuY = shallowRef(0);
 
-const filteredHistory = computed(() =>
-  app.visibleHistory.filter((record) => record.mode === activeMode.value)
+const filteredGenerationHistory = computed(() => {
+  if (activeTab.value === "cutout") return [];
+  return app.visibleHistory.filter((record) => record.mode === activeTab.value);
+});
+const filteredCutoutHistory = computed(() =>
+  activeTab.value === "cutout" ? app.cutoutHistory : []
 );
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredHistory.value.length / pageSize)));
-const paginatedHistory = computed(() => {
+const totalItems = computed(() =>
+  activeTab.value === "cutout"
+    ? filteredCutoutHistory.value.length
+    : filteredGenerationHistory.value.length
+);
+const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / pageSize)));
+const paginatedGenerationHistory = computed(() => {
   const start = (currentPage.value - 1) * pageSize;
-  return filteredHistory.value.slice(start, start + pageSize);
+  return filteredGenerationHistory.value.slice(start, start + pageSize);
+});
+const paginatedCutoutHistory = computed(() => {
+  const start = (currentPage.value - 1) * pageSize;
+  return filteredCutoutHistory.value.slice(start, start + pageSize);
 });
 const pageNumbers = computed(() => {
   const visibleCount = Math.min(5, totalPages.value);
@@ -52,83 +79,125 @@ const pageNumbers = computed(() => {
   return Array.from({ length: visibleCount }, (_, index) => start + index);
 });
 const rangeLabel = computed(() => {
-  if (!filteredHistory.value.length) return "0 项任务";
+  if (!totalItems.value) return "0 项任务";
   const start = (currentPage.value - 1) * pageSize + 1;
-  const end = Math.min(currentPage.value * pageSize, filteredHistory.value.length);
-  return `${start}-${end} / ${filteredHistory.value.length} 项任务`;
+  const end = Math.min(currentPage.value * pageSize, totalItems.value);
+  return `${start}-${end} / ${totalItems.value} 项任务`;
 });
-const selectedRecords = computed(() => {
-  const selectedIds = selectedGenerationIds.value;
-  return app.visibleHistory.filter((record) => selectedIds.has(record.generationId));
+const selectedGenerationRecords = computed(() => {
+  if (activeTab.value === "cutout") return [];
+  const selectedIds = selectedTaskIds.value;
+  return filteredGenerationHistory.value.filter((record) => selectedIds.has(record.generationId));
 });
-const selectedCount = computed(() => selectedRecords.value.length);
-const canDownloadSelection = computed(
-  () =>
-    selectedRecords.value.length > 0 &&
-    selectedRecords.value.every((record) => record.images.length > 0)
+const selectedCutoutRecords = computed(() => {
+  if (activeTab.value !== "cutout") return [];
+  const selectedIds = selectedTaskIds.value;
+  return app.cutoutHistory.filter((record) => selectedIds.has(record.id));
+});
+const selectedCount = computed(() =>
+  selectedGenerationRecords.value.length + selectedCutoutRecords.value.length
 );
+const canDownloadSelection = computed(() => {
+  if (activeTab.value === "cutout") {
+    return selectedCutoutRecords.value.length > 0 &&
+      selectedCutoutRecords.value.every((record) => record.assets.length > 0);
+  }
+  return selectedGenerationRecords.value.length > 0 &&
+    selectedGenerationRecords.value.every((record) => record.images.length > 0);
+});
 const contextMenuHasImage = computed(() => Boolean(contextMenuTarget.value?.images[0]));
+const visibleRecordIds = computed(() =>
+  activeTab.value === "cutout"
+    ? filteredCutoutHistory.value.map((record) => record.id)
+    : filteredGenerationHistory.value.map((record) => record.generationId)
+);
+const activeTabLabel = computed(() => {
+  if (activeTab.value === "image-to-image") return "图生图任务";
+  if (activeTab.value === "cutout") return "AI 抠图任务";
+  return "文生图任务";
+});
+const activeTabId = computed(() => `history-tab-${activeTab.value}`);
 
-watch(activeMode, () => {
+watch(activeTab, () => {
   currentPage.value = 1;
   clearSelection();
+  closeTaskMenus();
 });
 
 watch(totalPages, (pageCount) => {
   currentPage.value = Math.min(currentPage.value, pageCount);
 });
 
-watch(
-  () => app.visibleHistory.map((record) => record.generationId),
-  (visibleIds) => {
-    const visibleIdSet = new Set(visibleIds);
-    const nextSelection = new Set(
-      [...selectedGenerationIds.value].filter((id) => visibleIdSet.has(id))
-    );
-    if (nextSelection.size !== selectedGenerationIds.value.size) {
-      selectedGenerationIds.value = nextSelection;
-    }
-  }
-);
+watch(visibleRecordIds, (visibleIds) => {
+  const visibleIdSet = new Set(visibleIds);
+  const nextSelection = new Set(
+    [...selectedTaskIds.value].filter((id) => visibleIdSet.has(id))
+  );
+  if (nextSelection.size !== selectedTaskIds.value.size) selectedTaskIds.value = nextSelection;
+});
 
 function setPage(page: number) {
   currentPage.value = Math.min(totalPages.value, Math.max(1, page));
 }
 
-function toggleSelection(generationId: string) {
-  const nextSelection = new Set(selectedGenerationIds.value);
-  if (nextSelection.has(generationId)) nextSelection.delete(generationId);
-  else nextSelection.add(generationId);
-  selectedGenerationIds.value = nextSelection;
+function handleHistoryTabKeydown(event: KeyboardEvent) {
+  const currentIndex = historyTabs.indexOf(activeTab.value);
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % historyTabs.length;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + historyTabs.length) % historyTabs.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = historyTabs.length - 1;
+  if (nextIndex === null) return;
+  event.preventDefault();
+  activeTab.value = historyTabs[nextIndex];
+  void nextTick(() => document.getElementById(`history-tab-${activeTab.value}`)?.focus());
+}
+
+function toggleSelection(taskId: string) {
+  const nextSelection = new Set(selectedTaskIds.value);
+  if (nextSelection.has(taskId)) nextSelection.delete(taskId);
+  else nextSelection.add(taskId);
+  selectedTaskIds.value = nextSelection;
   actionMessage.value = "";
   actionError.value = "";
 }
 
 function clearSelection() {
-  selectedGenerationIds.value = new Set();
+  selectedTaskIds.value = new Set();
   actionMessage.value = "";
   actionError.value = "";
 }
 
+function setContextMenuPosition(position: { x: number; y: number }, width = 176, height = 184) {
+  contextMenuX.value = Math.max(8, Math.min(position.x, window.innerWidth - width - 8));
+  contextMenuY.value = Math.max(8, Math.min(position.y, window.innerHeight - height));
+}
+
 function openTaskMenu(record: GenerationRecord, position: { x: number; y: number }) {
-  contextMenuX.value = Math.max(8, Math.min(position.x, window.innerWidth - 176));
-  contextMenuY.value = Math.max(8, Math.min(position.y, window.innerHeight - 176));
+  setContextMenuPosition(position);
+  cutoutContextMenuTarget.value = null;
   contextMenuTarget.value = record;
   actionMessage.value = "";
   actionError.value = "";
 }
 
-function closeTaskMenu() {
+function openCutoutTaskMenu(record: CutoutHistoryRecord, position: { x: number; y: number }) {
+  setContextMenuPosition(position, 184, 84);
   contextMenuTarget.value = null;
+  cutoutContextMenuTarget.value = record;
+  actionMessage.value = "";
+  actionError.value = "";
+}
+
+function closeTaskMenus() {
+  contextMenuTarget.value = null;
+  cutoutContextMenuTarget.value = null;
 }
 
 async function restoredReferenceImage(record: GenerationRecord): Promise<SelectedImageFile | null> {
   if (record.mode !== "image-to-image") return null;
-  if (!record.inputImage) {
-    throw new Error("该图生图任务缺少可恢复的参考图。");
-  }
-
-  return await remoteImageToSelectedFile(
+  if (!record.inputImage) throw new Error("该图生图任务缺少可恢复的参考图。");
+  return remoteImageToSelectedFile(
     record.inputImage.remoteUrl,
     `huanhua-${record.generationId}-reference`,
     record.inputImage.mimeType
@@ -137,54 +206,44 @@ async function restoredReferenceImage(record: GenerationRecord): Promise<Selecte
 
 async function openContextTask() {
   const selectedRecord = contextMenuTarget.value;
-  closeTaskMenu();
+  closeTaskMenus();
   if (!selectedRecord) return;
-
   actionMessage.value = "";
   actionError.value = "";
   try {
     const record = await app.resolveHistoryTask(selectedRecord);
     const restoredReference = await restoredReferenceImage(record);
     app.queueHistoryWorkspace(record, restoredReference);
-    await router.push({
-      name: "generate",
-      params: { mode: record.mode }
-    });
+    await router.push({ name: "generate", params: { mode: record.mode } });
   } catch (exception) {
     app.discardHistoryWorkspace();
-    actionError.value = exception instanceof Error
-      ? exception.message
-      : "任务打开失败，请稍后重试。";
+    actionError.value = exception instanceof Error ? exception.message : "任务打开失败，请稍后重试。";
   }
 }
 
 function takeContextImage() {
   const record = contextMenuTarget.value;
   const image = record?.images[0];
-  closeTaskMenu();
+  closeTaskMenus();
   return record && image ? { record, image } : null;
 }
 
 async function copyContextImage() {
   const target = takeContextImage();
   if (!target) return;
-
   actionMessage.value = "";
   actionError.value = "";
   try {
     await copyRemoteImageToClipboard(target.image.remoteUrl, target.image.mimeType);
     actionMessage.value = "图片已复制";
   } catch (exception) {
-    actionError.value = exception instanceof Error
-      ? exception.message
-      : "图片复制失败，请稍后重试。";
+    actionError.value = exception instanceof Error ? exception.message : "图片复制失败，请稍后重试。";
   }
 }
 
 async function downloadContextImage() {
   const target = takeContextImage();
   if (!target) return;
-
   actionMessage.value = "";
   actionError.value = "";
   try {
@@ -195,16 +254,13 @@ async function downloadContextImage() {
     );
     if (savedPath) actionMessage.value = "图片已保存";
   } catch (exception) {
-    actionError.value = exception instanceof Error
-      ? exception.message
-      : "图片保存失败，请稍后重试。";
+    actionError.value = exception instanceof Error ? exception.message : "图片保存失败，请稍后重试。";
   }
 }
 
 async function useContextImageAsReference() {
   const target = takeContextImage();
   if (!target) return;
-
   actionMessage.value = "";
   actionError.value = "";
   try {
@@ -214,27 +270,57 @@ async function useContextImageAsReference() {
       target.image.mimeType
     );
     app.queueReferenceImage(referenceImage);
-    await router.push({
-      name: "generate",
-      params: { mode: "image-to-image" }
-    });
+    await router.push({ name: "generate", params: { mode: "image-to-image" } });
   } catch (exception) {
     app.discardReferenceImage();
-    actionError.value = exception instanceof Error
-      ? exception.message
-      : "图片读取失败，请稍后重试。";
+    actionError.value = exception instanceof Error ? exception.message : "图片读取失败，请稍后重试。";
+  }
+}
+
+function takeCutoutContextRecord() {
+  const record = cutoutContextMenuTarget.value;
+  closeTaskMenus();
+  return record;
+}
+
+async function restoreCutoutWork() {
+  const record = takeCutoutContextRecord();
+  if (!record) return;
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    stageCutoutHandoff(await app.restoreCutoutWorkspace(record));
+    await router.push({ name: "cutout" });
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "抠图工作恢复失败，请稍后重试。";
+  }
+}
+
+async function downloadCutoutAssets() {
+  const record = takeCutoutContextRecord();
+  if (!record) return;
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    const outcome = await saveImageBlobsToDirectory(await app.loadCutoutAssets([record]));
+    if (!outcome.cancelled && outcome.savedCount) actionMessage.value = `已保存 ${outcome.savedCount} 个素材`;
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "素材保存失败，请稍后重试。";
   }
 }
 
 async function deleteSelected() {
-  if (!selectedRecords.value.length) return;
+  if (!selectedCount.value) return;
   const confirmed = window.confirm(`确定从创作历史中删除所选 ${selectedCount.value} 项任务吗？`);
   if (!confirmed) return;
-
   deleting.value = true;
   actionError.value = "";
   try {
-    await app.removeHistory(selectedRecords.value.map((record) => record.generationId));
+    if (activeTab.value === "cutout") {
+      await app.removeCutoutHistory(selectedCutoutRecords.value.map((record) => record.id));
+    } else {
+      await app.removeHistory(selectedGenerationRecords.value.map((record) => record.generationId));
+    }
     clearSelection();
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "删除失败，请稍后重试。";
@@ -245,19 +331,24 @@ async function deleteSelected() {
 
 async function downloadSelected() {
   if (!canDownloadSelection.value) return;
-
-  const downloads = selectedRecords.value.flatMap((record) =>
-    record.images.map((image, index) => ({
-      image,
-      suggestedName: `huanhua-${record.generationId}${record.images.length > 1 ? `-${index + 1}` : ""}`
-    }))
-  );
-  if (!downloads.length) return;
-
   downloading.value = true;
   actionMessage.value = "";
   actionError.value = "";
   try {
+    if (activeTab.value === "cutout") {
+      const outcome = await saveImageBlobsToDirectory(
+        await app.loadCutoutAssets(selectedCutoutRecords.value)
+      );
+      if (!outcome.cancelled) actionMessage.value = `已保存 ${outcome.savedCount} 个素材`;
+      return;
+    }
+
+    const downloads = selectedGenerationRecords.value.flatMap((record) =>
+      record.images.map((image, index) => ({
+        image,
+        suggestedName: `huanhua-${record.generationId}${record.images.length > 1 ? `-${index + 1}` : ""}`
+      }))
+    );
     const result = await saveRemoteImagesToDirectory(downloads);
     if (result.cancelled) return;
     actionMessage.value = result.directory
@@ -277,116 +368,129 @@ async function downloadSelected() {
       <div class="history-heading-copy">
         <span class="section-kicker">CREATION LOG</span>
         <h1>创作历史</h1>
-        <p>集中管理生成任务与历史作品。</p>
+        <p>集中管理生成任务与本地透明素材。</p>
       </div>
 
-      <div class="history-mode-switch" role="group" aria-label="历史类型">
+      <div
+        class="history-mode-switch"
+        role="tablist"
+        aria-label="历史类型"
+        @keydown="handleHistoryTabKeydown"
+      >
         <button
+          id="history-tab-text-to-image"
           type="button"
-          :class="{ active: activeMode === 'text-to-image' }"
-          :aria-pressed="activeMode === 'text-to-image'"
-          @click="activeMode = 'text-to-image'"
+          role="tab"
+          :class="{ active: activeTab === 'text-to-image' }"
+          :aria-selected="activeTab === 'text-to-image'"
+          :tabindex="activeTab === 'text-to-image' ? 0 : -1"
+          aria-controls="history-tab-panel"
+          @click="activeTab = 'text-to-image'"
         >
-          <Wand2 :size="15" /> 文生图
+          <Wand2 :size="15" aria-hidden="true" />文生图
         </button>
         <button
+          id="history-tab-image-to-image"
           type="button"
-          :class="{ active: activeMode === 'image-to-image' }"
-          :aria-pressed="activeMode === 'image-to-image'"
-          @click="activeMode = 'image-to-image'"
+          role="tab"
+          :class="{ active: activeTab === 'image-to-image' }"
+          :aria-selected="activeTab === 'image-to-image'"
+          :tabindex="activeTab === 'image-to-image' ? 0 : -1"
+          aria-controls="history-tab-panel"
+          @click="activeTab = 'image-to-image'"
         >
-          <ImagePlus :size="15" /> 图生图
+          <ImagePlus :size="15" aria-hidden="true" />图生图
+        </button>
+        <button
+          id="history-tab-cutout"
+          type="button"
+          role="tab"
+          :class="{ active: activeTab === 'cutout' }"
+          :aria-selected="activeTab === 'cutout'"
+          :tabindex="activeTab === 'cutout' ? 0 : -1"
+          aria-controls="history-tab-panel"
+          @click="activeTab = 'cutout'"
+        >
+          <Scissors :size="15" aria-hidden="true" />AI 抠图
         </button>
       </div>
     </div>
 
-    <div class="history-toolbar">
-      <span>{{ activeMode === "text-to-image" ? "文生图任务" : "图生图任务" }}</span>
-      <span>{{ rangeLabel }}</span>
-    </div>
-
-    <div v-if="paginatedHistory.length" class="history-grid">
-      <HistoryTaskCard
-        v-for="record in paginatedHistory"
-        :key="record.id"
-        :record="record"
-        :selected="selectedGenerationIds.has(record.generationId)"
-        @toggle="toggleSelection"
-        @open-menu="openTaskMenu(record, $event)"
-      />
-    </div>
-    <div v-else class="empty-state full">
-      <div class="empty-visual"><Clock3 :size="34" /></div>
-      <strong>暂无{{ activeMode === "text-to-image" ? "文生图" : "图生图" }}记录</strong>
-      <span>完成对应模式的生成后，任务与作品会自动保存在这里。</span>
-    </div>
-
-    <nav v-if="filteredHistory.length > pageSize" class="history-pagination" aria-label="历史记录分页">
-      <button
-        type="button"
-        aria-label="第一页"
-        title="第一页"
-        :disabled="currentPage === 1"
-        @click="setPage(1)"
-      >
-        <ChevronsLeft :size="15" />
-      </button>
-      <button
-        type="button"
-        aria-label="上一页"
-        title="上一页"
-        :disabled="currentPage === 1"
-        @click="setPage(currentPage - 1)"
-      >
-        <ChevronLeft :size="15" />
-      </button>
-      <button
-        v-for="page in pageNumbers"
-        :key="page"
-        type="button"
-        class="page-number"
-        :class="{ active: currentPage === page }"
-        :aria-label="`第 ${page} 页`"
-        :aria-current="currentPage === page ? 'page' : undefined"
-        @click="setPage(page)"
-      >
-        {{ page }}
-      </button>
-      <button
-        type="button"
-        aria-label="下一页"
-        title="下一页"
-        :disabled="currentPage === totalPages"
-        @click="setPage(currentPage + 1)"
-      >
-        <ChevronRight :size="15" />
-      </button>
-      <button
-        type="button"
-        aria-label="最后一页"
-        title="最后一页"
-        :disabled="currentPage === totalPages"
-        @click="setPage(totalPages)"
-      >
-        <ChevronsRight :size="15" />
-      </button>
-    </nav>
-
-    <p
-      v-if="actionError && !selectedCount"
-      class="history-action-feedback is-error"
-      role="alert"
+    <div
+      id="history-tab-panel"
+      class="history-tab-panel"
+      role="tabpanel"
+      :aria-labelledby="activeTabId"
     >
-      <CircleAlert :size="15" aria-hidden="true" />
-      <span>{{ actionError }}</span>
+      <div class="history-toolbar">
+        <span>{{ activeTabLabel }}</span>
+        <span>{{ rangeLabel }}</span>
+      </div>
+
+      <div v-if="totalItems" class="history-grid">
+        <template v-if="activeTab === 'cutout'">
+          <CutoutHistoryTaskCard
+            v-for="record in paginatedCutoutHistory"
+            :key="record.id"
+            :record="record"
+            :selected="selectedTaskIds.has(record.id)"
+            @toggle="toggleSelection"
+            @open-menu="openCutoutTaskMenu(record, $event)"
+          />
+        </template>
+        <template v-else>
+          <HistoryTaskCard
+            v-for="record in paginatedGenerationHistory"
+            :key="record.id"
+            :record="record"
+            :selected="selectedTaskIds.has(record.generationId)"
+            @toggle="toggleSelection"
+            @open-menu="openTaskMenu(record, $event)"
+          />
+        </template>
+      </div>
+      <div v-else class="empty-state full">
+        <div class="empty-visual"><Clock3 :size="34" /></div>
+        <strong>
+          暂无{{ activeTab === "cutout" ? "AI 抠图" : activeTab === "text-to-image" ? "文生图" : "图生图" }}记录
+        </strong>
+        <span v-if="activeTab === 'cutout'">完成 AI 抠图后，工作区与透明素材会自动保存在这里。</span>
+        <span v-else>完成对应模式的生成后，任务与作品会自动保存在这里。</span>
+      </div>
+
+      <nav v-if="totalItems > pageSize" class="history-pagination" aria-label="历史记录分页">
+        <button type="button" aria-label="第一页" title="第一页" :disabled="currentPage === 1" @click="setPage(1)">
+          <ChevronsLeft :size="15" />
+        </button>
+        <button type="button" aria-label="上一页" title="上一页" :disabled="currentPage === 1" @click="setPage(currentPage - 1)">
+          <ChevronLeft :size="15" />
+        </button>
+        <button
+          v-for="page in pageNumbers"
+          :key="page"
+          type="button"
+          class="page-number"
+          :class="{ active: currentPage === page }"
+          :aria-label="`第 ${page} 页`"
+          :aria-current="currentPage === page ? 'page' : undefined"
+          @click="setPage(page)"
+        >
+          {{ page }}
+        </button>
+        <button type="button" aria-label="下一页" title="下一页" :disabled="currentPage === totalPages" @click="setPage(currentPage + 1)">
+          <ChevronRight :size="15" />
+        </button>
+        <button type="button" aria-label="最后一页" title="最后一页" :disabled="currentPage === totalPages" @click="setPage(totalPages)">
+          <ChevronsRight :size="15" />
+        </button>
+      </nav>
+    </div>
+
+    <p v-if="actionError && !selectedCount" class="history-action-feedback is-error" role="alert">
+      <CircleAlert :size="15" aria-hidden="true" /><span>{{ actionError }}</span>
     </p>
-    <p
-      v-else-if="actionMessage && !selectedCount"
-      class="history-action-feedback"
-      role="status"
-    >
-      <CircleCheck :size="15" aria-hidden="true" />
-      <span>{{ actionMessage }}</span>
+    <p v-else-if="actionMessage && !selectedCount" class="history-action-feedback" role="status">
+      <CircleCheck :size="15" aria-hidden="true" /><span>{{ actionMessage }}</span>
     </p>
 
     <HistorySelectionBar
@@ -407,11 +511,19 @@ async function downloadSelected() {
       :x="contextMenuX"
       :y="contextMenuY"
       :has-image="contextMenuHasImage"
-      @close="closeTaskMenu"
+      @close="closeTaskMenus"
       @open-task="openContextTask"
       @copy="copyContextImage"
       @download="downloadContextImage"
       @use-as-reference="useContextImageAsReference"
+    />
+    <CutoutHistoryTaskContextMenu
+      v-if="cutoutContextMenuTarget"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      @close="closeTaskMenus"
+      @restore="restoreCutoutWork"
+      @download="downloadCutoutAssets"
     />
   </section>
 </template>
@@ -423,13 +535,12 @@ async function downloadSelected() {
   padding-bottom: 18px;
 }
 
-.history-heading-copy {
-  min-width: 0;
-}
+.history-heading-copy,
+.history-tab-panel { min-width: 0; }
 
 .history-mode-switch {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -437,7 +548,7 @@ async function downloadSelected() {
   background: var(--surface-subtle);
 
   button {
-    min-width: 108px;
+    min-width: 96px;
     height: 36px;
     display: inline-flex;
     align-items: center;
@@ -449,7 +560,8 @@ async function downloadSelected() {
     font-size: 12px;
     font-weight: 600;
 
-    &:hover {
+    &:hover,
+    &:focus-visible {
       color: var(--soft);
       background: var(--surface-strong);
     }
@@ -473,9 +585,7 @@ async function downloadSelected() {
   font-size: 10px;
   font-weight: 650;
 
-  > span:first-child {
-    color: var(--soft);
-  }
+  > span:first-child { color: var(--soft); }
 }
 
 .history-grid {
@@ -485,9 +595,7 @@ async function downloadSelected() {
   gap: 12px;
 }
 
-.history-view.has-selection {
-  padding-bottom: 108px;
-}
+.history-view.has-selection { padding-bottom: 108px; }
 
 .history-action-feedback {
   width: fit-content;
@@ -513,9 +621,7 @@ async function downloadSelected() {
   }
 }
 
-.empty-state.full {
-  min-height: 390px;
-}
+.empty-state.full { min-height: 390px; }
 
 .history-pagination {
   display: flex;
@@ -553,15 +659,11 @@ async function downloadSelected() {
 }
 
 @media (max-width: 1280px) {
-  .history-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+  .history-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 980px) {
-  .history-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .history-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 700px) {
@@ -572,18 +674,12 @@ async function downloadSelected() {
 
   .history-mode-switch {
     width: 100%;
-
-    button {
-      min-width: 0;
-    }
+    button { min-width: 0; }
   }
 }
 
 @media (max-width: 560px) {
-  .history-grid {
-    grid-template-columns: 1fr;
-  }
-
+  .history-grid { grid-template-columns: 1fr; }
   .history-pagination {
     justify-content: flex-start;
     overflow-x: auto;

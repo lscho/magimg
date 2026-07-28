@@ -14,7 +14,12 @@ import {
 import { consumeCutoutHandoff } from "@/services/cutoutHandoff";
 import { useAppStore } from "@/stores/app";
 import { ApiError } from "@/services/apiClient";
-import type { CutoutResult, CutoutSelectionBox, SelectedImageFile } from "@/types";
+import type {
+  CutoutResult,
+  CutoutSelectionBox,
+  MattingChargeResult,
+  SelectedImageFile
+} from "@/types";
 
 const app = useAppStore();
 const inference = useCutoutInference();
@@ -73,10 +78,14 @@ function showMessage(message: string) {
   }, 2400);
 }
 
-function loadSelectedImage(selected: SelectedImageFile) {
+function loadSelectedImage(
+  selected: SelectedImageFile,
+  restoredSelections: CutoutSelectionBox[] = [],
+  restoredResults: CutoutResult[] = []
+) {
   selectedFile.value = selected;
-  selections.value = [];
-  results.value = [];
+  selections.value = restoredSelections.map((selection) => ({ ...selection }));
+  results.value = [...restoredResults];
   imageSource.value = null;
   sessionKey.value += 1;
 }
@@ -170,10 +179,9 @@ async function segment() {
   const requestedSelections = selections.value.map((selection) => ({ ...selection }));
   const produced: CutoutResult[] = [];
 
-  let mattingId: string | null = null;
+  let charge: MattingChargeResult | null = null;
   try {
-    const charge = await app.chargeMatting();
-    mattingId = charge.mattingId;
+    charge = await app.chargeMatting();
   } catch (exception) {
     if (exception instanceof ApiError && exception.statusCode === 409) {
       mattingInsufficient.value = true;
@@ -198,17 +206,35 @@ async function segment() {
     }
   );
 
-  if (inference.error.value && mattingId) {
+  if (inference.error.value && charge) {
     try {
-      await app.refundMatting(mattingId);
+      await app.refundMatting(charge.mattingId);
     } catch (exception) {
       console.warn("抠图退款失败", exception);
       actionError.value = "抠图失败且退款异常，请联系客服处理。";
       return;
     }
+    return;
   }
 
-  if (results.value.length) showMessage(`已抠取 ${results.value.length} 个素材`);
+  if (produced.length && charge && selectedFile.value) {
+    try {
+      await app.addCutoutHistory({
+        mattingId: charge.mattingId,
+        costCredits: charge.cost,
+        selectedFile: selectedFile.value,
+        sourceWidth: imageSource.value.width,
+        sourceHeight: imageSource.value.height,
+        selections: requestedSelections,
+        results: produced
+      });
+    } catch (exception) {
+      actionError.value = exception instanceof Error
+        ? exception.message
+        : "抠图结果已生成，但保存历史失败。";
+    }
+    showMessage(`已抠取 ${produced.length} 个素材`);
+  }
 }
 
 function onLoginSuccess() {
@@ -273,7 +299,11 @@ async function exportAll() {
 
 const handoff = consumeCutoutHandoff();
 if (handoff) {
-  loadSelectedImage(handoff.selectedFile);
+  loadSelectedImage(
+    handoff.selectedFile,
+    handoff.selections ?? [],
+    handoff.results ?? []
+  );
 }
 
 onBeforeUnmount(() => {
@@ -287,6 +317,7 @@ onBeforeUnmount(() => {
       <CutoutWorkspace
         :key="sessionKey"
         :source="source"
+        :initial-selections="selections"
         :importing="selecting"
         :clearing="clearing"
         :locked="inference.phase.value === 'processing'"

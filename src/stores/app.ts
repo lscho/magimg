@@ -10,6 +10,15 @@ import {
   setUnauthorizedHandler
 } from "@/services/apiClient";
 import { saveRemoteImage } from "@/services/desktop";
+import {
+  createCutoutHistoryRecord,
+  loadCutoutHistoryAsset as readCutoutHistoryAsset,
+  loadCutoutHistoryAssets as readCutoutHistoryAssets,
+  loadCutoutHistoryWorkspace as readCutoutHistoryWorkspace,
+  readCutoutHistoryRecords,
+  removeCutoutHistoryRecords,
+  type CreateCutoutHistoryInput
+} from "@/services/cutoutHistoryStorage";
 import { localDb } from "@/services/localStorage";
 import type {
   AppSettings,
@@ -19,6 +28,8 @@ import type {
   CreditBalance,
   CreditTransaction,
   CreditTransactionKind,
+  CutoutHistoryAsset,
+  CutoutHistoryRecord,
   GenerationMode,
   GenerationRecord,
   GenerationSettings,
@@ -245,6 +256,7 @@ export const useAppStore = defineStore("app", () => {
   const history = ref<GenerationRecord[]>([]);
   const serverHistory = ref<GenerationRecord[]>([]);
   const hiddenHistoryIds = ref<string[]>([]);
+  const cutoutHistory = ref<CutoutHistoryRecord[]>([]);
   const balance = ref<CreditBalance>({ balance: 0, frozen: 0, updatedAt: new Date().toISOString() });
   const transactions = ref<CreditTransaction[]>([]);
   const transactionsLoading = shallowRef(false);
@@ -320,10 +332,17 @@ export const useAppStore = defineStore("app", () => {
   async function hydrateLocalState() {
     if (initialized.value) return;
     hydrationPromise ??= (async () => {
-      const [savedSettings, savedHistory, savedHiddenHistoryIds, savedSession] = await Promise.all([
+      const [
+        savedSettings,
+        savedHistory,
+        savedHiddenHistoryIds,
+        savedCutoutHistory,
+        savedSession
+      ] = await Promise.all([
         localDb.readSettings(),
         localDb.readHistory(),
         localDb.readHiddenHistoryIds(),
+        readCutoutHistoryRecords(),
         localDb.readSession()
       ]);
       const savedApiBaseUrl = savedSettings.apiBaseUrl?.trim().replace(/\/+$/u, "");
@@ -346,6 +365,7 @@ export const useAppStore = defineStore("app", () => {
       };
       history.value = Array.isArray(savedHistory) ? savedHistory : [];
       hiddenHistoryIds.value = Array.isArray(savedHiddenHistoryIds) ? savedHiddenHistoryIds : [];
+      cutoutHistory.value = savedCutoutHistory;
       session.value = restoredSession;
       setApiBaseUrl(settings.value.apiBaseUrl);
       setAccessToken(restoredSession?.accessToken ?? null);
@@ -699,6 +719,27 @@ export const useAppStore = defineStore("app", () => {
     await removeHistory(visibleHistory.value.map((record) => record.generationId));
   }
 
+  async function addCutoutHistory(input: CreateCutoutHistoryInput) {
+    cutoutHistory.value = await createCutoutHistoryRecord(input, cutoutHistory.value);
+  }
+
+  async function removeCutoutHistory(taskIds: string[]) {
+    if (!taskIds.length) return;
+    cutoutHistory.value = await removeCutoutHistoryRecords(taskIds, cutoutHistory.value);
+  }
+
+  async function loadCutoutAsset(record: CutoutHistoryRecord, asset: CutoutHistoryAsset) {
+    return readCutoutHistoryAsset(record, asset);
+  }
+
+  async function loadCutoutAssets(records: CutoutHistoryRecord[]) {
+    return readCutoutHistoryAssets(records);
+  }
+
+  async function restoreCutoutWorkspace(record: CutoutHistoryRecord) {
+    return readCutoutHistoryWorkspace(record);
+  }
+
   async function generate(
     mode: GenerationMode,
     params: ImageParams,
@@ -892,6 +933,7 @@ export const useAppStore = defineStore("app", () => {
     settings,
     history,
     visibleHistory,
+    cutoutHistory,
     balance,
     transactions,
     transactionsLoading,
@@ -927,6 +969,11 @@ export const useAppStore = defineStore("app", () => {
     addHistory,
     removeHistory,
     clearHistory,
+    addCutoutHistory,
+    removeCutoutHistory,
+    loadCutoutAsset,
+    loadCutoutAssets,
+    restoreCutoutWorkspace,
     generate,
     cancelCurrentGeneration,
     clearGenerationError,

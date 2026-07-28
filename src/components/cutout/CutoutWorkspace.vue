@@ -7,10 +7,12 @@ import type { CutoutSelectionBox } from "@/types";
 
 const props = withDefaults(defineProps<{
   source: { blob: Blob; mimeType: string } | null;
+  initialSelections?: CutoutSelectionBox[];
   importing?: boolean;
   clearing?: boolean;
   locked?: boolean;
 }>(), {
+  initialSelections: () => [],
   importing: false,
   clearing: false,
   locked: false
@@ -27,7 +29,7 @@ const emit = defineEmits<{
 const viewport = useTemplateRef<HTMLElement>("viewport");
 const baseCanvas = useTemplateRef<HTMLCanvasElement>("baseCanvas");
 const dragDepth = shallowRef(0);
-const canvas = useCutoutSelection(props.source);
+const canvas = useCutoutSelection(props.source, props.initialSelections);
 
 const stackStyle = computed(() => ({
   width: `${canvas.previewWidth.value}px`,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, shallowRef, watch } from "vue";
 import {
   Check,
   Clipboard,
@@ -84,6 +84,142 @@ const segmentButtonDisabled = computed(
   () => props.isLoggedIn && (props.insufficientCredits || !canSegment.value)
 );
 const visibleError = computed(() => (props.insufficientCredits ? "" : props.error));
+
+interface ResultPreviewState {
+  resultId: string;
+  url: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  placement: "left" | "right";
+  arrowTop: number;
+  alt: string;
+}
+
+const resultPreview = shallowRef<ResultPreviewState | null>(null);
+const resultImageUrls = shallowRef<Record<string, string>>({});
+const resultPreviewId = "cutout-result-enlarged-preview";
+const resultImageBlobs = new Map<string, Blob>();
+
+function syncResultImageUrls() {
+  const currentUrls = resultImageUrls.value;
+  const nextUrls: Record<string, string> = {};
+  const visibleIds = new Set<string>();
+  for (const result of props.results) {
+    visibleIds.add(result.id);
+    const currentUrl = currentUrls[result.id];
+    if (currentUrl && resultImageBlobs.get(result.id) === result.blob) {
+      nextUrls[result.id] = currentUrl;
+      continue;
+    }
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    nextUrls[result.id] = URL.createObjectURL(result.blob);
+    resultImageBlobs.set(result.id, result.blob);
+  }
+  for (const [resultId, url] of Object.entries(currentUrls)) {
+    if (!visibleIds.has(resultId)) {
+      URL.revokeObjectURL(url);
+      resultImageBlobs.delete(resultId);
+    }
+  }
+  resultImageUrls.value = nextUrls;
+}
+
+function clearResultImageUrls() {
+  for (const url of Object.values(resultImageUrls.value)) URL.revokeObjectURL(url);
+  resultImageUrls.value = {};
+  resultImageBlobs.clear();
+}
+
+function closeResultPreview() {
+  if (resultPreview.value) URL.revokeObjectURL(resultPreview.value.url);
+  resultPreview.value = null;
+}
+
+function openResultPreview(result: CutoutResult, event: Event) {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  const bounds = target.getBoundingClientRect();
+  const viewportPadding = 12;
+  const gap = 12;
+  const maxWidth = Math.min(400, window.innerWidth - viewportPadding * 2);
+  const maxHeight = Math.min(400, window.innerHeight - viewportPadding * 2);
+  const minShortEdge = Math.min(160, maxWidth, maxHeight);
+  const aspectRatio = Math.max(0.01, result.width / Math.max(1, result.height));
+  const width = aspectRatio >= 1
+    ? maxWidth
+    : Math.max(minShortEdge, Math.min(maxWidth, Math.round(maxHeight * aspectRatio)));
+  const height = aspectRatio >= 1
+    ? Math.max(minShortEdge, Math.min(maxHeight, Math.round(maxWidth / aspectRatio)))
+    : maxHeight;
+  const canPlaceLeft = bounds.left - width - gap >= viewportPadding;
+  const canPlaceRight = bounds.right + gap + width <= window.innerWidth - viewportPadding;
+  const placement: ResultPreviewState["placement"] = canPlaceLeft || !canPlaceRight
+    ? "left"
+    : "right";
+  let left = placement === "left" ? bounds.left - width - gap : bounds.right + gap;
+  left = Math.min(Math.max(viewportPadding, left), window.innerWidth - width - viewportPadding);
+  const centeredTop = bounds.top + bounds.height / 2 - height / 2;
+  const top = Math.min(
+    Math.max(viewportPadding, centeredTop),
+    window.innerHeight - height - viewportPadding
+  );
+  const arrowTop = Math.min(
+    height - 18,
+    Math.max(18, bounds.top + bounds.height / 2 - top)
+  );
+
+  if (resultPreview.value?.resultId === result.id) {
+    resultPreview.value = {
+      ...resultPreview.value,
+      left,
+      top,
+      width,
+      height,
+      placement,
+      arrowTop
+    };
+    return;
+  }
+  closeResultPreview();
+  resultPreview.value = {
+    resultId: result.id,
+    url: URL.createObjectURL(result.blob),
+    left,
+    top,
+    width,
+    height,
+    placement,
+    arrowTop,
+    alt: `抠图结果放大预览 ${result.width}×${result.height}`
+  };
+}
+
+function closePreviewIfInactive(event: Event) {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  window.requestAnimationFrame(() => {
+    if (target.matches(":hover") || document.activeElement === target) return;
+    closeResultPreview();
+  });
+}
+
+watch(
+  () => props.results.map((result) => result.id).join("|"),
+  () => {
+    closeResultPreview();
+    syncResultImageUrls();
+  },
+  { immediate: true }
+);
+
+onMounted(() => window.addEventListener("resize", closeResultPreview));
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", closeResultPreview);
+  closeResultPreview();
+  clearResultImageUrls();
+});
 </script>
 
 <template>
@@ -122,11 +258,24 @@ const visibleError = computed(() => (props.insufficientCredits ? "" : props.erro
             <span :style="{ width: `${segmentPercent}%` }" />
           </span>
         </p>
-        <ul v-if="results.length" class="cutout-result-list">
+        <ul v-if="results.length" class="cutout-result-list" @scroll="closeResultPreview">
           <li v-for="result in results" :key="result.id" class="cutout-result-item">
-            <div class="cutout-result-thumb">
-              <img :src="result.thumbnailUrl" :alt="`抠图结果 ${result.width}×${result.height}`" />
-            </div>
+            <button
+              class="cutout-result-thumb"
+              type="button"
+              :aria-label="`放大预览 ${result.baseName}`"
+              :aria-describedby="resultPreview?.resultId === result.id ? resultPreviewId : undefined"
+              @pointerenter="openResultPreview(result, $event)"
+              @pointerleave="closePreviewIfInactive"
+              @focus="openResultPreview(result, $event)"
+              @blur="closePreviewIfInactive"
+              @keydown.esc="closeResultPreview"
+            >
+              <img
+                :src="resultImageUrls[result.id] ?? result.thumbnailUrl"
+                :alt="`抠图结果 ${result.width}×${result.height}`"
+              />
+            </button>
             <div class="cutout-result-info">
               <strong>{{ result.baseName }}</strong>
               <span>{{ result.width }} × {{ result.height }} px</span>
@@ -236,6 +385,29 @@ const visibleError = computed(() => (props.insufficientCredits ? "" : props.erro
         </button>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="resultPreview"
+        :id="resultPreviewId"
+        class="cutout-result-preview"
+        :class="`is-${resultPreview.placement}`"
+        role="tooltip"
+        :style="{
+          left: `${resultPreview.left}px`,
+          top: `${resultPreview.top}px`,
+          width: `${resultPreview.width}px`,
+          height: `${resultPreview.height}px`
+        }"
+      >
+        <span
+          class="cutout-result-preview-arrow"
+          :style="{ top: `${resultPreview.arrowTop}px` }"
+          aria-hidden="true"
+        />
+        <img :src="resultPreview.url" :alt="resultPreview.alt" />
+      </div>
+    </Teleport>
   </aside>
 </template>
 
@@ -376,11 +548,14 @@ const visibleError = computed(() => (props.insufficientCredits ? "" : props.erro
 }
 
 .cutout-result-thumb {
+  position: relative;
   width: 56px;
   height: 56px;
   display: grid;
   place-items: center;
   overflow: hidden;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 5px;
   background-color: #17202a;
   background-image:
@@ -392,10 +567,74 @@ const visibleError = computed(() => (props.insufficientCredits ? "" : props.erro
   background-size: 14px 14px;
 
   img {
-    max-width: 100%;
-    max-height: 100%;
+    position: absolute;
+    inset: 2px;
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
+    display: block;
     object-fit: contain;
   }
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
+.cutout-result-preview {
+  position: fixed;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background-color: #17202a;
+  background-image:
+    linear-gradient(45deg, rgba(241, 244, 248, 0.08) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(241, 244, 248, 0.08) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(241, 244, 248, 0.08) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(241, 244, 248, 0.08) 75%);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+
+  img {
+    position: absolute;
+    inset: 10px;
+    width: calc(100% - 20px);
+    height: calc(100% - 20px);
+    display: block;
+    object-fit: contain;
+  }
+}
+
+.cutout-result-preview-arrow {
+  position: absolute;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  background: #17202a;
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.cutout-result-preview.is-left .cutout-result-preview-arrow {
+  right: -8px;
+  border-top: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line-strong);
+}
+
+.cutout-result-preview.is-right .cutout-result-preview-arrow {
+  left: -8px;
+  border-bottom: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
 }
 
 .cutout-result-info {
