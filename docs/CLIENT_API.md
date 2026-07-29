@@ -3,6 +3,7 @@
 > 适用版本：当前仓库 `server/api/client/v1` 实现。基础路径为 `/api/client/v1`。
 > 请求/响应字段默认使用 **camelCase**；生成任务中的 `output_compression` 沿用 OpenAI 字段名。ID 使用 **字符串**，时间使用 **ISO 8601**。
 > 客户端 Bearer token 与 `/api/auth/login` 返回的管理员 token **不通用**。
+> 背景修复能力字段和 `/background-repairs` 端点是客户端已接入的新增契约；服务端部署前必须保持 `backgroundRepairEnabled` 缺省或为 `false`。
 
 ---
 
@@ -67,6 +68,11 @@
 | `GET` | `/tasks/:id` | 当前用户任务详情 |
 | `POST` | `/tasks/:id/cancel` | 取消排队中任务并退款 |
 | `POST` | `/feedback` | 提交意见反馈 |
+| `POST` | `/matting` | AI 抠图或云端背景修复预扣积分 |
+| `POST` | `/matting/:id/refund` | 本地抠图失败退款 |
+| `POST` | `/background-repairs` | 创建云端背景修复任务（需幂等键） |
+| `GET` | `/background-repairs/:id` | 查询云端背景修复任务 |
+| `POST` | `/background-repairs/:id/cancel` | 取消云端背景修复任务并退款 |
 
 ---
 
@@ -245,6 +251,10 @@ Authorization: Bearer <client-token>
   "textToImageCost": 10,
   "imageToImageCost": 15,
   "mattingCost": 5,
+  "backgroundRepairEnabled": true,
+  "backgroundRepairCost": 12,
+  "backgroundRepairMaxBytes": 10485760,
+  "backgroundRepairMaxPixels": 16777216,
   "cardPurchaseUrl": "https://example.com/cards",
   "maxAttempts": 3,
   "uploadMaxBytes": 5242880,
@@ -262,7 +272,9 @@ Authorization: Bearer <client-token>
 
 `cardPurchaseUrl` 为可选的卡密购买页面地址。客户端仅在该值为有效的 `http` 或 `https` 地址时显示“购买卡密”；Tauri 桌面端使用系统浏览器打开，Web 端使用新窗口打开。
 
-> 默认值除 `cardPurchaseUrl` 外为上例（文生图 10 点、图生图 15 点、AI 抠图 5 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400）。实际值以服务端 `ls_config.name='generation'` 配置为准；`mattingCost` 取值 1–1,000,000 正整数。
+`backgroundRepairEnabled`、`backgroundRepairCost`、`backgroundRepairMaxBytes`、`backgroundRepairMaxPixels` 均为可选字段。字段缺失或 `backgroundRepairEnabled !== true` 时客户端隐藏云端背景修复；本地抠图和本地背景修复不依赖这些字段。启用云端档时其余三个字段必须为正整数，分别表示整次云端任务积分、输入文件字节上限和输入像素上限。
+
+> 原有生图与抠图默认值为：文生图 10 点、图生图 15 点、AI 抠图 5 点、最大边 3840、宽高比上限 3、像素下限 655360 / 上限 8294400。云端背景修复四个可选字段没有客户端默认开启值。实际值以服务端 `ls_config.name='generation'` 配置为准；`mattingCost` 取值 1–1,000,000 正整数。
 
 ---
 
@@ -771,7 +783,7 @@ curl -i "https://api.example.com/api/client/v1/config"
 
 ### 4.11 `POST /matting`
 
-AI 抠图预扣积分。客户端在**本地抠图开始前**调用，服务端扣 `mattingCost` 积分并返回扣费流水 ID（`mattingId`）。抠图在客户端本地完成，服务端不参与抠图本身。
+AI 抠图和背景修复预扣积分。`mode=local` 时服务端扣 `mattingCost`，抠图与可选 Big-LaMa 修复均在客户端本地完成；`mode=cloud` 时整次操作只扣一次 `backgroundRepairCost`，同一个 `mattingId` 随后绑定一张联合蒙版云端任务。
 
 **两阶段计费流程**：
 
@@ -791,6 +803,7 @@ AI 抠图预扣积分。客户端在**本地抠图开始前**调用，服务端�
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
+| `mode` | string | 否 | `local` 或 `cloud`，缺省为 `local`，保持旧客户端兼容 |
 | `inputAssetId` | string | 否 | 输入图片 ID（正整数字符串），用于对账；提供时校验归属当前用户 |
 
 **成功响应（200）**
@@ -799,7 +812,8 @@ AI 抠图预扣积分。客户端在**本地抠图开始前**调用，服务端�
 {
   "mattingId": "128",
   "cost": 5,
-  "balance": 95
+  "balance": 95,
+  "mode": "local"
 }
 ```
 
@@ -808,12 +822,13 @@ AI 抠图预扣积分。客户端在**本地抠图开始前**调用，服务端�
 | `mattingId` | string | 扣费流水 ID，用于后续失败退款 |
 | `cost` | number | 本次扣除积分（= `mattingCost`） |
 | `balance` | number | 扣费后余额 |
+| `mode` | string | 实际计费档位，`local` 或 `cloud` |
 
 **幂等**：`Idempotency-Key` 作为积分流水的 `reference_id`，`uk_point_reference (user_id, type, reference_type, reference_id)` 唯一索引兜底，同一幂等键并发重复请求只扣一次。网络重试（不确定服务端是否扣费）用同一幂等键；重新尝试（已确定失败想再抠一次）用新幂等键。
 
 **错误码**：400 `Idempotency-Key 格式无效` / `请求参数格式无效` / `输入图片 ID格式无效`；401（未登录/过期）；403 `账号已停用`；404 `输入图片不存在`；409 `积分不足`；429（限流，`matting-charge` 30 次/60 秒）。
 
-> `mattingCost` 由服务端从 `ls_config.name='generation'` 权威读取，客户端无法篡改单价。默认 5，取值 1–1,000,000 正整数，经 `GET /capabilities` 下发。
+> `mattingCost` 与 `backgroundRepairCost` 均由服务端权威读取，客户端提交的 `mode` 只选择服务端已开放档位，不能提交单价。云端能力未启用时 `mode=cloud` 返回 409。
 
 ---
 
@@ -852,6 +867,82 @@ AI 抠图失败退款。客户端本地抠图失败后，用预扣返回的 `mat
 **错误码**：400 `抠图任务 ID格式无效`；401（未登录/过期）；403 `账号已停用`；404 `抠图扣费记录不存在`（`mattingId` 不存在或不属于当前用户）；429（限流，`matting-refund` 30 次/60 秒）。
 
 > **已知权衡**：退款由客户端驱动，客户端抠图成功后仍可调用退款接口退回积分（无法服务端验证抠图结果）。这与生成任务失败退款同性质，且抠图无服务端算力成本，影响有限。
+
+---
+
+### 4.13 `POST /background-repairs`
+
+创建一轮云端背景修复任务。请求使用 `multipart/form-data`，整次抠图只创建一个任务，一张全尺寸灰度蒙版覆盖全部背景选区。
+
+**请求头**
+
+| 头部 | 必填 | 说明 |
+| --- | --- | --- |
+| `Authorization` | 是 | `Bearer <token>` |
+| `Idempotency-Key` | 是 | 8–100 字符；重复提交返回原任务，不重复创建或扣费 |
+
+**表单字段**
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `image` | file | 条件必填 | 首次提交时上传原始 PNG/JPEG/WebP；与 `inputAssetId` 二选一，受 `backgroundRepairMaxBytes` 和 `backgroundRepairMaxPixels` 限制 |
+| `inputAssetId` | string | 条件必填 | 同一原图再次微调时使用上次任务返回的素材 ID；与 `image` 二选一 |
+| `mask` | file | 是 | 与原图同尺寸的单通道语义灰度 PNG；0 保留、255 修复、中间值用于羽化合成 |
+| `mattingId` | string | 是 | `POST /matting` 以 `mode=cloud` 返回的预扣流水 ID |
+| `selectionBoxes` | JSON string | 是（新客户端） | 1–8 个背景选框的图像坐标数组；每项包含 `x`、`y`、`width`、`height`，服务端按框裁剪上下文后分别修复 |
+
+服务端必须校验 `mattingId` 属于当前用户、档位为 `cloud` 且未绑定其他修复任务；`inputAssetId` 必须属于当前用户且来自先前的背景修复任务，蒙版尺寸必须与该素材一致。`selectionBoxes` 必须位于原图内，累计面积不得超过原图面积两倍；缺少该字段的旧客户端任务按整图上下文兼容处理。服务端推理可二值化任务蒙版，但返回图必须保持原图像素尺寸。
+
+**成功响应（200）**：`BackgroundRepairTask`，初始状态通常为 `pending`。
+
+```json
+{
+  "id": "repair-128",
+  "inputAssetId": "40",
+  "status": "pending",
+  "cost": 12,
+  "balance": 88,
+  "createdAt": "2026-07-28T12:00:00.000Z",
+  "updatedAt": "2026-07-28T12:00:00.000Z"
+}
+```
+
+任务失败时服务端必须幂等退回该 `mattingId` 的原扣费，并在终态响应中返回退款后的 `balance`。客户端不会自动切换本地档，也不会把失败任务写入完整抠图历史。
+
+**错误码**：400（字段或 `mattingId` 格式错误、蒙版为空或尺寸不一致）；401；403；404（预扣流水不存在或不属于当前用户）；409（能力未启用、档位不匹配、流水已被其他任务使用）；413（文件或像素超限）；415（图片格式错误）；429。
+
+---
+
+### 4.14 `GET /background-repairs/:id`
+
+查询当前用户的云端背景修复任务。客户端约每 1.5 秒轮询，直至 `succeeded`、`failed` 或 `canceled`。
+
+**成功响应（200）**：`BackgroundRepairTask`。成功终态必须返回同尺寸修复图的 `outputUrl`；失败终态可返回 `errorMessage`，并返回退款后余额。
+
+```json
+{
+  "id": "repair-128",
+  "inputAssetId": "40",
+  "status": "succeeded",
+  "cost": 12,
+  "balance": 88,
+  "outputUrl": "/uploads/background-repairs/repair-128.png",
+  "createdAt": "2026-07-28T12:00:00.000Z",
+  "updatedAt": "2026-07-28T12:00:08.000Z"
+}
+```
+
+**错误码**：400（任务 ID 无效）；401；403；404（任务不存在或不属于当前用户）；429。
+
+---
+
+### 4.15 `POST /background-repairs/:id/cancel`
+
+取消 `pending` 或 `processing` 云端修复任务。取消与失败退款均由服务端执行并使用唯一索引保证幂等；并发取消或重复调用只能退款一次。
+
+**成功响应（200）**：最新 `BackgroundRepairTask`，终态为 `canceled`，`balance` 为退款后余额。
+
+**错误码**：400（任务 ID 无效）；401；403；404；409（任务已成功，不能取消）；429。
 
 ---
 
@@ -901,6 +992,10 @@ interface GenerationSettings {
   textToImageCost: number
   imageToImageCost: number
   mattingCost: number
+  backgroundRepairEnabled?: boolean
+  backgroundRepairCost?: number
+  backgroundRepairMaxBytes?: number
+  backgroundRepairMaxPixels?: number
   cardPurchaseUrl?: string
   maxAttempts: number
   uploadMaxBytes: number
@@ -917,13 +1012,26 @@ interface GenerationSettings {
 
 interface MattingChargeResult {
   mattingId: string                  // 扣费流水 ID，用于失败退款
-  cost: number                       // 本次扣除积分（= mattingCost）
+  cost: number                       // 本次实际扣除积分
   balance: number                    // 扣费后余额
+  mode?: 'local' | 'cloud'
 }
 
 interface MattingRefundResult {
   cost: number                       // 本次退回积分（= 原扣费金额）
   balance: number                    // 退款后余额
+}
+
+interface BackgroundRepairTask {
+  id: string
+  inputAssetId: string                 // 首次上传后复用同一原图
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'canceled'
+  cost: number
+  balance: number
+  outputUrl?: string                 // 仅 succeeded 必填
+  errorMessage?: string              // 失败终态可返回
+  createdAt?: string
+  updatedAt?: string
 }
 
 interface TemplateCategory {

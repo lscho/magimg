@@ -1,6 +1,7 @@
 import { fetchHttp } from "@/services/desktop";
 import type {
   CardRedeemResult,
+  BackgroundRepairTask,
   ClientAsset,
   ClientAuthResponse,
   ClientGenerationMode,
@@ -14,6 +15,8 @@ import type {
   GenerationTemplate,
   MattingChargeResult,
   MattingRefundResult,
+  CutoutRepairMode,
+  CreateBackgroundRepairInput,
   PointLedgerEntry,
   TemplateCategory
 } from "@/types";
@@ -279,10 +282,10 @@ export const apiClient = {
     return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   },
 
-  chargeMatting() {
+  chargeMatting(mode: CutoutRepairMode = "local") {
     return request<MattingChargeResult>("/matting", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ mode }),
       idempotencyKey: idempotencyKey()
     });
   },
@@ -292,6 +295,51 @@ export const apiClient = {
       `/matting/${encodeURIComponent(mattingId)}/refund`,
       { method: "POST" }
     );
+  },
+
+  createBackgroundRepair(input: CreateBackgroundRepairInput) {
+    if (Boolean(input.image) === Boolean(input.inputAssetId)) {
+      throw new Error("云端背景修复必须且只能提供原图或可复用素材 ID。");
+    }
+    const body = new FormData();
+    if (input.image) body.append("image", input.image, input.image.name);
+    if (input.inputAssetId) body.append("inputAssetId", input.inputAssetId);
+    body.append("mask", input.mask, "repair-mask.png");
+    body.append("mattingId", input.mattingId);
+    body.append("selectionBoxes", JSON.stringify(input.selectionBoxes.map((box) => ({
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height
+    }))));
+    return request<BackgroundRepairTask>("/background-repairs", {
+      method: "POST",
+      body,
+      idempotencyKey: idempotencyKey()
+    });
+  },
+
+  backgroundRepair(id: string) {
+    return request<BackgroundRepairTask>(
+      `/background-repairs/${encodeURIComponent(id)}`
+    );
+  },
+
+  cancelBackgroundRepair(id: string) {
+    return request<BackgroundRepairTask>(
+      `/background-repairs/${encodeURIComponent(id)}/cancel`,
+      { method: "POST" }
+    );
+  },
+
+  async downloadBackgroundRepairOutput(outputUrl: string) {
+    const response = await fetchHttp(resolveApiAssetUrl(outputUrl), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!response.ok) {
+      throw new ApiError(defaultErrorMessage(response.status), response.status);
+    }
+    return response.blob();
   },
 
   config() {

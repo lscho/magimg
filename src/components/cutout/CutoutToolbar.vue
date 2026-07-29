@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Eraser,
   Hand,
   ImageDown,
   ImageOff,
@@ -13,6 +14,10 @@ import {
   Undo2
 } from "lucide-vue-next";
 import type { CutoutTool } from "@/composables/useCutoutSelection";
+import type {
+  CutoutBrushOperation,
+  CutoutSelection
+} from "@/types";
 
 defineProps<{
   activeTool: CutoutTool;
@@ -24,6 +29,10 @@ defineProps<{
   zoomPercent: number;
   importing: boolean;
   clearing: boolean;
+  activeSelection: CutoutSelection | null;
+  brushOperation: CutoutBrushOperation;
+  brushRadius: number;
+  smartBrush: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +45,11 @@ const emit = defineEmits<{
   zoomIn: [];
   zoomOut: [];
   fitPreview: [];
+  makeIndependent: [id: string];
+  makeBackground: [id: string];
+  setBrushOperation: [operation: CutoutBrushOperation];
+  setBrushRadius: [radius: number];
+  setSmartBrush: [enabled: boolean];
 }>();
 </script>
 
@@ -45,6 +59,7 @@ const emit = defineEmits<{
       <button
         v-for="tool in [
           { id: 'box', label: '框选', icon: SquareDashed },
+          { id: 'erase', label: '消除修复', icon: Eraser },
           { id: 'pan', label: '拖动', icon: Hand }
         ]"
         :key="tool.id"
@@ -60,6 +75,70 @@ const emit = defineEmits<{
         <component :is="tool.icon" :size="18" aria-hidden="true" />
       </button>
     </div>
+
+    <section
+      v-if="activeTool === 'erase'"
+      class="cutout-brush-options"
+      aria-label="消除修复属性"
+    >
+      <div class="cutout-option-row">
+        <span>当前选区</span>
+        <strong>{{ activeSelection ? (activeSelection.behavior === 'background' ? '背景' : '素材') : '未选择' }}</strong>
+      </div>
+      <div v-if="activeSelection" class="cutout-segmented" aria-label="选区用途">
+        <button
+          type="button"
+          :aria-pressed="activeSelection.behavior === 'extract'"
+          @click="emit('makeIndependent', activeSelection.id)"
+        >
+          独立提取
+        </button>
+        <button
+          type="button"
+          :aria-pressed="activeSelection.behavior === 'background'"
+          @click="emit('makeBackground', activeSelection.id)"
+        >
+          背景修复
+        </button>
+      </div>
+      <template v-if="activeSelection?.behavior === 'background'">
+        <label class="cutout-smart-option">
+          <input
+            type="checkbox"
+            :checked="smartBrush"
+            @change="emit('setSmartBrush', ($event.target as HTMLInputElement).checked)"
+          />
+          <span>智能吸附</span>
+        </label>
+        <div class="cutout-segmented" aria-label="笔刷操作">
+          <button
+            type="button"
+            :aria-pressed="brushOperation === 'add'"
+            @click="emit('setBrushOperation', 'add')"
+          >
+            添加
+          </button>
+          <button
+            type="button"
+            :aria-pressed="brushOperation === 'restore'"
+            @click="emit('setBrushOperation', 'restore')"
+          >
+            恢复
+          </button>
+        </div>
+        <label class="cutout-size-option">
+          <span>大小 {{ brushRadius }} px</span>
+          <input
+            type="range"
+            min="4"
+            max="160"
+            step="2"
+            :value="brushRadius"
+            @input="emit('setBrushRadius', Number(($event.target as HTMLInputElement).value))"
+          />
+        </label>
+      </template>
+    </section>
 
     <div class="cutout-tool-group cutout-image-group" aria-label="图片操作">
       <button
@@ -169,6 +248,116 @@ const emit = defineEmits<{
   background: var(--surface);
 }
 
+.cutout-brush-options {
+  position: absolute;
+  z-index: 25;
+  top: 0;
+  left: 44px;
+  width: 224px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0 7px 7px 0;
+  color: var(--soft);
+  background: rgba(16, 22, 29, 0.98);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+  font-size: 11px;
+}
+
+.cutout-option-row,
+.cutout-smart-option,
+.cutout-size-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cutout-option-row strong {
+  color: var(--text);
+}
+
+.cutout-smart-option {
+  justify-content: flex-start;
+
+  input {
+    position: relative;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 16px;
+    margin: 0;
+    appearance: none;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--field);
+    cursor: pointer;
+
+    &::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: transform 140ms ease, background 140ms ease;
+    }
+
+    &:checked {
+      border-color: var(--accent-border);
+      background: var(--accent-soft);
+    }
+
+    &:checked::after {
+      background: var(--accent);
+      transform: translateX(14px);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+  }
+}
+
+.cutout-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+
+  button {
+    min-width: 0;
+    height: 30px;
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--muted);
+    background: var(--field);
+    font-size: 10px;
+
+    &:last-child { border-right: 0; }
+    &[aria-pressed="true"] {
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+  }
+}
+
+.cutout-size-option {
+  align-items: stretch;
+  flex-direction: column;
+
+  input { width: 100%; }
+}
+
 .cutout-tool-group {
   width: 100%;
   display: grid;
@@ -264,6 +453,12 @@ const emit = defineEmits<{
 @media (max-height: 760px) {
   .cutout-tool-button {
     height: 31px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cutout-smart-option input::after {
+    transition: none;
   }
 }
 </style>

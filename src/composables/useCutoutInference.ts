@@ -1,7 +1,9 @@
 import { computed, onBeforeUnmount, readonly, shallowRef } from "vue";
 import type {
   CutoutModelStatus,
+  CutoutRepairMode,
   CutoutResult,
+  CutoutSelection,
   CutoutSelectionBox
 } from "@/types";
 import {
@@ -18,13 +20,36 @@ import {
   getRefinerStatus
 } from "@/services/cutoutRefinerManager";
 import {
+  CUTOUT_REPAIR_MODEL,
+  downloadRepairModel,
+  getRepairModelStatus
+} from "@/services/cutoutRepairModelManager";
+import {
   cancelInferenceRun,
   decodeCutoutBox,
+  decodeCutoutCandidates,
   encodeCutoutImage,
   refineCutoutMask,
   releaseInferenceSession
 } from "@/services/cutoutInference";
 import { maskToTransparentPng } from "@/services/cutoutExport";
+import {
+  buildRemovalMask,
+  chooseSmartRemovalCandidate,
+  maskContainment,
+  prepareRepairMask,
+  sampleStrokePoints
+} from "@/services/cutoutRepairMask";
+import { shouldForceManualDiffusion } from "@/services/cutoutRepairContext";
+import {
+  compositeRepairedImage,
+  repairBackgroundLocally
+} from "@/services/cutoutBackgroundRepair";
+import { maskArea, unionMasks } from "@/services/cutoutLayering";
+import {
+  cloneCutoutSelections,
+  selectionChildren
+} from "@/services/cutoutSelectionModel";
 
 export type CutoutPhase = "idle" | "downloading" | "verifying" | "installing" | "processing";
 export type CutoutResourceStatus = "checking" | CutoutModelStatus;
@@ -37,7 +62,22 @@ export interface CutoutResourceProgress {
 export interface CutoutProgress {
   current: number;
   total: number;
-  stage: "segmenting" | "refining";
+  stage: "segmenting" | "refining" | "repairing" | "uploading" | "waiting";
+}
+
+export interface CutoutCloudRepairContext {
+  setStage: (stage: "uploading" | "waiting") => void;
+  signal: AbortSignal;
+}
+
+export interface CutoutSegmentationOptions {
+  repairMode: CutoutRepairMode;
+  cloudRepair?: (
+    mask: Uint8Array,
+    selectionBoxes: readonly CutoutSelectionBox[],
+    context: CutoutCloudRepairContext
+  ) => Promise<CanvasImageSource>;
+  onSelectionsResolved?: (selections: CutoutSelection[]) => void;
 }
 
 type ResourcePart = "segmenter" | "refiner";
@@ -58,17 +98,29 @@ const INSTALL_STAGE_INDEX: Record<ModelInstallStage, number> = {
 };
 const INSTALL_STAGE_COUNT = Object.keys(INSTALL_STAGE_INDEX).length;
 const RESOURCE_DOWNLOAD_SIZE_BYTES = CUTOUT_MODEL.sizeBytes + CUTOUT_REFINER.sizeBytes;
+const MIN_ALPHA_CONTAINMENT = 0.7;
+
+function abortError() {
+  return new DOMException("抠图已取消。", "AbortError");
+}
+
+function hasMask(mask: Uint8Array) {
+  return maskArea(mask) > 0;
+}
 
 /**
- * 管理统一抠图资源包与批量抠图。资源包由 SAM 2.1 Base+ 和 ViTMatte 组成，
- * 一次安装只补齐缺失部分；一次推理只运行一次 encoder 并复用 embedding。
+ * 管理 SAM、ViTMatte 与按需下载的 Big-LaMa。所有选区复用一次 encoder；
+ * 前景沿用原有框选链路，背景只在合并移除蒙版后进入修复模型。
  */
 export function useCutoutInference() {
   const phase = shallowRef<CutoutPhase>("idle");
   const segmenterStatus = shallowRef<CutoutModelStatus>("missing");
   const refinerStatus = shallowRef<CutoutModelStatus>("missing");
+  const repairStatus = shallowRef<CutoutModelStatus>("missing");
   const resourceStatusChecked = shallowRef(false);
+  const repairStatusChecked = shallowRef(false);
   const resourceProgress = shallowRef<CutoutResourceProgress | null>(null);
+  const repairProgress = shallowRef<CutoutResourceProgress | null>(null);
   const progress = shallowRef<CutoutProgress | null>(null);
   const error = shallowRef("");
   const abortController = shallowRef<AbortController | null>(null);
@@ -76,14 +128,17 @@ export function useCutoutInference() {
 
   const resourceStatus = computed<CutoutResourceStatus>(() => {
     if (!resourceStatusChecked.value) return "checking";
-    if (phase.value !== "idle" && phase.value !== "processing") return "downloading";
-    if (segmenterStatus.value === "ready" && refinerStatus.value === "ready") {
-      return "ready";
+    if (segmenterStatus.value === "downloading" || refinerStatus.value === "downloading") {
+      return "downloading";
     }
-    if (segmenterStatus.value === "error" || refinerStatus.value === "error") {
-      return "error";
-    }
+    if (segmenterStatus.value === "ready" && refinerStatus.value === "ready") return "ready";
+    if (segmenterStatus.value === "error" || refinerStatus.value === "error") return "error";
     return "missing";
+  });
+
+  const repairResourceStatus = computed<CutoutResourceStatus>(() => {
+    if (!repairStatusChecked.value) return "checking";
+    return repairStatus.value;
   });
 
   function setResourcePartStatus(part: ResourcePart, status: CutoutModelStatus) {
@@ -102,11 +157,20 @@ export function useCutoutInference() {
     } catch (exception) {
       segmenterStatus.value = "error";
       refinerStatus.value = "error";
-      error.value = exception instanceof Error
-        ? exception.message
-        : "无法检查 AI 抠图资源包。";
+      error.value = exception instanceof Error ? exception.message : "无法检查 AI 抠图资源包。";
     } finally {
       resourceStatusChecked.value = true;
+    }
+  }
+
+  async function refreshRepairResourceStatus() {
+    try {
+      repairStatus.value = await getRepairModelStatus();
+    } catch (exception) {
+      repairStatus.value = "error";
+      error.value = exception instanceof Error ? exception.message : "无法检查背景修复模型。";
+    } finally {
+      repairStatusChecked.value = true;
     }
   }
 
@@ -119,9 +183,7 @@ export function useCutoutInference() {
     const partRatio = next.totalBytes > 0
       ? Math.min(1, next.receivedBytes / next.totalBytes)
       : 0;
-    const currentWork = (
-      INSTALL_STAGE_INDEX[next.stage] + partRatio
-    ) * partSizeBytes;
+    const currentWork = (INSTALL_STAGE_INDEX[next.stage] + partRatio) * partSizeBytes;
     resourceProgress.value = {
       stage: next.stage,
       percent: Math.min(100, Math.round((completedWork + currentWork) / totalWork * 100))
@@ -136,29 +198,20 @@ export function useCutoutInference() {
       error.value = "浏览器预览不能安装 AI 抠图资源包，请在桌面客户端中使用。";
       return false;
     }
-
     if (!resourceStatusChecked.value) await refreshResourceStatus();
     const pendingParts: PendingResourcePart[] = [];
     if (segmenterStatus.value !== "ready") {
       pendingParts.push({
         id: "segmenter",
         sizeBytes: CUTOUT_MODEL.sizeBytes,
-        install: (onProgress, signal) => downloadModel(
-          CUTOUT_MODEL,
-          onProgress,
-          signal
-        )
+        install: (onProgress, signal) => downloadModel(CUTOUT_MODEL, onProgress, signal)
       });
     }
     if (refinerStatus.value !== "ready") {
       pendingParts.push({
         id: "refiner",
         sizeBytes: CUTOUT_REFINER.sizeBytes,
-        install: (onProgress, signal) => downloadRefiner(
-          CUTOUT_REFINER,
-          onProgress,
-          signal
-        )
+        install: (onProgress, signal) => downloadRefiner(CUTOUT_REFINER, onProgress, signal)
       });
     }
     if (!pendingParts.length) return true;
@@ -173,18 +226,12 @@ export function useCutoutInference() {
     );
     let completedWork = 0;
     let activePart: PendingResourcePart | null = null;
-
     try {
       for (const part of pendingParts) {
         activePart = part;
         setResourcePartStatus(part.id, "downloading");
         await part.install(
-          (next) => updateResourceProgress(
-            next,
-            part.sizeBytes,
-            completedWork,
-            totalWork
-          ),
+          (next) => updateResourceProgress(next, part.sizeBytes, completedWork, totalWork),
           controller.signal
         );
         completedWork += part.sizeBytes * INSTALL_STAGE_COUNT;
@@ -194,20 +241,54 @@ export function useCutoutInference() {
       return true;
     } catch (exception) {
       if (activePart) {
-        setResourcePartStatus(
-          activePart.id,
-          controller.signal.aborted ? "missing" : "error"
-        );
+        setResourcePartStatus(activePart.id, controller.signal.aborted ? "missing" : "error");
       }
       error.value = controller.signal.aborted
         ? "资源包安装已取消。"
-        : exception instanceof Error
-          ? exception.message
-          : "AI 抠图资源包安装失败。";
+        : exception instanceof Error ? exception.message : "AI 抠图资源包安装失败。";
       return false;
     } finally {
       phase.value = "idle";
       resourceProgress.value = null;
+      abortController.value = null;
+    }
+  }
+
+  async function installRepairResource() {
+    if (phase.value !== "idle") return false;
+    error.value = "";
+    if (!localModelsSupported) {
+      error.value = "浏览器预览不能安装背景修复模型，请在桌面客户端中使用。";
+      return false;
+    }
+    if (!repairStatusChecked.value) await refreshRepairResourceStatus();
+    if (repairStatus.value === "ready") return true;
+    const controller = new AbortController();
+    abortController.value = controller;
+    repairStatus.value = "downloading";
+    phase.value = "downloading";
+    repairProgress.value = { stage: "downloading", percent: 0 };
+    try {
+      await downloadRepairModel((next) => {
+        phase.value = next.stage;
+        repairProgress.value = {
+          stage: next.stage,
+          percent: next.totalBytes > 0
+            ? Math.min(100, Math.round(next.receivedBytes / next.totalBytes * 100))
+            : 0
+        };
+      }, controller.signal);
+      repairStatus.value = "ready";
+      return true;
+    } catch (exception) {
+      repairStatus.value = controller.signal.aborted ? "missing" : "error";
+      error.value = controller.signal.aborted
+        ? "背景修复模型安装已取消。"
+        : exception instanceof Error ? exception.message : "背景修复模型安装失败。";
+      return false;
+    } finally {
+      phase.value = "idle";
+      repairProgress.value = null;
       abortController.value = null;
     }
   }
@@ -217,22 +298,49 @@ export function useCutoutInference() {
     void cancelInferenceRun().catch(() => undefined);
   }
 
+  function validateAutomaticRelations(
+    selections: CutoutSelection[],
+    masks: ReadonlyMap<string, Uint8Array>
+  ) {
+    const resolved = cloneCutoutSelections(selections);
+    for (const child of resolved) {
+      if (!child.parentId || child.relationSource !== "auto") continue;
+      const childMask = masks.get(child.id);
+      const parentMask = masks.get(child.parentId);
+      if (!childMask || !parentMask ||
+        maskContainment(childMask, parentMask) < MIN_ALPHA_CONTAINMENT) {
+        child.parentId = null;
+        child.behavior = "extract";
+        child.relationSource = "manual";
+      }
+    }
+    for (const selection of resolved) {
+      if (selection.relationSource === "auto") {
+        selection.behavior = resolved.some((item) => item.parentId === selection.id)
+          ? "background"
+          : "extract";
+      }
+    }
+    return resolved;
+  }
+
   async function segmentSelections(
     image: CanvasImageSource,
     imageWidth: number,
     imageHeight: number,
-    selections: CutoutSelectionBox[],
+    inputSelections: CutoutSelection[],
     baseName: string,
-    onResult: (result: CutoutResult) => void
+    onResult: (result: CutoutResult) => void,
+    options: CutoutSegmentationOptions
   ): Promise<CutoutResult[]> {
     if (phase.value !== "idle") return [];
-    if (!selections.length) {
+    if (!inputSelections.length) {
       error.value = "请先在画布上框选要抠取的元素。";
       return [];
     }
 
     phase.value = "processing";
-    progress.value = { current: 1, total: selections.length, stage: "segmenting" };
+    progress.value = { current: 1, total: inputSelections.length, stage: "segmenting" };
     error.value = "";
     const controller = new AbortController();
     abortController.value = controller;
@@ -247,10 +355,10 @@ export function useCutoutInference() {
       refinerStatus.value = nextRefinerStatus;
       resourceStatusChecked.value = true;
       if (nextSegmenterStatus !== "ready" || nextRefinerStatus !== "ready") {
-        error.value = "请先下载完整的 AI 抠图资源包。";
-        return [];
+        throw new Error("请先下载完整的 AI 抠图资源包。");
       }
 
+      const selections = cloneCutoutSelections(inputSelections);
       const embedding = await encodeCutoutImage(
         CUTOUT_MODEL,
         image,
@@ -258,28 +366,19 @@ export function useCutoutInference() {
         imageHeight,
         controller.signal
       );
+      const refinedMasks = new Map<string, Uint8Array>();
       for (let index = 0; index < selections.length; index += 1) {
-        if (controller.signal.aborted) {
-          throw new DOMException("抠图已取消。", "AbortError");
-        }
+        if (controller.signal.aborted) throw abortError();
         const selection = selections[index];
-        progress.value = {
-          current: index + 1,
-          total: selections.length,
-          stage: "segmenting"
-        };
+        progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
         const mask = await decodeCutoutBox(
           CUTOUT_MODEL,
           embedding,
           selection,
           controller.signal
         );
-        progress.value = {
-          current: index + 1,
-          total: selections.length,
-          stage: "refining"
-        };
-        const refinedMask = await refineCutoutMask(
+        progress.value = { current: index + 1, total: selections.length, stage: "refining" };
+        refinedMasks.set(selection.id, await refineCutoutMask(
           CUTOUT_REFINER,
           image,
           imageWidth,
@@ -287,30 +386,185 @@ export function useCutoutInference() {
           mask,
           selection,
           controller.signal
-        );
-        const { blob, width, height, thumbnailUrl } = await maskToTransparentPng(
+        ));
+      }
+
+      const resolvedSelections = validateAutomaticRelations(selections, refinedMasks);
+      options.onSelectionsResolved?.(cloneCutoutSelections(resolvedSelections));
+      const foregroundSelections = resolvedSelections.filter(
+        (selection) => selection.behavior === "extract"
+      );
+      for (let index = 0; index < foregroundSelections.length; index += 1) {
+        const selection = foregroundSelections[index];
+        const alpha = refinedMasks.get(selection.id);
+        if (!alpha) continue;
+        const exported = await maskToTransparentPng(
           image,
           imageWidth,
           imageHeight,
-          refinedMask,
+          alpha,
           selection
         );
         const result: CutoutResult = {
           id: `${selection.id}-${Date.now()}-${index}`,
-          blob,
-          thumbnailUrl,
-          width,
-          height,
+          ...exported,
           sourceBox: selection,
+          sourceSelectionId: selection.id,
+          kind: "foreground",
           baseName: `${baseName}-cutout-${index + 1}`
         };
         results.push(result);
         onResult(result);
+      }
+
+      const backgroundSelections = resolvedSelections.filter(
+        (selection) => selection.behavior === "background"
+      );
+      const repairMasks = new Map<string, Uint8Array>();
+      for (let index = 0; index < backgroundSelections.length; index += 1) {
+        if (controller.signal.aborted) throw abortError();
+        const parent = backgroundSelections[index];
+        const parentAlpha = refinedMasks.get(parent.id);
+        if (!parentAlpha) continue;
+        const smartMasks = new Map<string, Uint8Array>();
+        for (const stroke of parent.removalStrokes) {
+          if (!stroke.smart || stroke.operation !== "add") continue;
+          const points = sampleStrokePoints(stroke);
+          const candidates = await decodeCutoutCandidates(
+            CUTOUT_MODEL,
+            embedding,
+            {
+              box: parent,
+              points: points.map((point) => ({ ...point, label: 1 as const }))
+            },
+            controller.signal
+          );
+          const candidate = chooseSmartRemovalCandidate(
+            candidates,
+            points,
+            imageWidth,
+            imageHeight,
+            parent
+          );
+          if (candidate) smartMasks.set(stroke.id, candidate);
+        }
+        const childAlphas = selectionChildren(resolvedSelections, parent.id)
+          .map((child) => refinedMasks.get(child.id))
+          .filter((mask): mask is Uint8Array => Boolean(mask));
+        const combined = buildRemovalMask({
+          width: imageWidth,
+          height: imageHeight,
+          parent,
+          parentAlpha,
+          childAlphas,
+          strokes: parent.removalStrokes,
+          smartMasks
+        });
+        repairMasks.set(
+          parent.id,
+          hasMask(combined)
+            ? prepareRepairMask(combined, imageWidth, imageHeight, parent)
+            : combined
+        );
+      }
+
+      const cloudBackgroundSelections = backgroundSelections.filter((selection) => {
+        const mask = repairMasks.get(selection.id);
+        return Boolean(mask && hasMask(mask));
+      });
+      const nonEmptyRepairMasks = cloudBackgroundSelections
+        .map((selection) => repairMasks.get(selection.id))
+        .filter((mask): mask is Uint8Array => Boolean(mask));
+      if (nonEmptyRepairMasks.length) {
+        await releaseInferenceSession(CUTOUT_MODEL.id);
+      }
+      let cloudRepairedSource: CanvasImageSource | null = null;
+      if (options.repairMode === "cloud" && nonEmptyRepairMasks.length) {
+        if (!options.cloudRepair) throw new Error("云端背景修复服务当前不可用。");
+        const cloudRepairMask = unionMasks(nonEmptyRepairMasks);
+        progress.value = { current: 1, total: 1, stage: "uploading" };
+        const repairedResponse = await options.cloudRepair(
+          cloudRepairMask,
+          cloudBackgroundSelections,
+          {
+            signal: controller.signal,
+            setStage: (stage) => {
+              progress.value = { current: 1, total: 1, stage };
+            }
+          }
+        );
+        try {
+          cloudRepairedSource = compositeRepairedImage(
+            image,
+            repairedResponse,
+            cloudRepairMask,
+            imageWidth,
+            imageHeight
+          );
+        } finally {
+          if (typeof ImageBitmap !== "undefined" && repairedResponse instanceof ImageBitmap) {
+            repairedResponse.close();
+          }
+        }
+      }
+
+      for (let index = 0; index < backgroundSelections.length; index += 1) {
+        if (controller.signal.aborted) throw abortError();
+        const selection = backgroundSelections[index];
+        const parentAlpha = refinedMasks.get(selection.id);
+        const repairMask = repairMasks.get(selection.id);
+        if (!parentAlpha || !repairMask) continue;
         progress.value = {
-          current: results.length,
-          total: selections.length,
-          stage: "refining"
+          current: index + 1,
+          total: backgroundSelections.length,
+          stage: "repairing"
         };
+        let repairedSource: CanvasImageSource = image;
+        if (hasMask(repairMask)) {
+          if (options.repairMode === "local") {
+            const nextRepairStatus = await getRepairModelStatus();
+            repairStatus.value = nextRepairStatus;
+            repairStatusChecked.value = true;
+            if (nextRepairStatus !== "ready") {
+              throw new Error("请先下载本地背景修复模型。");
+            }
+            repairedSource = await repairBackgroundLocally(
+              image,
+              imageWidth,
+              imageHeight,
+              repairMask,
+              parentAlpha,
+              selection,
+              {
+                signal: controller.signal,
+                forceDiffusion: shouldForceManualDiffusion(
+                  selection,
+                  selectionChildren(resolvedSelections, selection.id).length > 0
+                )
+              }
+            );
+          } else if (cloudRepairedSource) {
+            repairedSource = cloudRepairedSource;
+          }
+        }
+        const exported = await maskToTransparentPng(
+          repairedSource,
+          imageWidth,
+          imageHeight,
+          parentAlpha,
+          selection
+        );
+        const result: CutoutResult = {
+          id: `${selection.id}-${Date.now()}-background-${index}`,
+          ...exported,
+          sourceBox: selection,
+          sourceSelectionId: selection.id,
+          kind: "background",
+          repairMode: options.repairMode,
+          baseName: `${baseName}-background-${index + 1}`
+        };
+        results.push(result);
+        onResult(result);
       }
       return results;
     } catch (exception) {
@@ -318,7 +572,9 @@ export function useCutoutInference() {
         ? "抠图已取消。"
         : exception instanceof Error
           ? exception.message
-          : "抠图失败，请稍后重试。";
+          : typeof exception === "string" && exception.trim()
+            ? exception.trim()
+            : "抠图失败，请稍后重试。";
       return results;
     } finally {
       phase.value = "idle";
@@ -327,7 +583,7 @@ export function useCutoutInference() {
     }
   }
 
-  void refreshResourceStatus();
+  void Promise.all([refreshResourceStatus(), refreshRepairResourceStatus()]);
 
   onBeforeUnmount(() => {
     abortController.value?.abort();
@@ -339,11 +595,16 @@ export function useCutoutInference() {
     resourceStatus,
     resourceProgress: readonly(resourceProgress),
     resourceDownloadSizeBytes: RESOURCE_DOWNLOAD_SIZE_BYTES,
+    repairResourceStatus,
+    repairProgress: readonly(repairProgress),
+    repairDownloadSizeBytes: CUTOUT_REPAIR_MODEL.sizeBytes,
     progress: readonly(progress),
     error: readonly(error),
     localModelsSupported,
     refreshResourceStatus,
+    refreshRepairResourceStatus,
     installResourcePackage,
+    installRepairResource,
     segmentSelections,
     cancel
   };

@@ -71,6 +71,14 @@ struct RefinerSpec {
     crc32: u32,
 }
 
+#[derive(Clone, Copy)]
+struct RepairSpec {
+    id: &'static str,
+    file: ModelFileSpec,
+    input_width: usize,
+    input_height: usize,
+}
+
 const CUTOUT_MODELS: [ModelSpec; 1] = [ModelSpec {
     id: "sam2.1-hiera-base-plus-quantized",
     encoder: ModelFileSpec {
@@ -106,6 +114,17 @@ const CUTOUT_REFINER: RefinerSpec = RefinerSpec {
     crc32: 0xa0a30d4f,
 };
 
+const CUTOUT_REPAIRER: RepairSpec = RepairSpec {
+    id: "big-lama-fp32-512",
+    file: ModelFileSpec {
+        file_name: "cutout-repair-big-lama-fp32.onnx",
+        size_bytes: 208_044_816,
+        sha256: "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+    },
+    input_width: 512,
+    input_height: 512,
+};
+
 struct ImageEmbeddingFeature {
     shape: Vec<i64>,
     data: Vec<f32>,
@@ -127,10 +146,16 @@ struct LoadedRefiner {
     session: Session,
 }
 
+struct LoadedRepairer {
+    spec: RepairSpec,
+    session: Session,
+}
+
 #[derive(Default)]
 struct InferenceState {
     loaded: Option<LoadedModel>,
     refiner: Option<LoadedRefiner>,
+    repairer: Option<LoadedRepairer>,
     next_embedding_id: u64,
 }
 
@@ -235,6 +260,14 @@ fn find_refiner(model_id: &str) -> Result<RefinerSpec, String> {
     }
 }
 
+fn find_repairer(model_id: &str) -> Result<RepairSpec, String> {
+    if model_id == CUTOUT_REPAIRER.id {
+        Ok(CUTOUT_REPAIRER)
+    } else {
+        Err("当前背景修复模型不受支持。".to_string())
+    }
+}
+
 fn raw_request_bytes(request: &Request<'_>) -> Result<Vec<u8>, String> {
     match request.body() {
         InvokeBody::Raw(bytes) => Ok(bytes.clone()),
@@ -273,6 +306,17 @@ fn parse_refine_request(request: Request<'_>) -> Result<(String, usize, usize, V
     Ok((model_id, width, height, raw_request_bytes(&request)?))
 }
 
+fn parse_repair_request(request: Request<'_>) -> Result<(String, Vec<u8>), String> {
+    let model_id = request
+        .headers()
+        .get("x-cutout-repair-id")
+        .ok_or_else(|| "背景修复请求缺少模型标识。".to_string())?
+        .to_str()
+        .map_err(|_| "背景修复模型标识无效。".to_string())?
+        .to_string();
+    Ok((model_id, raw_request_bytes(&request)?))
+}
+
 fn models_directory(app: &AppHandle) -> Result<PathBuf, String> {
     let models_dir = app
         .path()
@@ -299,6 +343,10 @@ fn model_paths(app: &AppHandle, spec: ModelSpec) -> Result<ModelPaths, String> {
 
 fn refiner_path(app: &AppHandle, spec: RefinerSpec) -> Result<PathBuf, String> {
     Ok(models_directory(app)?.join(spec.file_name))
+}
+
+fn repairer_path(app: &AppHandle, spec: RepairSpec) -> Result<PathBuf, String> {
+    Ok(models_directory(app)?.join(spec.file.file_name))
 }
 
 fn validate_file_metadata(path: &Path, expected_size: u64, label: &str) -> Result<File, String> {
@@ -445,6 +493,46 @@ fn validate_refiner_contract(session: &Session) -> Result<(), String> {
     } else {
         Err("精修模型输入输出与当前抠图协议不兼容。".to_string())
     }
+}
+
+fn validate_repairer_contract(session: &Session) -> Result<(), String> {
+    let has_image = session.inputs.iter().any(|input| input.name == "image");
+    let has_mask = session.inputs.iter().any(|input| input.name == "mask");
+    let has_output = session.outputs.iter().any(|output| output.name == "output");
+    if has_image && has_mask && has_output {
+        Ok(())
+    } else {
+        Err("背景修复模型输入输出与当前协议不兼容。".to_string())
+    }
+}
+
+fn decode_repair_float_bytes(
+    bytes: Vec<u8>,
+    spec: RepairSpec,
+) -> Result<(Vec<f32>, Vec<f32>), String> {
+    let plane_size = spec
+        .input_width
+        .checked_mul(spec.input_height)
+        .ok_or_else(|| "背景修复输入尺寸无效。".to_string())?;
+    let expected_values = plane_size
+        .checked_mul(4)
+        .ok_or_else(|| "背景修复输入尺寸无效。".to_string())?;
+    if bytes.len() != expected_values * std::mem::size_of::<f32>() {
+        return Err("背景修复输入数据不完整。".to_string());
+    }
+    let mut values = Vec::with_capacity(expected_values);
+    for chunk in bytes.chunks_exact(4) {
+        let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err("背景修复输入包含无效像素。".to_string());
+        }
+        values.push(value);
+    }
+    let mask = &values[plane_size * 3..];
+    if !mask.iter().any(|value| *value > 0.0) {
+        return Err("背景修复蒙版不能为空。".to_string());
+    }
+    Ok((values[..plane_size * 3].to_vec(), mask.to_vec()))
 }
 
 fn decode_float_bytes(bytes: Vec<u8>, expected_values: usize) -> Result<Vec<f32>, String> {
@@ -818,6 +906,21 @@ fn refiner_output_alpha(
         .collect())
 }
 
+fn repairer_output_rgb(shape: &[i64], values: &[f32], spec: RepairSpec) -> Result<Vec<u8>, String> {
+    let expected_shape = [1_i64, 3, spec.input_height as i64, spec.input_width as i64];
+    let expected_values = spec.input_width * spec.input_height * 3;
+    if shape != expected_shape || values.len() != expected_values {
+        return Err(format!("背景修复模型返回了不兼容的图片尺寸：{shape:?}。"));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("背景修复模型返回了无效像素。".to_string());
+    }
+    Ok(values
+        .iter()
+        .map(|value| value.clamp(0.0, 255.0).round() as u8)
+        .collect())
+}
+
 fn decode_mask(app: &AppHandle, request: DecodeRequest) -> Result<Response, String> {
     let state = app.state::<CutoutState>();
     let epoch = state.cancel_epoch.load(Ordering::SeqCst);
@@ -1015,6 +1118,66 @@ fn refine_mask(
     )?))
 }
 
+fn repair_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Response, String> {
+    let state = app.state::<CutoutState>();
+    let epoch = state.cancel_epoch.load(Ordering::SeqCst);
+    let spec = find_repairer(&model_id)?;
+    let (image, mask) = decode_repair_float_bytes(bytes, spec)?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+
+    let mut inference = state.inference()?;
+    if inference
+        .repairer
+        .as_ref()
+        .is_none_or(|loaded| loaded.spec.id != spec.id)
+    {
+        inference.repairer = None;
+        let path = repairer_path(app, spec)?;
+        validate_sam_model_file(&path, spec.file, "背景修复模型", &state, epoch)?;
+        let session = create_session(&path, "背景修复模型")?;
+        validate_repairer_contract(&session)?;
+        inference.repairer = Some(LoadedRepairer { spec, session });
+    }
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+
+    let repairer = inference
+        .repairer
+        .as_mut()
+        .ok_or_else(|| "背景修复模型会话创建失败。".to_string())?;
+    let image_tensor =
+        Tensor::from_array(([1_usize, 3, spec.input_height, spec.input_width], image))
+            .map_err(|error| format!("无法创建背景修复图片输入：{error}"))?;
+    let mask_tensor = Tensor::from_array(([1_usize, 1, spec.input_height, spec.input_width], mask))
+        .map_err(|error| format!("无法创建背景修复蒙版输入：{error}"))?;
+    let run_options = state.begin_run(epoch)?;
+    let outputs = repairer.session.run_with_options(
+        ort::inputs! { "image" => image_tensor, "mask" => mask_tensor },
+        run_options.as_ref(),
+    );
+    state.finish_run(&run_options);
+    let outputs = outputs.map_err(|error| {
+        if state.is_cancelled(epoch) {
+            cancelled_error()
+        } else {
+            format!("背景修复模型推理失败：{error}")
+        }
+    })?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+    let output = outputs
+        .get("output")
+        .ok_or_else(|| "背景修复模型未返回图片。".to_string())?;
+    let (shape, values) = output
+        .try_extract_tensor::<f32>()
+        .map_err(|error| format!("背景修复模型输出无效：{error}"))?;
+    Ok(Response::new(repairer_output_rgb(shape, values, spec)?))
+}
+
 #[tauri::command]
 pub async fn cutout_encode(app: AppHandle, request: Request<'_>) -> Result<EncodeResponse, String> {
     let (model_id, bytes) = parse_encode_request(request)?;
@@ -1044,6 +1207,15 @@ pub async fn cutout_refine(app: AppHandle, request: Request<'_>) -> Result<Respo
 }
 
 #[tauri::command]
+pub async fn cutout_repair(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+    let (model_id, bytes) = parse_repair_request(request)?;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || repair_image(&task_app, model_id, bytes))
+        .await
+        .map_err(|error| format!("原生背景修复任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub fn cutout_cancel(state: State<'_, CutoutState>) {
     state.cancel();
 }
@@ -1068,6 +1240,7 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
             inference.loaded = None;
         }
         inference.refiner = None;
+        inference.repairer = None;
         Ok(())
     })
     .await
@@ -1077,8 +1250,10 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_candidate_response, mask_logit_to_alpha, refiner_output_alpha,
-        select_best_mask_alpha, validate_prompts, DecodeRequest, CUTOUT_MODELS,
+        decode_repair_float_bytes, encode_candidate_response, find_repairer, mask_logit_to_alpha,
+        refiner_output_alpha, repairer_output_rgb, select_best_mask_alpha, validate_prompts,
+        validate_sam_model_file, CutoutState, DecodeRequest, ModelFileSpec, CUTOUT_MODELS,
+        CUTOUT_REPAIRER,
     };
 
     fn decode_request(
@@ -1169,7 +1344,10 @@ mod tests {
         }
         let planes_offset = 1 + 3 * 4;
         assert_eq!(bytes[planes_offset..planes_offset + 4], [0, 0, 0, 0]);
-        assert_eq!(bytes[planes_offset + 4..planes_offset + 8], [0, 128, 255, 255]);
+        assert_eq!(
+            bytes[planes_offset + 4..planes_offset + 8],
+            [0, 128, 255, 255]
+        );
         assert_eq!(bytes[planes_offset + 8..], [255, 255, 255, 255]);
     }
 
@@ -1191,9 +1369,8 @@ mod tests {
 
         let path = std::env::var("CUTOUT_DECODER_PATH")
             .expect("请通过 CUTOUT_DECODER_PATH 指定 decoder onnx 路径");
-        let mut session =
-            super::create_session(std::path::Path::new(&path), "SAM 2.1 decoder")
-                .expect("decoder session");
+        let mut session = super::create_session(std::path::Path::new(&path), "SAM 2.1 decoder")
+            .expect("decoder session");
         super::validate_decoder_contract(&session).expect("decoder contract");
 
         let [embedding_0, embedding_1, embedding_2] = super::EMBEDDING_SHAPES.map(|shape| {
@@ -1206,8 +1383,8 @@ mod tests {
                 .expect("points tensor");
         let input_labels =
             Tensor::from_array(([1_usize, 1, 2], vec![1_i64, 0])).expect("labels tensor");
-        let input_boxes = Tensor::<f32>::new(&Allocator::default(), [1_i64, 0, 4])
-            .expect("empty boxes tensor");
+        let input_boxes =
+            Tensor::<f32>::new(&Allocator::default(), [1_i64, 0, 4]).expect("empty boxes tensor");
 
         let outputs = session
             .run(ort::inputs! {
@@ -1230,14 +1407,9 @@ mod tests {
             .expect("iou_scores output")
             .try_extract_tensor::<f32>()
             .expect("scores tensor");
-        let (candidate_count, plane_size) = super::candidate_mask_layout(
-            mask_shape,
-            mask_data.len(),
-            iou_data.len(),
-            256,
-            256,
-        )
-        .expect("candidate layout");
+        let (candidate_count, plane_size) =
+            super::candidate_mask_layout(mask_shape, mask_data.len(), iou_data.len(), 256, 256)
+                .expect("candidate layout");
 
         println!("candidates: {candidate_count}, plane: {plane_size}, scores: {iou_data:?}");
         assert!(candidate_count >= 1);
@@ -1293,5 +1465,135 @@ mod tests {
             .expect_err("refiner output shape should be validated");
 
         assert!(error.contains("不兼容的 alpha 尺寸"));
+    }
+
+    #[test]
+    fn repairer_whitelist_rejects_unknown_models() {
+        assert!(find_repairer(CUTOUT_REPAIRER.id).is_ok());
+        assert_eq!(
+            find_repairer("untrusted-repair-model").err().as_deref(),
+            Some("当前背景修复模型不受支持。")
+        );
+    }
+
+    #[test]
+    fn repair_command_is_allowed_by_the_desktop_capability() {
+        let permissions = include_str!("../permissions/cutout.toml");
+        assert!(permissions.contains("\"cutout_repair\""));
+    }
+
+    #[test]
+    fn repair_model_file_requires_the_pinned_sha256() {
+        let path =
+            std::env::temp_dir().join(format!("huanhua-repair-hash-{}.bin", std::process::id()));
+        let spec = ModelFileSpec {
+            file_name: "unused.bin",
+            size_bytes: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        let state = CutoutState::default();
+
+        std::fs::write(&path, b"abc").expect("temporary model should be writable");
+        assert!(validate_sam_model_file(&path, spec, "背景修复模型", &state, 0).is_ok());
+
+        std::fs::write(&path, b"abd").expect("temporary model should be replaceable");
+        assert_eq!(
+            validate_sam_model_file(&path, spec, "背景修复模型", &state, 0)
+                .err()
+                .as_deref(),
+            Some("背景修复模型 校验失败，请移除后重新下载模型。")
+        );
+        std::fs::remove_file(path).expect("temporary model should be removable");
+    }
+
+    #[test]
+    #[ignore = "需要通过 CUTOUT_REPAIR_MODEL_PATH 指定本机 Big-LaMa 模型文件"]
+    fn repairer_accepts_pinned_model() {
+        let path = std::env::var("CUTOUT_REPAIR_MODEL_PATH")
+            .expect("CUTOUT_REPAIR_MODEL_PATH must point to the pinned model");
+        let spec = CUTOUT_REPAIRER;
+        let mut session = super::create_session(std::path::Path::new(&path), "背景修复模型")
+            .expect("repair session should load");
+        super::validate_repairer_contract(&session).expect("repair contract should match");
+        let plane_size = spec.input_width * spec.input_height;
+        let image = vec![0.5_f32; plane_size * 3];
+        let mut mask = vec![0.0_f32; plane_size];
+        mask[(spec.input_height / 2) * spec.input_width + spec.input_width / 2] = 1.0;
+        let image_tensor = ort::value::Tensor::from_array((
+            [1_usize, 3, spec.input_height, spec.input_width],
+            image,
+        ))
+        .expect("repair image tensor should be valid");
+        let mask_tensor = ort::value::Tensor::from_array((
+            [1_usize, 1, spec.input_height, spec.input_width],
+            mask,
+        ))
+        .expect("repair mask tensor should be valid");
+        let outputs = session
+            .run(ort::inputs! { "image" => image_tensor, "mask" => mask_tensor })
+            .expect("repair inference should succeed");
+        let output = outputs.get("output").expect("repair output should exist");
+        let (shape, values) = output
+            .try_extract_tensor::<f32>()
+            .expect("repair output should be float32");
+        super::repairer_output_rgb(shape, values, spec)
+            .expect("repair output shape and pixels should be valid");
+    }
+
+    #[test]
+    fn repair_input_rejects_invalid_length_range_and_empty_mask() {
+        let spec = CUTOUT_REPAIRER;
+        assert_eq!(
+            decode_repair_float_bytes(Vec::new(), spec).unwrap_err(),
+            "背景修复输入数据不完整。"
+        );
+
+        let plane_size = spec.input_width * spec.input_height;
+        let mut values = vec![0.5_f32; plane_size * 4];
+        values[plane_size * 3] = 2.0;
+        let invalid_range = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<u8>>();
+        assert_eq!(
+            decode_repair_float_bytes(invalid_range, spec).unwrap_err(),
+            "背景修复输入包含无效像素。"
+        );
+
+        values[plane_size * 3] = 0.0;
+        values[plane_size * 3..].fill(0.0);
+        let empty_mask = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<u8>>();
+        assert_eq!(
+            decode_repair_float_bytes(empty_mask, spec).unwrap_err(),
+            "背景修复蒙版不能为空。"
+        );
+    }
+
+    #[test]
+    fn repair_output_validates_shape_and_clamps_pixels() {
+        let spec = CUTOUT_REPAIRER;
+        let pixel_count = spec.input_width * spec.input_height * 3;
+        let mut values = vec![127.4_f32; pixel_count];
+        values[0] = -10.0;
+        values[1] = 300.0;
+        let output = repairer_output_rgb(
+            &[1, 3, spec.input_height as i64, spec.input_width as i64],
+            &values,
+            spec,
+        )
+        .expect("repair output should be accepted");
+        assert_eq!(&output[..3], &[0, 255, 127]);
+        assert!(repairer_output_rgb(&[1, 3, 1, 1], &values, spec).is_err());
+    }
+
+    #[test]
+    fn cancel_changes_the_active_epoch() {
+        let state = CutoutState::default();
+        assert!(!state.is_cancelled(0));
+        state.cancel();
+        assert!(state.is_cancelled(0));
     }
 }

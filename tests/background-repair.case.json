@@ -1,0 +1,38 @@
+{
+  "image": "test.png",
+  "outputDirectory": "output/background-repair",
+  "selection": {
+    "x": 476,
+    "y": 395,
+    "width": 234,
+    "height": 249
+  },
+  "parentAlpha": [
+    {
+      "type": "roundedRect",
+      "x": 13,
+      "y": 20,
+      "width": 204,
+      "height": 215,
+      "radius": 34
+    }
+  ],
+  "removalMask": [
+    {
+      "type": "roundedRect",
+      "x": 53,
+      "y": 29,
+      "width": 133,
+      "height": 139,
+      "radius": 40
+    },
+    {
+      "type": "roundedRect",
+      "x": 51,
+      "y": 139,
+      "width": 137,
+      "height": 79,
+      "radius": 20
+    }
+  ]
+}

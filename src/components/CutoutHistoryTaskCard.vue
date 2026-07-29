@@ -23,6 +23,9 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 
 const previewAssets = computed(() => props.record.assets.slice(0, 4));
 const remainingCount = computed(() => Math.max(0, props.record.assets.length - 4));
+const backgroundCount = computed(() =>
+  props.record.assets.filter((asset) => asset.kind === "background").length
+);
 const previewCountClass = computed(() => `count-${Math.min(4, previewAssets.value.length)}`);
 
 function openContextMenu(event: MouseEvent) {
@@ -63,7 +66,7 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
         >
           <img
             :src="asset.thumbnailUrl"
-            :alt="`透明素材 ${asset.width}×${asset.height}`"
+            :alt="`${asset.kind === 'background' ? '背景' : '透明素材'} ${asset.width}×${asset.height}`"
             loading="lazy"
             decoding="async"
           />
@@ -74,7 +77,7 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
       </span>
       <span class="cutout-history-status"><i aria-hidden="true" />已完成</span>
       <span class="cutout-history-count">
-        {{ record.assets.length }} 个素材<span v-if="remainingCount"> · +{{ remainingCount }}</span>
+        {{ record.assets.length }} 个结果<span v-if="backgroundCount"> · {{ backgroundCount }} 背景</span><span v-if="remainingCount"> · +{{ remainingCount }}</span>
       </span>
     </button>
 

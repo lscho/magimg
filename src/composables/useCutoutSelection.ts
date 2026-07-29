@@ -4,14 +4,36 @@ import {
   readonly,
   shallowRef
 } from "vue";
-import type { CutoutSelectionBox } from "@/types";
+import {
+  applyAutomaticNesting,
+  cloneCutoutSelections,
+  setSelectionBackground,
+  setSelectionIndependent,
+  translateCutoutSelection
+} from "@/services/cutoutSelectionModel";
+import type {
+  CutoutBrushOperation,
+  CutoutRemovalStroke,
+  CutoutSelection,
+  CutoutSelectionBox
+} from "@/types";
 
 interface CutoutCanvasElements {
   baseCanvas: HTMLCanvasElement;
   viewport: HTMLElement;
 }
 
-export type CutoutTool = "box" | "pan";
+export type CutoutTool = "box" | "erase" | "pan";
+
+interface SelectionMoveState {
+  id: string;
+  originX: number;
+  originY: number;
+  selectionX: number;
+  selectionY: number;
+  snapshot: CutoutSelection[];
+  moved: boolean;
+}
 
 const MIN_ZOOM_PERCENT = 25;
 const MAX_ZOOM_PERCENT = 400;
@@ -30,17 +52,13 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function cloneSelections(selections: CutoutSelectionBox[]) {
-  return selections.map((selection) => ({ ...selection }));
-}
-
 /**
  * 管理抠图画布的图片预览、缩放、拖动与矩形选区。
  * 选框使用原生 pointer 事件和 DOM 覆盖层，坐标始终保存为原图像素。
  */
 export function useCutoutSelection(
   imageSource: { blob: Blob; mimeType: string } | null,
-  initialSelections: CutoutSelectionBox[] = []
+  initialSelections: (CutoutSelectionBox | CutoutSelection)[] = []
 ) {
   const ready = shallowRef(false);
   const busy = shallowRef(false);
@@ -55,11 +73,17 @@ export function useCutoutSelection(
   const panX = shallowRef(0);
   const panY = shallowRef(0);
   const panning = shallowRef(false);
-  const initialSelectionSnapshot = cloneSelections(initialSelections);
-  const selections = shallowRef<CutoutSelectionBox[]>(initialSelectionSnapshot);
+  const movingSelectionId = shallowRef<string | null>(null);
+  const activeSelectionId = shallowRef<string | null>(null);
+  const brushOperation = shallowRef<CutoutBrushOperation>("add");
+  const brushRadius = shallowRef(24);
+  const smartBrush = shallowRef(true);
+  const initialSelectionSnapshot = applyAutomaticNesting(initialSelections);
+  const selections = shallowRef<CutoutSelection[]>(initialSelectionSnapshot);
   const draftBox = shallowRef<CutoutSelectionBox | null>(null);
-  const history = shallowRef<CutoutSelectionBox[][]>([
-    cloneSelections(initialSelectionSnapshot)
+  const draftStroke = shallowRef<CutoutRemovalStroke | null>(null);
+  const history = shallowRef<CutoutSelection[][]>([
+    cloneCutoutSelections(initialSelectionSnapshot)
   ]);
   const historyIndex = shallowRef(0);
 
@@ -68,6 +92,7 @@ export function useCutoutSelection(
   let sourceBitmap: ImageBitmap | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let drawingOrigin: { x: number; y: number } | null = null;
+  let selectionMove: SelectionMoveState | null = null;
   let panStartX = 0;
   let panStartY = 0;
   let panOriginX = 0;
@@ -76,6 +101,9 @@ export function useCutoutSelection(
   const canClear = computed(() => selections.value.length > 0);
   const canUndo = computed(() => historyIndex.value > 0);
   const canRedo = computed(() => historyIndex.value < history.value.length - 1);
+  const activeSelection = computed(() =>
+    selections.value.find((selection) => selection.id === activeSelectionId.value) ?? null
+  );
 
   async function initialize(elements: CutoutCanvasElements) {
     baseCanvas = elements.baseCanvas;
@@ -150,6 +178,8 @@ export function useCutoutSelection(
 
   function setTool(tool: CutoutTool) {
     cancelBox();
+    cancelStroke();
+    cancelMoveSelection();
     endPan();
     activeTool.value = tool;
   }
@@ -215,6 +245,69 @@ export function useCutoutSelection(
     panning.value = false;
   }
 
+  function beginMoveSelection(
+    selectionId: string,
+    clientX: number,
+    clientY: number
+  ): boolean {
+    if (activeTool.value !== "box" || !ready.value || busy.value) return false;
+    const selection = selections.value.find((candidate) => candidate.id === selectionId);
+    if (!selection) return false;
+    const point = clientToImage(clientX, clientY);
+    selectionMove = {
+      id: selection.id,
+      originX: point.x,
+      originY: point.y,
+      selectionX: selection.x,
+      selectionY: selection.y,
+      snapshot: cloneCutoutSelections(selections.value),
+      moved: false
+    };
+    movingSelectionId.value = selection.id;
+    activeSelectionId.value = selection.id;
+    return true;
+  }
+
+  function moveSelectionFromClient(clientX: number, clientY: number) {
+    if (!selectionMove) return;
+    const point = clientToImage(clientX, clientY);
+    const nextX = selectionMove.selectionX + point.x - selectionMove.originX;
+    const nextY = selectionMove.selectionY + point.y - selectionMove.originY;
+    const next = translateCutoutSelection(
+      selectionMove.snapshot,
+      selectionMove.id,
+      nextX,
+      nextY,
+      imageWidth.value,
+      imageHeight.value,
+      false
+    );
+    const movedSelection = next.find((selection) => selection.id === selectionMove?.id);
+    if (!movedSelection) return;
+    selectionMove.moved = selectionMove.moved ||
+      movedSelection.x !== selectionMove.selectionX ||
+      movedSelection.y !== selectionMove.selectionY;
+    selections.value = next;
+  }
+
+  function finishMoveSelection() {
+    const move = selectionMove;
+    selectionMove = null;
+    movingSelectionId.value = null;
+    const current = move
+      ? selections.value.find((selection) => selection.id === move.id)
+      : null;
+    if (!move?.moved || !current ||
+      (current.x === move.selectionX && current.y === move.selectionY)) return;
+    commitSelections(selections.value);
+  }
+
+  function cancelMoveSelection() {
+    if (selectionMove) selections.value = cloneCutoutSelections(selectionMove.snapshot);
+    selectionMove = null;
+    movingSelectionId.value = null;
+  }
+
   function clientToImage(clientX: number, clientY: number) {
     if (!viewport) return { x: 0, y: 0, inside: false };
     const bounds = viewport.getBoundingClientRect();
@@ -248,6 +341,57 @@ export function useCutoutSelection(
     return true;
   }
 
+  function selectionContains(selection: CutoutSelection, x: number, y: number) {
+    return x >= selection.x && y >= selection.y &&
+      x <= selection.x + selection.width && y <= selection.y + selection.height;
+  }
+
+  function selectionAtPoint(x: number, y: number) {
+    return selections.value
+      .filter((selection) => selectionContains(selection, x, y))
+      .sort((a, b) => a.width * a.height - b.width * b.height)[0] ?? null;
+  }
+
+  function selectionAtClientPoint(clientX: number, clientY: number) {
+    const point = clientToImage(clientX, clientY);
+    return point.inside ? selectionAtPoint(point.x, point.y) : null;
+  }
+
+  function pointInsideSelection(selection: CutoutSelection, clientX: number, clientY: number) {
+    const point = clientToImage(clientX, clientY);
+    if (!point.inside || !selectionContains(selection, point.x, point.y)) return null;
+    return { x: point.x, y: point.y };
+  }
+
+  function beginStrokeFromClient(clientX: number, clientY: number): boolean {
+    if (activeTool.value !== "erase" || !ready.value || busy.value) return false;
+    const selection = activeSelection.value;
+    if (!selection || selection.behavior !== "background") return false;
+    const imagePoint = pointInsideSelection(selection, clientX, clientY);
+    if (!imagePoint) return false;
+    draftStroke.value = {
+      id: `cutout-stroke-${Date.now()}-${crypto.randomUUID()}`,
+      operation: brushOperation.value,
+      radius: brushRadius.value,
+      smart: smartBrush.value && brushOperation.value === "add",
+      points: [{ x: imagePoint.x, y: imagePoint.y }]
+    };
+    return true;
+  }
+
+  function updateStrokeFromClient(clientX: number, clientY: number) {
+    const stroke = draftStroke.value;
+    const selection = activeSelection.value;
+    if (!stroke || !selection) return;
+    const point = pointInsideSelection(selection, clientX, clientY);
+    if (!point) return;
+    const previous = stroke.points[stroke.points.length - 1];
+    if (Math.hypot(point.x - previous.x, point.y - previous.y) < Math.max(1, stroke.radius / 4)) {
+      return;
+    }
+    draftStroke.value = { ...stroke, points: [...stroke.points, point] };
+  }
+
   function updateBoxFromClient(clientX: number, clientY: number) {
     if (!drawingOrigin) return;
     const point = clientToImage(clientX, clientY);
@@ -260,12 +404,17 @@ export function useCutoutSelection(
     };
   }
 
-  function commitSelections(next: CutoutSelectionBox[]) {
-    const snapshot = cloneSelections(next);
+  function commitSelections(
+    next: readonly (CutoutSelectionBox | CutoutSelection)[],
+    resolveNesting = true
+  ) {
+    const snapshot = resolveNesting
+      ? applyAutomaticNesting(next)
+      : cloneCutoutSelections(next);
     selections.value = snapshot;
     history.value = [
       ...history.value.slice(0, historyIndex.value + 1),
-      cloneSelections(snapshot)
+      cloneCutoutSelections(snapshot)
     ];
     historyIndex.value += 1;
   }
@@ -278,16 +427,21 @@ export function useCutoutSelection(
     const minSize = 4 / Math.max(previewScale.value, 0.01);
     if (draft.width < minSize || draft.height < minSize) return;
 
-    const selection: CutoutSelectionBox = {
+    const selection: CutoutSelection = {
       id: nextSelectionId(),
       x: clamp(Math.round(draft.x), 0, imageWidth.value - 1),
       y: clamp(Math.round(draft.y), 0, imageHeight.value - 1),
       width: Math.max(1, Math.round(draft.width)),
-      height: Math.max(1, Math.round(draft.height))
+      height: Math.max(1, Math.round(draft.height)),
+      behavior: "extract",
+      parentId: null,
+      relationSource: "auto",
+      removalStrokes: []
     };
     selection.width = Math.min(selection.width, imageWidth.value - selection.x);
     selection.height = Math.min(selection.height, imageHeight.value - selection.y);
     commitSelections([...selections.value, selection]);
+    activeSelectionId.value = selection.id;
   }
 
   function cancelBox() {
@@ -295,27 +449,76 @@ export function useCutoutSelection(
     draftBox.value = null;
   }
 
+  function finishStroke() {
+    const stroke = draftStroke.value;
+    const selectionId = activeSelectionId.value;
+    draftStroke.value = null;
+    if (!stroke || !stroke.points.length || !selectionId) return;
+    commitSelections(
+      selections.value.map((selection) => selection.id === selectionId
+        ? { ...selection, removalStrokes: [...selection.removalStrokes, stroke] }
+        : selection),
+      false
+    );
+  }
+
+  function cancelStroke() {
+    draftStroke.value = null;
+  }
+
+  function selectSelection(id: string) {
+    if (selections.value.some((selection) => selection.id === id)) {
+      activeSelectionId.value = id;
+    }
+  }
+
+  function makeSelectionIndependent(id: string) {
+    commitSelections(setSelectionIndependent(selections.value, id), false);
+    activeSelectionId.value = id;
+  }
+
+  function makeSelectionBackground(id: string) {
+    commitSelections(setSelectionBackground(selections.value, id), false);
+    activeSelectionId.value = id;
+  }
+
+  function setBrushOperation(operation: CutoutBrushOperation) {
+    brushOperation.value = operation;
+  }
+
+  function setBrushRadius(radius: number) {
+    brushRadius.value = clamp(Math.round(radius), 4, 160);
+  }
+
+  function setSmartBrush(enabled: boolean) {
+    smartBrush.value = enabled;
+  }
+
   function removeSelection(id: string) {
     const next = selections.value.filter((selection) => selection.id !== id);
     if (next.length === selections.value.length) return;
     commitSelections(next);
+    if (activeSelectionId.value === id) activeSelectionId.value = null;
   }
 
   function clearSelections() {
     if (!selections.value.length) return;
     commitSelections([]);
+    activeSelectionId.value = null;
   }
 
   function undo() {
     if (!canUndo.value) return;
     historyIndex.value -= 1;
-    selections.value = cloneSelections(history.value[historyIndex.value]);
+    selections.value = cloneCutoutSelections(history.value[historyIndex.value]);
+    if (activeSelectionId.value && !activeSelection.value) activeSelectionId.value = null;
   }
 
   function redo() {
     if (!canRedo.value) return;
     historyIndex.value += 1;
-    selections.value = cloneSelections(history.value[historyIndex.value]);
+    selections.value = cloneCutoutSelections(history.value[historyIndex.value]);
+    if (activeSelectionId.value && !activeSelection.value) activeSelectionId.value = null;
   }
 
   function imageSourceForInference() {
@@ -356,8 +559,15 @@ export function useCutoutSelection(
     panX: readonly(panX),
     panY: readonly(panY),
     panning: readonly(panning),
+    movingSelectionId: readonly(movingSelectionId),
+    activeSelectionId: readonly(activeSelectionId),
+    activeSelection,
+    brushOperation: readonly(brushOperation),
+    brushRadius: readonly(brushRadius),
+    smartBrush: readonly(smartBrush),
     selections: readonly(selections),
     draftBox: readonly(draftBox),
+    draftStroke: readonly(draftStroke),
     canClear,
     canUndo,
     canRedo,
@@ -368,13 +578,29 @@ export function useCutoutSelection(
     zoomOut,
     fitPreview,
     zoomFromWheel,
+    clientToImage,
+    selectionAtClientPoint,
     startPan,
     movePan,
     endPan,
+    beginMoveSelection,
+    moveSelectionFromClient,
+    finishMoveSelection,
+    cancelMoveSelection,
     beginBoxFromClient,
     updateBoxFromClient,
     finishBox,
     cancelBox,
+    beginStrokeFromClient,
+    updateStrokeFromClient,
+    finishStroke,
+    cancelStroke,
+    selectSelection,
+    makeSelectionIndependent,
+    makeSelectionBackground,
+    setBrushOperation,
+    setBrushRadius,
+    setSmartBrush,
     removeSelection,
     clearSelections,
     undo,

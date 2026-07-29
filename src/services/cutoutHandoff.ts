@@ -1,6 +1,6 @@
 import type {
   CutoutResult,
-  CutoutSelectionBox,
+  CutoutSelection,
   SelectedImageFile
 } from "@/types";
 
@@ -10,8 +10,9 @@ import type {
  */
 export interface CutoutHandoff {
   selectedFile: SelectedImageFile;
-  selections?: CutoutSelectionBox[];
+  selections?: CutoutSelection[];
   results?: CutoutResult[];
+  cloudInputAssetId?: string;
 }
 
 let pendingHandoff: CutoutHandoff | null = null;

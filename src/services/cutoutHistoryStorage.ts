@@ -5,9 +5,16 @@ import type {
   CutoutHistoryAsset,
   CutoutHistoryRecord,
   CutoutResult,
-  CutoutSelectionBox,
+  CutoutSelection,
   SelectedImageFile
 } from "@/types";
+import {
+  cloneCutoutSelections
+} from "@/services/cutoutSelectionModel";
+import {
+  isStoredCutoutHistoryRecord,
+  normalizeCutoutHistoryRecord
+} from "@/services/cutoutHistoryModel";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 const HISTORY_DIRECTORY = "cutout-history";
@@ -21,14 +28,16 @@ export interface CreateCutoutHistoryInput {
   selectedFile: SelectedImageFile;
   sourceWidth: number;
   sourceHeight: number;
-  selections: CutoutSelectionBox[];
+  selections: CutoutSelection[];
   results: CutoutResult[];
+  cloudInputAssetId?: string;
 }
 
 export interface CutoutHistoryWorkspace {
   selectedFile: SelectedImageFile;
-  selections: CutoutSelectionBox[];
+  selections: CutoutSelection[];
   results: CutoutResult[];
+  cloudInputAssetId?: string;
 }
 
 export interface LoadedCutoutAsset {
@@ -79,29 +88,14 @@ async function taskFilePath(taskId: string, fileName: string) {
   return join(await taskDirectory(taskId), fileName);
 }
 
-function cloneSelections(selections: CutoutSelectionBox[]) {
-  return selections.map((selection) => ({ ...selection }));
-}
-
-function isHistoryRecord(value: unknown): value is CutoutHistoryRecord {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Partial<CutoutHistoryRecord>;
-  return typeof record.id === "string" &&
-    TASK_ID_PATTERN.test(record.id) &&
-    typeof record.mattingId === "string" &&
-    typeof record.createdAt === "string" &&
-    Number.isInteger(record.costCredits) &&
-    Boolean(record.source) &&
-    Array.isArray(record.selections) &&
-    Array.isArray(record.assets);
-}
-
 export async function readCutoutHistoryRecords(): Promise<CutoutHistoryRecord[]> {
   if (!isTauri) return [];
   const records = await localDb.readCutoutHistory();
   if (!Array.isArray(records)) return [];
   return records
-    .filter(isHistoryRecord)
+    .filter(isStoredCutoutHistoryRecord)
+    .map((record) => normalizeCutoutHistoryRecord(record as unknown as Record<string, unknown>))
+    .filter((record): record is CutoutHistoryRecord => Boolean(record))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, HISTORY_LIMIT);
 }
@@ -128,9 +122,13 @@ export async function createCutoutHistoryRecord(
     width: result.width,
     height: result.height,
     thumbnailUrl: result.thumbnailUrl,
-    sourceBox: { ...result.sourceBox }
+    sourceBox: { ...result.sourceBox },
+    sourceSelectionId: result.sourceSelectionId,
+    kind: result.kind,
+    ...(result.repairMode ? { repairMode: result.repairMode } : {})
   }));
   const record: CutoutHistoryRecord = {
+    schemaVersion: 2,
     id: taskId,
     mattingId: input.mattingId,
     source: {
@@ -138,9 +136,10 @@ export async function createCutoutHistoryRecord(
       storedFileName: sourceFileName,
       mimeType,
       width: input.sourceWidth,
-      height: input.sourceHeight
+      height: input.sourceHeight,
+      ...(input.cloudInputAssetId ? { cloudInputAssetId: input.cloudInputAssetId } : {})
     },
-    selections: cloneSelections(input.selections),
+    selections: cloneCutoutSelections(input.selections),
     assets,
     costCredits: input.costCredits,
     createdAt: new Date().toISOString()
@@ -238,12 +237,18 @@ export async function loadCutoutHistoryWorkspace(
       width: asset.width,
       height: asset.height,
       sourceBox: { ...asset.sourceBox },
+      sourceSelectionId: asset.sourceSelectionId,
+      kind: asset.kind,
+      ...(asset.repairMode ? { repairMode: asset.repairMode } : {}),
       baseName: asset.baseName
     }));
     return {
       selectedFile,
-      selections: cloneSelections(record.selections),
-      results
+      selections: cloneCutoutSelections(record.selections),
+      results,
+      ...(record.source.cloudInputAssetId
+        ? { cloudInputAssetId: record.source.cloudInputAssetId }
+        : {})
     };
   } catch (exception) {
     if (exception instanceof Error && exception.message === "本地透明素材缺失或已损坏。") {

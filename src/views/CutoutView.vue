@@ -12,10 +12,17 @@ import {
   selectedImageFileFromFile
 } from "@/services/desktop";
 import { consumeCutoutHandoff } from "@/services/cutoutHandoff";
+import {
+  imageBlobSource,
+  maskToPngBlob
+} from "@/services/cutoutBackgroundRepair";
+import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
 import { useAppStore } from "@/stores/app";
 import { ApiError } from "@/services/apiClient";
 import type {
   CutoutResult,
+  CutoutRepairMode,
+  CutoutSelection,
   CutoutSelectionBox,
   MattingChargeResult,
   SelectedImageFile
@@ -28,8 +35,10 @@ const selectedFile = shallowRef<SelectedImageFile | null>(null);
 const sessionKey = shallowRef(0);
 const selecting = shallowRef(false);
 const clearing = shallowRef(false);
-const selections = shallowRef<CutoutSelectionBox[]>([]);
+const selections = shallowRef<CutoutSelection[]>([]);
 const results = shallowRef<CutoutResult[]>([]);
+const repairMode = shallowRef<CutoutRepairMode>("local");
+const cloudInputAssetId = shallowRef<string | null>(null);
 const imageSource = shallowRef<{ source: CanvasImageSource; width: number; height: number } | null>(null);
 const copyingId = shallowRef<string | null>(null);
 const savingId = shallowRef<string | null>(null);
@@ -52,7 +61,17 @@ const fileBaseName = computed(() => {
   return dotIndex > 0 ? name.slice(0, dotIndex) : name;
 });
 
-const mattingCost = computed(() => app.capabilities.mattingCost);
+const hasBackgroundSelections = computed(() =>
+  selections.value.some((selection) => selection.behavior === "background")
+);
+const cloudRepairEnabled = computed(() =>
+  app.capabilities.backgroundRepairEnabled === true
+);
+const mattingCost = computed(() =>
+  hasBackgroundSelections.value && repairMode.value === "cloud"
+    ? app.capabilities.backgroundRepairCost ?? app.capabilities.mattingCost
+    : app.capabilities.mattingCost
+);
 const insufficientCredits = computed(
   () =>
     app.isAuthenticated &&
@@ -69,6 +88,10 @@ watch(
   }
 );
 
+watch(cloudRepairEnabled, (enabled) => {
+  if (!enabled && repairMode.value === "cloud") repairMode.value = "local";
+});
+
 function showMessage(message: string) {
   actionMessage.value = message;
   if (actionMessageTimer) window.clearTimeout(actionMessageTimer);
@@ -80,12 +103,14 @@ function showMessage(message: string) {
 
 function loadSelectedImage(
   selected: SelectedImageFile,
-  restoredSelections: CutoutSelectionBox[] = [],
-  restoredResults: CutoutResult[] = []
+  restoredSelections: (CutoutSelection | CutoutSelectionBox)[] = [],
+  restoredResults: CutoutResult[] = [],
+  restoredCloudInputAssetId: string | null = null
 ) {
   selectedFile.value = selected;
-  selections.value = restoredSelections.map((selection) => ({ ...selection }));
+  selections.value = cloneCutoutSelections(restoredSelections);
   results.value = [...restoredResults];
+  cloudInputAssetId.value = restoredCloudInputAssetId;
   imageSource.value = null;
   sessionKey.value += 1;
 }
@@ -129,6 +154,7 @@ async function clearImage() {
     selectedFile.value = null;
     selections.value = [];
     results.value = [];
+    cloudInputAssetId.value = null;
     imageSource.value = null;
     sessionKey.value += 1;
   } finally {
@@ -140,27 +166,26 @@ function handleReady(payload: { source: CanvasImageSource; width: number; height
   imageSource.value = payload;
 }
 
-function handleSelectionsChange(next: CutoutSelectionBox[]) {
-  const changed =
-    next.length !== selections.value.length ||
-    next.some((selection, index) => {
-      const current = selections.value[index];
-      return (
-        !current ||
-        current.id !== selection.id ||
-        current.x !== selection.x ||
-        current.y !== selection.y ||
-        current.width !== selection.width ||
-        current.height !== selection.height
-      );
-    });
-  selections.value = next;
+function handleSelectionsChange(next: CutoutSelection[]) {
+  const normalized = cloneCutoutSelections(next);
+  const changed = JSON.stringify(normalized) !== JSON.stringify(selections.value);
+  selections.value = normalized;
   if (changed && inference.phase.value === "idle") results.value = [];
 }
 
 async function installResources() {
   const installed = await inference.installResourcePackage();
   if (installed) showMessage("AI 抠图资源已就绪");
+}
+
+async function installRepairResource() {
+  const installed = await inference.installRepairResource();
+  if (installed) showMessage("本地背景修复模型已就绪");
+}
+
+function setRepairMode(mode: CutoutRepairMode) {
+  if (mode === "cloud" && !cloudRepairEnabled.value) return;
+  repairMode.value = mode;
 }
 
 async function segment() {
@@ -173,15 +198,44 @@ async function segment() {
     actionError.value = "请先在画布上框选要抠取的元素。";
     return;
   }
+  const requestedMode: CutoutRepairMode = hasBackgroundSelections.value
+    ? repairMode.value
+    : "local";
+  if (requestedMode === "cloud") {
+    if (!cloudRepairEnabled.value) {
+      actionError.value = "云端背景修复当前不可用。";
+      return;
+    }
+    const maxBytes = app.capabilities.backgroundRepairMaxBytes;
+    const maxPixels = app.capabilities.backgroundRepairMaxPixels;
+    if (maxBytes && !cloudInputAssetId.value && selectedFile.value && selectedFile.value.file.size > maxBytes) {
+      actionError.value = "图片大小超过云端背景修复限制。";
+      return;
+    }
+    if (maxPixels && imageSource.value.width * imageSource.value.height > maxPixels) {
+      actionError.value = "图片像素超过云端背景修复限制。";
+      return;
+    }
+  }
+  if (
+    requestedMode === "local" &&
+    hasBackgroundSelections.value &&
+    inference.repairResourceStatus.value !== "ready"
+  ) {
+    actionError.value = "请先下载本地背景修复模型。";
+    return;
+  }
   actionError.value = "";
   actionMessage.value = "";
   results.value = [];
-  const requestedSelections = selections.value.map((selection) => ({ ...selection }));
+  let requestedSelections = cloneCutoutSelections(selections.value);
+  let resolvedSelections = requestedSelections;
   const produced: CutoutResult[] = [];
+  let cloudSubmitted = false;
 
   let charge: MattingChargeResult | null = null;
   try {
-    charge = await app.chargeMatting();
+    charge = await app.chargeMatting(requestedMode);
   } catch (exception) {
     if (exception instanceof ApiError && exception.statusCode === 409) {
       mattingInsufficient.value = true;
@@ -203,12 +257,71 @@ async function segment() {
     (result) => {
       produced.push(result);
       results.value = [...produced];
+    },
+    {
+      repairMode: requestedMode,
+      onSelectionsResolved: (next) => {
+        resolvedSelections = cloneCutoutSelections(next);
+      },
+      cloudRepair: requestedMode === "cloud" && selectedFile.value && charge
+        ? async (mask, selectionBoxes, context) => {
+          context.setStage("uploading");
+          const maskBlob = await maskToPngBlob(
+            mask,
+            imageSource.value!.width,
+            imageSource.value!.height
+          );
+          const submit = (inputAssetId?: string) => app.createBackgroundRepair({
+            ...(inputAssetId
+              ? { inputAssetId }
+              : { image: selectedFile.value!.file }),
+            mask: maskBlob,
+            mattingId: charge!.mattingId,
+            selectionBoxes: selectionBoxes.map((box) => ({ ...box }))
+          });
+          let task;
+          try {
+            task = await submit(cloudInputAssetId.value ?? undefined);
+          } catch (exception) {
+            const reusableAssetUnavailable = Boolean(cloudInputAssetId.value) &&
+              exception instanceof ApiError &&
+              (exception.statusCode === 400 || exception.statusCode === 404);
+            if (!reusableAssetUnavailable) throw exception;
+            cloudInputAssetId.value = null;
+            task = await submit();
+          }
+          if (task.inputAssetId) cloudInputAssetId.value = task.inputAssetId;
+          cloudSubmitted = true;
+          context.setStage("waiting");
+          const completed = await app.waitForBackgroundRepair(task, context.signal);
+          const blob = await app.downloadBackgroundRepairOutput(completed);
+          const bitmap = await imageBlobSource(blob);
+          if (
+            bitmap.width !== imageSource.value!.width ||
+            bitmap.height !== imageSource.value!.height
+          ) {
+            bitmap.close();
+            throw new Error("云端背景修复返回的图片尺寸与原图不一致。");
+          }
+          return bitmap;
+        }
+        : undefined
     }
   );
 
+  if (JSON.stringify(resolvedSelections) !== JSON.stringify(selections.value)) {
+    requestedSelections = resolvedSelections;
+    selections.value = cloneCutoutSelections(resolvedSelections);
+    sessionKey.value += 1;
+  }
+
   if (inference.error.value && charge) {
     try {
-      await app.refundMatting(charge.mattingId);
+      if (requestedMode === "cloud" && cloudSubmitted) {
+        await app.refreshBalance();
+      } else {
+        await app.refundMatting(charge.mattingId);
+      }
     } catch (exception) {
       console.warn("抠图退款失败", exception);
       actionError.value = "抠图失败且退款异常，请联系客服处理。";
@@ -226,14 +339,18 @@ async function segment() {
         sourceWidth: imageSource.value.width,
         sourceHeight: imageSource.value.height,
         selections: requestedSelections,
-        results: produced
+        results: produced,
+        cloudInputAssetId: cloudInputAssetId.value ?? undefined
       });
     } catch (exception) {
       actionError.value = exception instanceof Error
         ? exception.message
         : "抠图结果已生成，但保存历史失败。";
     }
-    showMessage(`已抠取 ${produced.length} 个素材`);
+    const backgroundCount = produced.filter((result) => result.kind === "background").length;
+    showMessage(backgroundCount
+      ? `已生成 ${produced.length - backgroundCount} 个素材、${backgroundCount} 个背景`
+      : `已抠取 ${produced.length} 个素材`);
   }
 }
 
@@ -249,7 +366,7 @@ async function copyResult(result: CutoutResult) {
   actionMessage.value = "";
   try {
     await copyImageBlobToClipboard(result.blob);
-    showMessage("透明素材已复制");
+    showMessage(result.kind === "background" ? "背景素材已复制" : "透明素材已复制");
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "复制失败，请稍后重试。";
   } finally {
@@ -264,7 +381,7 @@ async function saveResult(result: CutoutResult) {
   actionMessage.value = "";
   try {
     const savedPath = await saveImageBlobAs(result.blob, result.baseName, "image/png");
-    if (savedPath) showMessage("素材已保存");
+    if (savedPath) showMessage(result.kind === "background" ? "背景已保存" : "素材已保存");
   } catch (exception) {
     actionError.value = exception instanceof Error ? exception.message : "保存失败，请稍后重试。";
   } finally {
@@ -302,7 +419,8 @@ if (handoff) {
   loadSelectedImage(
     handoff.selectedFile,
     handoff.selections ?? [],
-    handoff.results ?? []
+    handoff.results ?? [],
+    handoff.cloudInputAssetId ?? null
   );
 }
 
@@ -340,12 +458,20 @@ onBeforeUnmount(() => {
         :exporting-all="exportingAll"
         :has-image="Boolean(imageSource)"
         :selection-count="selections.length"
+        :has-background-selections="hasBackgroundSelections"
+        :repair-mode="repairMode"
+        :cloud-repair-enabled="cloudRepairEnabled"
+        :repair-resource-status="inference.repairResourceStatus.value"
+        :repair-progress="inference.repairProgress.value"
+        :repair-download-size-bytes="inference.repairDownloadSizeBytes"
         :local-models-supported="inference.localModelsSupported"
         :cost="mattingCost"
         :balance="app.balance.balance"
         :is-logged-in="app.isAuthenticated"
         :insufficient-credits="insufficientCredits"
         @install-resources="installResources"
+        @install-repair-resource="installRepairResource"
+        @set-repair-mode="setRepairMode"
         @segment="segment"
         @cancel="inference.cancel"
         @export-all="exportAll"

@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, shallowRef, watch } from "vue";
 import {
   Check,
+  Cloud,
   Clipboard,
   Download,
+  HardDrive,
   LoaderCircle,
   PackageOpen,
   Sparkles,
@@ -16,7 +18,7 @@ import type {
   CutoutResourceProgress,
   CutoutResourceStatus
 } from "@/composables/useCutoutInference";
-import type { CutoutResult } from "@/types";
+import type { CutoutRepairMode, CutoutResult } from "@/types";
 
 const props = defineProps<{
   results: CutoutResult[];
@@ -31,6 +33,12 @@ const props = defineProps<{
   exportingAll: boolean;
   hasImage: boolean;
   selectionCount: number;
+  hasBackgroundSelections: boolean;
+  repairMode: CutoutRepairMode;
+  cloudRepairEnabled: boolean;
+  repairResourceStatus: CutoutResourceStatus;
+  repairProgress: CutoutResourceProgress | null;
+  repairDownloadSizeBytes: number;
   localModelsSupported: boolean;
   cost: number;
   balance: number;
@@ -40,6 +48,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   installResources: [];
+  installRepairResource: [];
+  setRepairMode: [mode: CutoutRepairMode];
   segment: [];
   cancel: [];
   exportAll: [];
@@ -56,19 +66,30 @@ const canSegment = computed(
     !props.insufficientCredits &&
     props.hasImage &&
     props.selectionCount > 0 &&
-    props.resourceStatus === "ready"
+    props.resourceStatus === "ready" &&
+    (!props.hasBackgroundSelections ||
+      props.repairMode === "cloud" ||
+      props.repairResourceStatus === "ready")
 );
 const segmentPercent = computed(() => {
   const progress = props.progress;
   if (!progress?.total) return 0;
   return Math.min(100, Math.round(progress.current / progress.total * 100));
 });
-const processingLabel = computed(
-  () => props.progress?.stage === "refining" ? "正在精修" : "正在分割"
-);
-const processingButtonLabel = computed(
-  () => props.progress?.stage === "refining" ? "精修中" : "分割中"
-);
+const processingLabel = computed(() => ({
+  segmenting: "正在分割",
+  refining: "正在精修",
+  repairing: "正在修复背景",
+  uploading: "正在上传修复任务",
+  waiting: "正在等待云端修复"
+}[props.progress?.stage ?? "segmenting"]));
+const processingButtonLabel = computed(() => ({
+  segmenting: "分割中",
+  refining: "精修中",
+  repairing: "修复中",
+  uploading: "上传中",
+  waiting: "云端修复中"
+}[props.progress?.stage ?? "segmenting"]));
 const missingCredits = computed(() => Math.max(0, props.cost - props.balance));
 const segmentButtonLabel = computed(() => {
   if (props.phase === "processing") return processingButtonLabel.value;
@@ -243,6 +264,49 @@ onBeforeUnmount(() => {
         @install="emit('installResources')"
       />
 
+      <section
+        v-if="hasBackgroundSelections"
+        class="cutout-repair-mode"
+        aria-labelledby="cutout-repair-mode-heading"
+      >
+        <h3 id="cutout-repair-mode-heading">背景修复</h3>
+        <div class="cutout-repair-segmented">
+          <button
+            type="button"
+            :aria-pressed="repairMode === 'local'"
+            :disabled="isWorking"
+            @click="emit('setRepairMode', 'local')"
+          >
+            <HardDrive :size="14" aria-hidden="true" />
+            本地
+          </button>
+          <button
+            v-if="cloudRepairEnabled"
+            type="button"
+            :aria-pressed="repairMode === 'cloud'"
+            :disabled="isWorking"
+            @click="emit('setRepairMode', 'cloud')"
+          >
+            <Cloud :size="14" aria-hidden="true" />
+            云端
+          </button>
+        </div>
+      </section>
+
+      <CutoutResourceNotice
+        v-if="hasBackgroundSelections && repairMode === 'local' &&
+          repairResourceStatus !== 'checking' && repairResourceStatus !== 'ready'"
+        :status="repairResourceStatus"
+        :phase="phase"
+        :progress="repairProgress"
+        :download-size-bytes="repairDownloadSizeBytes"
+        :local-models-supported="localModelsSupported"
+        title="本地背景修复模型"
+        description="按需安装，不影响普通抠图资源"
+        install-label="下载模型"
+        @install="emit('installRepairResource')"
+      />
+
       <section class="cutout-results-section" aria-label="抠图结果列表">
         <div class="cutout-results-heading">
           <h3>结果</h3>
@@ -277,14 +341,19 @@ onBeforeUnmount(() => {
               />
             </button>
             <div class="cutout-result-info">
-              <strong>{{ result.baseName }}</strong>
+              <div class="cutout-result-name">
+                <strong>{{ result.baseName }}</strong>
+                <span :class="`is-${result.kind}`">
+                  {{ result.kind === 'background' ? '背景' : '素材' }}
+                </span>
+              </div>
               <span>{{ result.width }} × {{ result.height }} px</span>
               <div class="cutout-result-actions">
                 <button
                   class="cutout-mini-button"
                   type="button"
-                  title="复制透明素材"
-                  aria-label="复制透明素材"
+                  :title="result.kind === 'background' ? '复制背景素材' : '复制透明素材'"
+                  :aria-label="result.kind === 'background' ? '复制背景素材' : '复制透明素材'"
                   :disabled="copyingId === result.id"
                   @click="emit('copyResult', result)"
                 >
@@ -299,8 +368,8 @@ onBeforeUnmount(() => {
                 <button
                   class="cutout-mini-button"
                   type="button"
-                  title="保存透明素材"
-                  aria-label="保存透明素材"
+                  :title="result.kind === 'background' ? '保存背景素材' : '保存透明素材'"
+                  :aria-label="result.kind === 'background' ? '保存背景素材' : '保存透明素材'"
                   :disabled="savingId === result.id"
                   @click="emit('saveResult', result)"
                 >
@@ -427,6 +496,58 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.cutout-repair-mode {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+
+  h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 660;
+  }
+}
+
+.cutout-repair-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+
+  button {
+    min-width: 0;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--muted);
+    background: var(--field);
+    font-size: 10px;
+    font-weight: 650;
+
+    &:last-child { border-right: 0; }
+    &[aria-pressed="true"] {
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
 }
 
 .cutout-result-header {
@@ -656,6 +777,36 @@ onBeforeUnmount(() => {
     color: var(--muted);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
+  }
+}
+
+.cutout-result-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  strong {
+    min-width: 0;
+    flex: 1;
+  }
+
+  span {
+    flex: 0 0 auto;
+    padding: 2px 4px;
+    border: 1px solid var(--accent-border);
+    border-radius: 4px;
+    color: var(--accent-strong);
+    background: var(--accent-soft);
+    font-size: 8px;
+    font-weight: 700;
+    line-height: 1;
+
+    &.is-background {
+      border-color: color-mix(in srgb, var(--warm) 45%, transparent);
+      color: var(--warm);
+      background: color-mix(in srgb, var(--warm) 12%, transparent);
+    }
   }
 }
 

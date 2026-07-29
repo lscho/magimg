@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import {
   Download,
   LoaderCircle,
@@ -18,11 +18,15 @@ const props = defineProps<{
   progress: CutoutResourceProgress | null;
   downloadSizeBytes: number;
   localModelsSupported: boolean;
+  title?: string;
+  description?: string;
+  installLabel?: string;
 }>();
 
 const emit = defineEmits<{
   install: [];
 }>();
+const headingId = useId();
 
 const isInstalling = computed(
   () => ["downloading", "verifying", "installing"].includes(props.phase)
@@ -35,17 +39,21 @@ const operationLabel = computed(() => {
 const downloadSizeLabel = computed(
   () => `${(props.downloadSizeBytes / 1024 / 1024).toFixed(1)} MB`
 );
+const resourceName = computed(() => props.title || "AI 抠图资源包");
+const installAriaLabel = computed(
+  () => `${props.status === "error" ? "重新下载" : "下载"}${resourceName.value}`
+);
 </script>
 
 <template>
-  <section class="cutout-resource-notice" aria-labelledby="cutout-resource-heading">
+  <section class="cutout-resource-notice" :aria-labelledby="headingId">
     <div class="cutout-resource-summary">
       <PackageCheck :size="18" aria-hidden="true" />
       <div>
-        <h3 id="cutout-resource-heading">首次使用需下载资源包</h3>
+        <h3 :id="headingId">{{ title || '首次使用需下载资源包' }}</h3>
         <p v-if="!localModelsSupported">请在桌面客户端中下载并使用</p>
         <p v-else-if="status === 'error'">资源未完整安装，请重新下载</p>
-        <p v-else>包含完整分割与边缘优化能力 · {{ downloadSizeLabel }}</p>
+        <p v-else>{{ description || '包含完整分割与边缘优化能力' }} · {{ downloadSizeLabel }}</p>
       </div>
     </div>
 
@@ -53,7 +61,7 @@ const downloadSizeLabel = computed(
       class="cutout-resource-button"
       type="button"
       :disabled="isInstalling || !localModelsSupported"
-      :aria-label="status === 'error' ? '重新下载 AI 抠图资源包' : '下载 AI 抠图资源包'"
+      :aria-label="installAriaLabel"
       @click="emit('install')"
     >
       <LoaderCircle
@@ -64,7 +72,7 @@ const downloadSizeLabel = computed(
       />
       <RotateCw v-else-if="status === 'error'" :size="15" aria-hidden="true" />
       <Download v-else :size="15" aria-hidden="true" />
-      {{ isInstalling ? "处理中" : status === "error" ? "重试" : "下载资源包" }}
+      {{ isInstalling ? "处理中" : status === "error" ? "重试" : installLabel || "下载资源包" }}
     </button>
 
     <div

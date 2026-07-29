@@ -22,14 +22,17 @@ import {
 import { localDb } from "@/services/localStorage";
 import type {
   AppSettings,
+  BackgroundRepairTask,
   ClientAuthResponse,
   ClientGenerationMode,
   ClientUser,
   CreditBalance,
   CreditTransaction,
   CreditTransactionKind,
+  CreateBackgroundRepairInput,
   CutoutHistoryAsset,
   CutoutHistoryRecord,
+  CutoutRepairMode,
   GenerationMode,
   GenerationRecord,
   GenerationSettings,
@@ -846,9 +849,9 @@ export const useAppStore = defineStore("app", () => {
     return result;
   }
 
-  async function chargeMatting(): Promise<MattingChargeResult> {
+  async function chargeMatting(mode: CutoutRepairMode = "local"): Promise<MattingChargeResult> {
     if (!session.value) throw new Error("请先登录后再使用 AI 抠图。");
-    const result = await apiClient.chargeMatting();
+    const result = await apiClient.chargeMatting(mode);
     balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
     return result;
   }
@@ -858,6 +861,55 @@ export const useAppStore = defineStore("app", () => {
     const result = await apiClient.refundMatting(mattingId);
     balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
     void refreshTransactions();
+  }
+
+  async function createBackgroundRepair(
+    input: CreateBackgroundRepairInput
+  ): Promise<BackgroundRepairTask> {
+    if (!session.value) throw new Error("请先登录后再使用云端背景修复。");
+    const task = await apiClient.createBackgroundRepair(input);
+    balance.value = { balance: task.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    return task;
+  }
+
+  async function waitForBackgroundRepair(
+    initialTask: BackgroundRepairTask,
+    signal: AbortSignal
+  ): Promise<BackgroundRepairTask> {
+    let task = initialTask;
+    while (task.status === "pending" || task.status === "processing") {
+      if (signal.aborted) {
+        await apiClient.cancelBackgroundRepair(task.id).catch(() => undefined);
+        throw new DOMException("云端背景修复已取消。", "AbortError");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          window.clearTimeout(timer);
+          reject(new DOMException("云端背景修复已取消。", "AbortError"));
+        };
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, 1500);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }).catch(async (exception) => {
+        await apiClient.cancelBackgroundRepair(task.id).catch(() => undefined);
+        throw exception;
+      });
+      task = await apiClient.backgroundRepair(task.id);
+      balance.value = { balance: task.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    }
+    if (task.status !== "succeeded" || !task.outputUrl) {
+      throw new Error(task.errorMessage || (
+        task.status === "canceled" ? "云端背景修复已取消。" : "云端背景修复失败。"
+      ));
+    }
+    return task;
+  }
+
+  async function downloadBackgroundRepairOutput(task: BackgroundRepairTask) {
+    if (!task.outputUrl) throw new Error("云端背景修复未返回图片。");
+    return apiClient.downloadBackgroundRepairOutput(task.outputUrl);
   }
 
   function clearGenerationError() {
@@ -980,6 +1032,9 @@ export const useAppStore = defineStore("app", () => {
     redeemCard,
     chargeMatting,
     refundMatting,
+    createBackgroundRepair,
+    waitForBackgroundRepair,
+    downloadBackgroundRepairOutput,
     selectTemplate,
     consumeTemplate,
     resolveHistoryTask,

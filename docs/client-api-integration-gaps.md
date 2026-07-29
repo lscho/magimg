@@ -1,7 +1,7 @@
 # 客户端 API 接入状态与差异
 
 > 对照文档：`docs/CLIENT_API.md`  
-> 更新日期：2026-07-18
+> 更新日期：2026-07-28
 
 ## 已接入
 
@@ -16,6 +16,8 @@
 | 上传 | `POST /uploads/images` | 图生图先读取本地文件并 multipart 上传，再使用 `inputAssetId` 创建任务 |
 | 任务 | `POST /tasks`、`GET /tasks`、`GET /tasks/:id`、`POST /tasks/:id/cancel` | 创建任务携带幂等键、`outputFormat`，并仅为 JPEG/WebP 携带 `output_compression`；store 每 2 秒查询状态并重试临时失败；恢复会话时找回最新进行中任务；排队任务可取消；服务端任务合并到历史记录 |
 | 更新 | `GET /version/latest/tauri` | 正式 Tauri 构建启动时按平台检查签名更新；普通更新确认后安装，强制更新阻断使用，安装完成自动重启 |
+| AI 抠图计费 | `POST /matting`、`POST /matting/:id/refund` | 本地档按 `mattingCost` 预扣；云端档按 `backgroundRepairCost` 一次预扣；本地失败由客户端退款，云端失败/取消由服务端幂等退款 |
+| 云端背景修复 | `POST /background-repairs`、`GET /background-repairs/:id`、`POST /background-repairs/:id/cancel` | 首次上传原图、背景选框坐标和联合灰度蒙版；同一原图微调时复用服务端 `inputAssetId`，只上传新蒙版与选框坐标；服务端按选框裁剪上下文，客户端轮询终态并仅合成蒙版内像素 |
 
 真实接口基础路径固定为 `/api/client/v1`。`VITE_API_BASE_URL` 可配置为服务端 Origin，也可直接包含该基础路径。
 
@@ -38,3 +40,4 @@
 3. 任务查询目前采用 2 秒轮询并持续到终态，临时查询失败不会清除任务。若任务量或耗时继续增长，建议提供服务端推荐轮询间隔或事件推送。
 4. 结果区已接入复制、本地图片编辑、桌面“另存为”和打开默认保存位置；当前模式存在成功结果时，生成主按钮显示“重新生成”。编辑结果只在当前工作区内替换预览，不上传服务端或写入任务历史。
 5. 自动更新要求后台分别保存普通安装包和 Tauri updater 包，并保存 `.sig` 文本。GitHub Actions 已生成 `huanhua-desktop-release-manifest.json` 供后端校验和登记；若 `/version/latest/tauri` 未部署或签名不匹配，客户端会保留当前版本且不会回退到不安全的普通安装器自动替换。
+6. 云端背景修复客户端契约已实现，但本仓库不包含服务端。后端未部署端点或未下发 `backgroundRepairEnabled: true` 时，客户端隐藏云端档并只提供本地修复，不直连第三方服务。

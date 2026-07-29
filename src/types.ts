@@ -147,6 +147,11 @@ export interface GenerationSettings {
   textToImageCost: number;
   imageToImageCost: number;
   mattingCost: number;
+  /** 云端背景修复未部署时为 false 或缺省。 */
+  backgroundRepairEnabled?: boolean;
+  backgroundRepairCost?: number;
+  backgroundRepairMaxBytes?: number;
+  backgroundRepairMaxPixels?: number;
   cardPurchaseUrl?: string;
   maxAttempts: number;
   uploadMaxBytes: number;
@@ -165,11 +170,39 @@ export interface MattingChargeResult {
   mattingId: string;
   cost: number;
   balance: number;
+  mode?: CutoutRepairMode;
 }
 
 export interface MattingRefundResult {
   cost: number;
   balance: number;
+}
+
+export type BackgroundRepairStatus =
+  | "pending"
+  | "processing"
+  | "succeeded"
+  | "failed"
+  | "canceled";
+
+export interface BackgroundRepairTask {
+  id: string;
+  inputAssetId: string;
+  status: BackgroundRepairStatus;
+  cost: number;
+  balance: number;
+  outputUrl?: string;
+  errorMessage?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateBackgroundRepairInput {
+  image?: File;
+  inputAssetId?: string;
+  mask: Blob;
+  mattingId: string;
+  selectionBoxes: CutoutSelectionBox[];
 }
 
 export interface TemplateCategory {
@@ -392,6 +425,18 @@ export interface CutoutRefinerDescriptor {
   description: string;
 }
 
+export interface CutoutRepairDescriptor {
+  id: string;
+  name: string;
+  url: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  inputWidth: number;
+  inputHeight: number;
+  description: string;
+}
+
 /** 模型在客户端的安装状态。 */
 export type CutoutModelStatus = "missing" | "downloading" | "ready" | "error";
 
@@ -402,6 +447,33 @@ export interface CutoutSelectionBox {
   y: number;
   width: number;
   height: number;
+}
+
+export type CutoutSelectionBehavior = "extract" | "background";
+export type CutoutRelationSource = "auto" | "manual";
+export type CutoutBrushOperation = "add" | "restore";
+export type CutoutRepairMode = "local" | "cloud";
+
+export interface CutoutBrushPoint {
+  x: number;
+  y: number;
+}
+
+/** 消除笔画始终保存为原图坐标，缩放画布不会改变半径或路径。 */
+export interface CutoutRemovalStroke {
+  id: string;
+  operation: CutoutBrushOperation;
+  radius: number;
+  smart: boolean;
+  points: CutoutBrushPoint[];
+}
+
+/** 带分层与背景修复信息的工作区选区。 */
+export interface CutoutSelection extends CutoutSelectionBox {
+  behavior: CutoutSelectionBehavior;
+  parentId: string | null;
+  relationSource: CutoutRelationSource;
+  removalStrokes: CutoutRemovalStroke[];
 }
 
 /** 图像坐标系下的点提示：label 为 1 表示前景点，0 表示背景点。 */
@@ -423,6 +495,9 @@ export interface CutoutResult {
   height: number;
   /** 来源选区（图像坐标系），便于定位与命名。 */
   sourceBox: CutoutSelectionBox;
+  sourceSelectionId: string;
+  kind: "foreground" | "background";
+  repairMode?: CutoutRepairMode;
   /** 建议文件名（不含扩展名）。 */
   baseName: string;
 }
@@ -436,6 +511,8 @@ export interface CutoutHistorySource {
   mimeType: "image/png" | "image/jpeg" | "image/webp";
   width: number;
   height: number;
+  /** 首次云端修复返回的服务端原图素材 ID，用于后续只上传新蒙版。 */
+  cloudInputAssetId?: string;
 }
 
 /** 桌面本地抠图历史中的单个透明结果。 */
@@ -448,14 +525,18 @@ export interface CutoutHistoryAsset {
   height: number;
   thumbnailUrl: string;
   sourceBox: CutoutSelectionBox;
+  sourceSelectionId: string;
+  kind: "foreground" | "background";
+  repairMode?: CutoutRepairMode;
 }
 
 /** 一轮本地 AI 抠图任务；原图和结果二进制保存在 appDataDir。 */
 export interface CutoutHistoryRecord {
+  schemaVersion: 2;
   id: string;
   mattingId: string;
   source: CutoutHistorySource;
-  selections: CutoutSelectionBox[];
+  selections: CutoutSelection[];
   assets: CutoutHistoryAsset[];
   costCredits: number;
   createdAt: string;
