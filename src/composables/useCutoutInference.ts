@@ -34,6 +34,7 @@ import {
 } from "@/services/cutoutInference";
 import { maskToTransparentPng } from "@/services/cutoutExport";
 import {
+  buildHighRecallChildMask,
   buildRemovalMask,
   chooseSmartRemovalCandidate,
   maskContainment,
@@ -366,6 +367,7 @@ export function useCutoutInference() {
         imageHeight,
         controller.signal
       );
+      const coarseMasks = new Map<string, Uint8Array>();
       const refinedMasks = new Map<string, Uint8Array>();
       for (let index = 0; index < selections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
@@ -377,6 +379,7 @@ export function useCutoutInference() {
           selection,
           controller.signal
         );
+        coarseMasks.set(selection.id, mask);
         progress.value = { current: index + 1, total: selections.length, stage: "refining" };
         refinedMasks.set(selection.id, await refineCutoutMask(
           CUTOUT_REFINER,
@@ -449,7 +452,19 @@ export function useCutoutInference() {
           if (candidate) smartMasks.set(stroke.id, candidate);
         }
         const childAlphas = selectionChildren(resolvedSelections, parent.id)
-          .map((child) => refinedMasks.get(child.id))
+          .map((child) => {
+            const refinedAlpha = refinedMasks.get(child.id);
+            const coarseAlpha = coarseMasks.get(child.id);
+            return refinedAlpha && coarseAlpha
+              ? buildHighRecallChildMask({
+                refinedAlpha,
+                coarseAlpha,
+                width: imageWidth,
+                height: imageHeight,
+                child
+              })
+              : refinedAlpha;
+          })
           .filter((mask): mask is Uint8Array => Boolean(mask));
         const combined = buildRemovalMask({
           width: imageWidth,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHighRecallChildMask,
   buildRemovalMask,
   chooseSmartRemovalCandidate,
   prepareRepairMask,
@@ -110,5 +111,27 @@ describe("repair masks", () => {
       id: "p", x: 0, y: 0, width, height
     });
     expect(selected).toEqual(focused);
+  });
+
+  it("keeps nearby coarse edges in the child removal mask and rejects distant noise", () => {
+    const width = 40;
+    const height = 40;
+    const refinedAlpha = new Uint8Array(width * height);
+    const coarseAlpha = new Uint8Array(width * height);
+    refinedAlpha[15 * width + 15] = 255;
+    coarseAlpha[15 * width + 19] = 12;
+    coarseAlpha[35 * width + 35] = 255;
+
+    const mask = buildHighRecallChildMask({
+      refinedAlpha,
+      coarseAlpha,
+      width,
+      height,
+      child: { id: "child", x: 10, y: 10, width: 12, height: 12 }
+    });
+
+    expect(mask[15 * width + 19]).toBe(255);
+    expect(mask[15 * width + 23]).toBe(255);
+    expect(mask[35 * width + 35]).toBe(0);
   });
 });

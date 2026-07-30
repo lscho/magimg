@@ -150,6 +150,14 @@ export function buildRemovalMask(options: {
   return intersectMasks(subtractMask(combined, restore), parentAlpha);
 }
 
+function binaryMask(source: Uint8Array, threshold: number) {
+  const output = new Uint8Array(source.length);
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] >= threshold) output[index] = 255;
+  }
+  return output;
+}
+
 function morphBinary(
   source: Uint8Array,
   width: number,
@@ -161,26 +169,81 @@ function morphBinary(
   const output = new Uint8Array(source.length);
   for (let y = 0; y < height; y += 1) {
     const row = y * width;
+    let count = 0;
+    for (let x = 0; x <= radius && x < width; x += 1) {
+      if (source[row + x] >= 32) count += 1;
+    }
     for (let x = 0; x < width; x += 1) {
-      let value = 0;
-      for (let offset = -radius; offset <= radius && !value; offset += 1) {
-        const nextX = x + offset;
-        if (nextX >= 0 && nextX < width && source[row + nextX] >= 32) value = 255;
-      }
-      horizontal[row + x] = value;
+      horizontal[row + x] = count > 0 ? 255 : 0;
+      const leaving = x - radius;
+      const entering = x + radius + 1;
+      if (leaving >= 0 && source[row + leaving] >= 32) count -= 1;
+      if (entering < width && source[row + entering] >= 32) count += 1;
     }
   }
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      let value = 0;
-      for (let offset = -radius; offset <= radius && !value; offset += 1) {
-        const nextY = y + offset;
-        if (nextY >= 0 && nextY < height && horizontal[nextY * width + x]) value = 255;
-      }
-      output[y * width + x] = value;
+  for (let x = 0; x < width; x += 1) {
+    let count = 0;
+    for (let y = 0; y <= radius && y < height; y += 1) {
+      if (horizontal[y * width + x]) count += 1;
+    }
+    for (let y = 0; y < height; y += 1) {
+      output[y * width + x] = count > 0 ? 255 : 0;
+      const leaving = y - radius;
+      const entering = y + radius + 1;
+      if (leaving >= 0 && horizontal[leaving * width + x]) count -= 1;
+      if (entering < height && horizontal[entering * width + x]) count += 1;
     }
   }
   return output;
+}
+
+/**
+ * 背景移除优先保证召回率：保留精修 Alpha，并吸收其附近的 SAM 弱响应，
+ * 再按子元素尺寸扩张。结果仍限制在子框附近，避免粗蒙版污染父级边框。
+ */
+export function buildHighRecallChildMask(options: {
+  refinedAlpha: Uint8Array;
+  coarseAlpha: Uint8Array;
+  width: number;
+  height: number;
+  child: CutoutSelectionBox;
+}) {
+  const { refinedAlpha, coarseAlpha, width, height, child } = options;
+  if (
+    refinedAlpha.length !== width * height ||
+    coarseAlpha.length !== width * height
+  ) {
+    throw new Error("子选区遮罩尺寸与图片不匹配。");
+  }
+  const radius = clamp(
+    Math.round(Math.max(child.width, child.height) * 0.025),
+    4,
+    18
+  );
+  const refinedSeed = binaryMask(refinedAlpha, 8);
+  const coarseSeed = binaryMask(coarseAlpha, 8);
+  const nearby = morphBinary(refinedSeed, width, height, radius * 2);
+  const combined = new Uint8Array(refinedSeed.length);
+  let hasRefined = false;
+  for (let index = 0; index < combined.length; index += 1) {
+    hasRefined = hasRefined || refinedSeed[index] > 0;
+    if (refinedSeed[index] || (nearby[index] && coarseSeed[index])) combined[index] = 255;
+  }
+  if (!hasRefined) combined.set(coarseSeed);
+
+  const expanded = morphBinary(combined, width, height, radius);
+  const padding = radius * 3;
+  const x = Math.max(0, child.x - padding);
+  const y = Math.max(0, child.y - padding);
+  const right = Math.min(width, child.x + child.width + padding);
+  const bottom = Math.min(height, child.y + child.height + padding);
+  return clipMaskToBox(expanded, width, height, {
+    ...child,
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y)
+  });
 }
 
 export function prepareRepairMask(
