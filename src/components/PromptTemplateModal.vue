@@ -133,8 +133,8 @@ onMounted(() => {
 .template-modal-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: max-content;
+  grid-template-columns: repeat(auto-fill, 264px);
+  grid-auto-rows: 264px;
   align-content: start;
   gap: 10px;
   overflow: auto;
@@ -169,13 +169,7 @@ onMounted(() => {
   }
 
   .template-modal-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 420px) {
-  .template-modal-grid {
-    grid-template-columns: 1fr;
+    justify-content: center;
   }
 }
 </style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CalendarDays, Check, Coins, ImageOff } from "lucide-vue-next";
+import { CalendarDays, Check, Coins, Copy, ImageOff } from "lucide-vue-next";
 import type { GenerationRecord, GenerationStatus } from "@/types";
 
 const props = defineProps<{
@@ -11,6 +11,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggle: [generationId: string];
   openMenu: [position: { x: number; y: number }];
+  copyPrompt: [prompt: string];
 }>();
 
 const statusDetails: Record<GenerationStatus, { label: string; className: string }> = {
@@ -32,11 +33,8 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 const previewImage = computed(() => props.record.images[0]);
 const statusDetail = computed(() => statusDetails[props.record.status]);
 const creditsLabel = computed(() => {
-  if (props.record.status === "failed" || props.record.status === "cancelled") return "0";
-  if (props.record.status === "queued" || props.record.status === "processing") {
-    return `-${props.record.costCredits}`;
-  }
-  return `-${props.record.costCredits}`;
+  if (props.record.status === "failed" || props.record.status === "cancelled") return "0 积分";
+  return `${props.record.costCredits} 积分`;
 });
 const creditsTitle = computed(() => {
   if (props.record.status === "failed" || props.record.status === "cancelled") return "积分已退回";
@@ -60,6 +58,7 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
     y: rect.top + Math.min(28, rect.height / 2)
   });
 }
+
 </script>
 
 <template>
@@ -68,59 +67,74 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
     :class="{ selected }"
     @contextmenu.prevent.stop="openContextMenu"
   >
-    <button
-      class="history-task-media"
-      type="button"
-      :aria-label="selected ? '取消选择此历史任务' : '选择此历史任务'"
-      :aria-pressed="selected"
-      @click="emit('toggle', record.generationId)"
-      @keydown="openContextMenuFromKeyboard"
-    >
-      <img
-        v-if="previewImage"
-        :src="previewImage.remoteUrl"
-        :alt="`${record.mode === 'text-to-image' ? '文生图' : '图生图'}历史作品`"
-        loading="lazy"
-        decoding="async"
-      />
-      <div v-else class="history-task-placeholder">
-        <ImageOff :size="24" aria-hidden="true" />
-      </div>
+    <div class="history-task-media">
+      <button
+        class="history-task-select"
+        type="button"
+        :aria-label="selected ? '取消选择此历史任务' : '选择此历史任务'"
+        :aria-pressed="selected"
+        @click="emit('toggle', record.generationId)"
+        @keydown="openContextMenuFromKeyboard"
+      >
+        <img
+          v-if="previewImage"
+          :src="previewImage.remoteUrl"
+          :alt="`${record.mode === 'text-to-image' ? '文生图' : '图生图'}历史作品`"
+          loading="lazy"
+          decoding="async"
+        />
+        <span v-else class="history-task-placeholder">
+          <ImageOff :size="24" aria-hidden="true" />
+        </span>
+      </button>
+
       <span v-if="selected" class="history-selected-mark" aria-hidden="true">
         <Check :size="15" :stroke-width="2.5" />
       </span>
       <span class="history-status history-status-overlay" :class="statusDetail.className">
         <i aria-hidden="true"></i>{{ statusDetail.label }}
       </span>
-      <span class="history-size-tag">{{ record.params.size }}</span>
-    </button>
 
-    <div class="history-task-content">
-      <h2 :title="record.params.prompt">{{ record.params.prompt }}</h2>
+      <div class="history-task-overlay">
+        <h2 :title="record.params.prompt">{{ record.params.prompt }}</h2>
+        <p v-if="record.errorMessage" class="history-task-error" :title="record.errorMessage">
+          {{ record.errorMessage }}
+        </p>
 
-      <div class="history-task-meta">
-        <span class="history-meta credits-value" :title="creditsTitle">
-          <Coins :size="14" aria-hidden="true" />{{ creditsLabel }}
-        </span>
-        <time
-          class="history-meta"
-          :datetime="record.createdAt"
-          :title="new Date(record.createdAt).toLocaleString('zh-CN')"
-        >
-          <CalendarDays :size="14" aria-hidden="true" />
-          {{ dateFormatter.format(new Date(record.createdAt)) }}
-        </time>
+        <div class="history-task-meta">
+          <span class="history-meta credits-value" :title="creditsTitle">
+            <Coins :size="13" aria-hidden="true" />{{ creditsLabel }}
+          </span>
+          <time
+            class="history-meta"
+            :datetime="record.createdAt"
+            :title="new Date(record.createdAt).toLocaleString('zh-CN')"
+          >
+            <CalendarDays :size="13" aria-hidden="true" />
+            {{ dateFormatter.format(new Date(record.createdAt)) }}
+          </time>
+          <span class="history-size-tag">{{ record.params.size }}</span>
+          <button
+            type="button"
+            class="history-copy-prompt"
+            title="复制提示词"
+            aria-label="复制提示词"
+            @click.stop="emit('copyPrompt', record.params.prompt)"
+          >
+            <Copy :size="14" aria-hidden="true" />
+            <span>复制提示词</span>
+          </button>
+        </div>
       </div>
-
-      <p v-if="record.errorMessage" class="history-task-error" :title="record.errorMessage">
-        {{ record.errorMessage }}
-      </p>
     </div>
   </article>
 </template>
 
 <style scoped lang="scss">
 .history-task-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -131,9 +145,12 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
     border-color 0.18s ease,
     box-shadow 0.18s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-within {
     border-color: var(--line-strong);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+
+    .history-task-overlay { opacity: 1; }
   }
 
   &.selected {
@@ -147,20 +164,28 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
 .history-task-media {
   position: relative;
   width: 100%;
-  aspect-ratio: 4 / 3;
+  height: 100%;
   display: block;
   overflow: hidden;
-  padding: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
   background: var(--field);
+}
+
+.history-task-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   text-align: initial;
 
   img {
     width: 100%;
     height: 100%;
     display: block;
-    object-fit: contain;
+    object-fit: cover;
   }
 
   &:focus-visible {
@@ -180,18 +205,15 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
 }
 
 .history-size-tag {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
+  min-width: 0;
   padding: 4px 6px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 4px;
-  color: #fff;
-  background: rgba(8, 11, 16, 0.82);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.08);
   font-size: 8px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .history-selected-mark {
@@ -225,33 +247,40 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
   font-weight: 700;
 }
 
-.history-task-content {
+.history-task-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  align-content: end;
+  gap: 9px;
+  padding: 46px 12px 12px;
+  opacity: 0;
+  color: #fff;
+  background: linear-gradient(to top, rgba(4, 7, 11, 0.94) 0%, rgba(4, 7, 11, 0.52) 48%, transparent 78%);
+  transition: opacity 0.2s ease;
 }
 
-.history-task-content h2 {
-  min-height: calc(2em * 1.55);
+.history-task-overlay h2 {
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
-  color: var(--text);
-  font-size: 12px;
+  color: #fff;
+  font-size: 13px;
   font-weight: 620;
   line-height: 1.55;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
 }
 
 .history-task-meta {
   min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  gap: 6px;
 }
 
 .history-status {
@@ -294,19 +323,43 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
   align-items: center;
   gap: 4px;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 9px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 
-  &:last-child {
-    justify-self: end;
-  }
 }
 
 .credits-value {
-  color: var(--warm);
+  color: #f5d783;
+  background: rgba(245, 215, 131, 0.12);
+}
+
+.history-copy-prompt {
+  pointer-events: auto;
+  min-height: 27px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  color: #fff;
+  background: rgba(8, 11, 16, 0.72);
+  font-size: 9px;
+  font-weight: 650;
+
+  &:hover,
+  &:focus-visible {
+    border-color: rgba(255, 255, 255, 0.42);
+    background: rgba(25, 31, 40, 0.94);
+  }
 }
 
 .history-task-error {
@@ -316,8 +369,18 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
   color: var(--danger);
   font-size: 10px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+@media (hover: none) {
+  .history-task-overlay { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-task-card,
+  .history-task-overlay { transition: none; }
 }
 
 </style>

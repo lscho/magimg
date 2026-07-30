@@ -21,6 +21,7 @@ import HistoryTaskContextMenu from "@/components/HistoryTaskContextMenu.vue";
 import { stageCutoutHandoff } from "@/services/cutoutHandoff";
 import {
   copyRemoteImageToClipboard,
+  copyTextToClipboard,
   remoteImageToSelectedFile,
   saveImageBlobsToDirectory,
   saveRemoteImageAs,
@@ -241,6 +242,17 @@ async function copyContextImage() {
   }
 }
 
+async function copyPrompt(prompt: string) {
+  actionMessage.value = "";
+  actionError.value = "";
+  try {
+    await copyTextToClipboard(prompt);
+    actionMessage.value = "提示词已复制";
+  } catch (exception) {
+    actionError.value = exception instanceof Error ? exception.message : "提示词复制失败，请稍后重试。";
+  }
+}
+
 async function downloadContextImage() {
   const target = takeContextImage();
   if (!target) return;
@@ -445,6 +457,7 @@ async function downloadSelected() {
             :record="record"
             :selected="selectedTaskIds.has(record.generationId)"
             @toggle="toggleSelection"
+            @copy-prompt="copyPrompt"
             @open-menu="openTaskMenu(record, $event)"
           />
         </template>
@@ -590,7 +603,8 @@ async function downloadSelected() {
 
 .history-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, 264px);
+  grid-auto-rows: 264px;
   align-items: start;
   gap: 12px;
 }
@@ -658,14 +672,6 @@ async function downloadSelected() {
   }
 }
 
-@media (max-width: 1280px) {
-  .history-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (max-width: 980px) {
-  .history-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 @media (max-width: 700px) {
   .history-page-heading {
     display: grid;
@@ -679,7 +685,7 @@ async function downloadSelected() {
 }
 
 @media (max-width: 560px) {
-  .history-grid { grid-template-columns: 1fr; }
+  .history-grid { justify-content: center; }
   .history-pagination {
     justify-content: flex-start;
     overflow-x: auto;

@@ -86,12 +86,13 @@ function useTemplate(template: PromptTemplate) {
       <span>{{ app.templatesError }}</span>
       <button class="secondary-button" type="button" @click="app.refreshTemplates">重新加载</button>
     </div>
-    <div
-      v-else-if="visibleTemplates.length"
-      class="template-grid"
-      :class="{ 'comparison-grid': activeMode === 'image-to-image' }"
-    >
-      <PromptTemplateCard v-for="item in visibleTemplates" :key="item.id" :template="item" @use="useTemplate" />
+    <div v-else-if="visibleTemplates.length" class="template-grid">
+      <PromptTemplateCard
+        v-for="item in visibleTemplates"
+        :key="item.id"
+        :template="item"
+        @use="useTemplate"
+      />
     </div>
     <div v-else class="empty-state full">
       <div class="empty-visual"><LayoutTemplate :size="30" /></div>
@@ -171,41 +172,11 @@ function useTemplate(template: PromptTemplate) {
 }
 
 .template-grid {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 264px);
+  grid-auto-rows: 264px;
+  align-items: start;
   gap: 12px;
-
-  &.comparison-grid {
-    :deep(.template-card) {
-      flex-basis: calc((100% - 36px) / 4);
-    }
-  }
-
-  :deep(.template-card) {
-    width: auto;
-    flex: 0 0 calc((100% - 60px) / 6);
-  }
-}
-
-@media (max-width: 1280px) {
-  .template-grid :deep(.template-card) {
-    flex-basis: calc((100% - 48px) / 5);
-  }
-
-  .template-grid.comparison-grid :deep(.template-card) {
-    flex-basis: calc((100% - 24px) / 3);
-  }
-}
-
-@media (max-width: 1080px) {
-  .template-grid :deep(.template-card) {
-    flex-basis: calc((100% - 36px) / 4);
-  }
-
-  .template-grid.comparison-grid :deep(.template-card) {
-    flex-basis: calc((100% - 12px) / 2);
-  }
 }
 
 @media (max-width: 900px) {
@@ -213,9 +184,6 @@ function useTemplate(template: PromptTemplate) {
     align-items: flex-start;
   }
 
-  .template-grid :deep(.template-card) {
-    flex-basis: calc((100% - 24px) / 3);
-  }
 }
 
 @media (max-width: 600px) {
@@ -248,21 +216,8 @@ function useTemplate(template: PromptTemplate) {
   .template-result-count {
     padding-top: 21px;
   }
+
+  .template-grid { justify-content: center; }
 }
 
-@media (max-width: 680px) {
-  .template-grid :deep(.template-card) {
-    flex-basis: calc((100% - 12px) / 2);
-  }
-
-  .template-grid.comparison-grid :deep(.template-card) {
-    flex-basis: 100%;
-  }
-}
-
-@media (max-width: 420px) {
-  .template-grid :deep(.template-card) {
-    flex-basis: 100%;
-  }
-}
 </style>

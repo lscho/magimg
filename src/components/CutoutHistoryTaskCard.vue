@@ -102,6 +102,10 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
 
 <style scoped lang="scss">
 .cutout-history-card {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -123,7 +127,7 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
 .cutout-history-media {
   position: relative;
   width: 100%;
-  aspect-ratio: 4 / 3;
+  height: 100%;
   display: block;
   overflow: hidden;
   padding: 0;

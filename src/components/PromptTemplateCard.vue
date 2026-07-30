@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { WandSparkles } from "lucide-vue-next";
+import TemplateImageComparison from "@/components/TemplateImageComparison.vue";
 import type { PromptTemplate } from "@/types";
 
 withDefaults(defineProps<{ template: PromptTemplate; compact?: boolean }>(), {
@@ -10,53 +11,30 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 
 <template>
   <article class="template-card" :class="[template.mode, { compact }]">
-    <div
-      v-if="template.mode === 'text-to-image'"
-      class="template-visual template-visual-single"
-      :class="`crop-${template.previewCrop || 'full'}`"
-    >
-      <img
-        :src="template.previewImage"
-        :alt="`${template.title}效果预览`"
-        loading="lazy"
-        decoding="async"
-      />
-      <span>效果预览</span>
-    </div>
-    <div
-      v-else
-      class="template-visual-comparison"
-      :class="{ 'combined-preview': !template.sourceImage }"
-    >
-      <div class="comparison-pane source">
-        <img
-          :src="template.sourceImage || template.previewImage"
-          :alt="`${template.title}原图`"
-          loading="lazy"
-          decoding="async"
-        />
-        <span class="comparison-label">原图</span>
-      </div>
-      <div class="comparison-pane effect">
+    <div class="template-card-media">
+      <div
+        v-if="template.mode === 'text-to-image'"
+        class="template-single-preview"
+        :class="`crop-${template.previewCrop || 'full'}`"
+      >
         <img
           :src="template.previewImage"
-          :alt="`${template.title}效果图`"
+          :alt="`${template.title}效果预览`"
           loading="lazy"
           decoding="async"
         />
-        <span class="comparison-label">效果</span>
       </div>
-    </div>
+      <TemplateImageComparison v-else :template="template" />
 
-    <div class="template-card-content">
-      <div class="template-card-top">
-        <span>{{ template.category }}</span>
-        <div class="template-tags">
-          <i v-for="tag in template.tags.slice(0, 2)" :key="tag">{{ tag }}</i>
+      <div class="template-card-overlay">
+        <div class="template-card-copy">
+          <div class="template-card-meta">
+            <span>{{ template.category }}</span>
+            <i v-for="tag in template.tags.slice(0, 1)" :key="tag">{{ tag }}</i>
+          </div>
+          <h2>{{ template.title }}</h2>
+          <blockquote :title="template.prompt">{{ template.prompt }}</blockquote>
         </div>
-      </div>
-      <div class="template-title-row">
-        <h2>{{ template.title }}</h2>
         <button
           class="template-use"
           type="button"
@@ -64,282 +42,176 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
           :title="`使用${template.title}模板`"
           @click="emit('use', template)"
         >
-          <WandSparkles :size="14" />
+          <WandSparkles :size="14" aria-hidden="true" />
           <span>使用</span>
         </button>
       </div>
-      <blockquote :title="template.prompt">{{ template.prompt }}</blockquote>
     </div>
   </article>
 </template>
 
 <style scoped lang="scss">
 .template-card {
+  width: 100%;
+  height: 100%;
   min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  padding: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-raised);
   box-shadow: none;
   transition:
     border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
+    box-shadow 0.18s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-within {
     border-color: var(--line-strong);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-    transform: none;
-  }
 
-  &.compact {
-    grid-template-rows: auto auto;
-
-    blockquote {
-      min-height: calc(2em * 1.65);
-      -webkit-line-clamp: 2;
-    }
-
-    .template-use {
-      height: 30px;
-      min-width: 58px;
-    }
-  }
-
-  h2 {
-    display: -webkit-box;
-    margin: 0;
-    overflow: hidden;
-    font-size: 14px;
-    font-weight: 680;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  blockquote {
-    display: -webkit-box;
-    min-height: calc(3em * 1.65);
-    margin: 0;
-    overflow: hidden;
-    color: var(--text);
-    font-size: 12px;
-    line-height: 1.6;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
+    .template-card-overlay { opacity: 1; }
   }
 }
 
-.template-visual {
+.template-card-media {
   position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   overflow: hidden;
-  border-radius: 7px;
-  background-color: var(--surface-strong);
-
-  img {
-    display: block;
-    width: 100%;
-    height: auto;
-  }
-
-  &-single {
-    &.crop-source,
-    &.crop-effect {
-      aspect-ratio: 1;
-
-      img {
-        width: 200%;
-        max-width: none;
-      }
-    }
-
-    &.crop-effect img {
-      transform: translateX(-50%);
-    }
-  }
-}
-
-.template-visual-single > span {
-  position: absolute;
-  left: 9px;
-  bottom: 9px;
-  padding: 4px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 4px;
-  color: #fff;
-  background: rgba(8, 11, 16, 0.78);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.template-visual-comparison {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  overflow: hidden;
-  border-bottom: 1px solid var(--line);
   background: var(--field);
 }
 
-.comparison-label {
-  position: absolute;
-  z-index: 2;
-  top: 8px;
-  left: 8px;
-  min-height: 22px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 7px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 4px;
-  color: #fff;
-  background: rgba(8, 11, 16, 0.82);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.26);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-  text-shadow: 0 1px 2px #000;
-}
-
-.comparison-pane {
+.template-single-preview {
   position: relative;
-  min-width: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  background-color: var(--surface-strong);
 
   img {
-    display: block;
     width: 100%;
-    height: auto;
+    height: 100%;
+    display: block;
+    object-fit: cover;
   }
 
-  &.source {
-    border-right: 1px solid rgba(255, 255, 255, 0.3);
-
-    &::after {
-      position: absolute;
-      z-index: 1;
-      inset: 0;
-      content: "";
-      pointer-events: none;
-      background: rgba(4, 7, 11, 0.26);
-      box-shadow: inset -18px 0 30px rgba(0, 0, 0, 0.28);
-    }
-  }
-
-  &.effect {
-    box-shadow: inset 0 0 0 1px rgba(101, 207, 224, 0.08);
-
-    .comparison-label {
-      right: 8px;
-      left: auto;
-      border-color: rgba(101, 207, 224, 0.46);
-    }
-  }
-}
-
-.combined-preview {
-  .comparison-pane {
-    aspect-ratio: 1;
-
+  &.crop-source,
+  &.crop-effect {
     img {
       width: 200%;
       max-width: none;
+      object-fit: cover;
     }
   }
 
-  .effect img {
-    transform: translateX(-50%);
-  }
+  &.crop-effect img { transform: translateX(-50%); }
 }
 
-.template-card-content {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 9px;
-  padding: 12px;
-}
-
-.template-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-
-  > span {
-    color: var(--accent-strong);
-    font-size: 9px;
-    font-weight: 800;
-  }
-}
-
-.template-title-row {
-  min-width: 0;
+.template-card-overlay {
+  pointer-events: none;
+  position: absolute;
+  z-index: 6;
+  inset: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: end;
   gap: 10px;
+  padding: 46px 12px 12px;
+  opacity: 0;
+  color: #fff;
+  background: linear-gradient(to top, rgba(4, 7, 11, 0.95) 0%, rgba(4, 7, 11, 0.52) 48%, transparent 78%);
+  transition: opacity 0.2s ease;
 }
 
-.template-tags {
+.template-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.template-card-meta {
+  min-width: 0;
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 5px;
   overflow: hidden;
 
+  span,
   i {
-    padding: 3px 5px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 4px 6px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 4px;
-    color: var(--muted);
-    background: var(--surface-strong);
+    color: rgba(255, 255, 255, 0.84);
+    background: rgba(255, 255, 255, 0.08);
     font-size: 8px;
     font-style: normal;
+    font-weight: 700;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  span { color: var(--accent-strong); }
+}
+
+.template-card h2 {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 680;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.template-card blockquote {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .template-use {
-  min-width: 64px;
-  height: 32px;
-  flex: 0 0 auto;
+  pointer-events: auto;
+  min-width: 62px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 0 10px;
+  padding: 0 9px;
   border: 1px solid var(--accent-border);
   border-radius: 6px;
   color: var(--on-accent);
   background: var(--accent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  line-height: 1;
   white-space: nowrap;
 
-  &:hover {
-    background: var(--accent-hover);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.3),
-      0 6px 16px rgba(59, 83, 168, 0.22);
-  }
+  &:hover,
+  &:focus-visible { background: var(--accent-hover); }
 }
 
-@media (max-width: 560px) {
-  .comparison-label {
-    top: 6px;
-    left: 6px;
-  }
+.template-card.compact {
+  .template-card-overlay { padding: 38px 10px 10px; }
+  .template-card blockquote { -webkit-line-clamp: 2; }
+}
 
-  .comparison-pane.effect .comparison-label {
-    right: 6px;
-  }
+@media (hover: none) {
+  .template-card-overlay { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .template-card,
+  .template-card-overlay { transition: none; }
 }
 </style>

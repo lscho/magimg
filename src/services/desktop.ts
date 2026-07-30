@@ -225,6 +225,18 @@ export async function copyRemoteImageToClipboard(url: string, mimeType?: string)
   await copyImageBlobToClipboard(await loadRemoteImageBlob(url, mimeType));
 }
 
+export async function copyTextToClipboard(text: string): Promise<void> {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("当前系统不支持复制文字。");
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (exception) {
+    throw new Error("无法复制文字，请检查系统剪贴板权限。", { cause: exception });
+  }
+}
+
 export async function copyImageBlobToClipboard(blob: Blob): Promise<void> {
   if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
     throw new Error("当前系统不支持复制图片，请使用下载功能。");

@@ -50,7 +50,7 @@ function onImageError() {
         <header>
           <span class="section-kicker">SUPPORT</span>
           <h2 id="qrcode-modal-title">加入群聊</h2>
-          <p>扫码加入群聊，获取帮助与反馈</p>
+          <p>使用微信扫码加入群聊，获取帮助与反馈</p>
         </header>
 
         <div class="qrcode-body">
@@ -64,7 +64,6 @@ function onImageError() {
               :src="qrcodeUrl"
               alt="群聊二维码"
               width="200"
-              height="200"
               @error="onImageError"
             />
           </template>
@@ -110,12 +109,11 @@ function onImageError() {
 }
 
 .qrcode-image {
+  display: block;
   width: 200px;
-  height: 200px;
+  height: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  object-fit: contain;
-  background: #fff;
 }
 
 .qrcode-error {
