@@ -1,9 +1,10 @@
 import { createRouter, createWebHashHistory } from "vue-router";
-import CutoutView from "@/views/CutoutView.vue";
-import GenerateView from "@/views/GenerateView.vue";
-import HistoryView from "@/views/HistoryView.vue";
-import ImageEditorView from "@/views/ImageEditorView.vue";
-import TemplateGalleryView from "@/views/TemplateGalleryView.vue";
+
+const CutoutView = () => import("@/views/CutoutView.vue");
+const GenerateView = () => import("@/views/GenerateView.vue");
+const HistoryView = () => import("@/views/HistoryView.vue");
+const ImageEditorView = () => import("@/views/ImageEditorView.vue");
+const TemplateGalleryView = () => import("@/views/TemplateGalleryView.vue");
 
 export const router = createRouter({
   history: createWebHashHistory(),

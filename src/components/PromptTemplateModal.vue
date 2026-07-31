@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, useTemplateRef } from "vue";
 import { LayoutTemplate, LoaderCircle, X } from "lucide-vue-next";
-import PromptTemplateCard from "@/components/PromptTemplateCard.vue";
+import TemplateMasonryGrid from "@/components/TemplateMasonryGrid.vue";
 import { useAppStore } from "@/stores/app";
 import type { GenerationMode, PromptTemplate } from "@/types";
 
@@ -66,15 +66,9 @@ onMounted(() => {
         <span>{{ app.templatesError }}</span>
         <button class="secondary-button" type="button" @click="app.refreshTemplates">重新加载</button>
       </div>
-      <div
-        v-else-if="visibleTemplates.length"
-        class="template-modal-grid"
-        :class="{ 'comparison-grid': mode === 'image-to-image' }"
-      >
-        <PromptTemplateCard
-          v-for="item in visibleTemplates"
-          :key="item.id"
-          :template="item"
+      <div v-else-if="visibleTemplates.length" class="template-modal-scroll">
+        <TemplateMasonryGrid
+          :templates="visibleTemplates"
           compact
           @use="emit('use', $event)"
         />
@@ -130,13 +124,8 @@ onMounted(() => {
   margin-bottom: 14px;
 }
 
-.template-modal-grid {
+.template-modal-scroll {
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, 264px);
-  grid-auto-rows: 264px;
-  align-content: start;
-  gap: 10px;
   overflow: auto;
   padding: 2px 4px 2px 2px;
   scrollbar-width: thin;
@@ -166,10 +155,6 @@ onMounted(() => {
   .modal.template-modal {
     max-height: calc(100vh - 24px);
     padding: 18px;
-  }
-
-  .template-modal-grid {
-    justify-content: center;
   }
 }
 </style>

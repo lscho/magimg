@@ -6,7 +6,15 @@ import type { PromptTemplate } from "@/types";
 const props = defineProps<{ template: PromptTemplate }>();
 
 const position = shallowRef(50);
+const loadedAspectRatio = shallowRef<number | null>(null);
 const combinedPreview = computed(() => !props.template.sourceImage);
+const mediaStyle = computed(() => {
+  if (loadedAspectRatio.value) return { aspectRatio: String(loadedAspectRatio.value) };
+  if (props.template.width && props.template.height) {
+    return { aspectRatio: `${props.template.width} / ${props.template.height}` };
+  }
+  return { aspectRatio: "1" };
+});
 const sourceClipStyle = computed(() => ({
   clipPath: `inset(0 ${100 - position.value}% 0 0)`
 }));
@@ -15,9 +23,16 @@ const dividerStyle = computed(() => ({ left: `${position.value}%` }));
 watch(
   () => [props.template.previewImage, props.template.sourceImage],
   () => {
+    loadedAspectRatio.value = null;
     position.value = 50;
   }
 );
+
+function captureAspectRatio(event: Event) {
+  const image = event.currentTarget as HTMLImageElement;
+  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+  loadedAspectRatio.value = image.naturalWidth / image.naturalHeight / (combinedPreview.value ? 2 : 1);
+}
 
 function updatePosition(event: Event) {
   position.value = Number((event.currentTarget as HTMLInputElement).value);
@@ -28,6 +43,7 @@ function updatePosition(event: Event) {
   <div
     class="template-comparison"
     :class="{ 'combined-preview': combinedPreview }"
+    :style="mediaStyle"
   >
     <img
       class="comparison-image comparison-effect"
@@ -36,6 +52,7 @@ function updatePosition(event: Event) {
       draggable="false"
       loading="lazy"
       decoding="async"
+      @load="captureAspectRatio"
     />
 
     <div class="comparison-source" :style="sourceClipStyle" aria-hidden="true">
@@ -74,7 +91,7 @@ function updatePosition(event: Event) {
 .template-comparison {
   position: relative;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--field);
 

@@ -1,12 +1,33 @@
 <script setup lang="ts">
+import { computed, shallowRef, watch } from "vue";
 import { WandSparkles } from "lucide-vue-next";
 import TemplateImageComparison from "@/components/TemplateImageComparison.vue";
 import type { PromptTemplate } from "@/types";
 
-withDefaults(defineProps<{ template: PromptTemplate; compact?: boolean }>(), {
+const props = withDefaults(defineProps<{ template: PromptTemplate; compact?: boolean }>(), {
   compact: false
 });
 const emit = defineEmits<{ use: [template: PromptTemplate] }>();
+
+const loadedAspectRatio = shallowRef<number | null>(null);
+const singleMediaStyle = computed(() => {
+  if (loadedAspectRatio.value) return { aspectRatio: String(loadedAspectRatio.value) };
+  if (props.template.width && props.template.height) {
+    return { aspectRatio: `${props.template.width} / ${props.template.height}` };
+  }
+  return { aspectRatio: "1" };
+});
+
+watch(() => props.template.previewImage, () => {
+  loadedAspectRatio.value = null;
+});
+
+function captureAspectRatio(event: Event) {
+  const image = event.currentTarget as HTMLImageElement;
+  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+  const isHalfPreview = props.template.previewCrop && props.template.previewCrop !== "full";
+  loadedAspectRatio.value = image.naturalWidth / image.naturalHeight / (isHalfPreview ? 2 : 1);
+}
 </script>
 
 <template>
@@ -16,12 +37,14 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
         v-if="template.mode === 'text-to-image'"
         class="template-single-preview"
         :class="`crop-${template.previewCrop || 'full'}`"
+        :style="singleMediaStyle"
       >
         <img
           :src="template.previewImage"
           :alt="`${template.title}效果预览`"
           loading="lazy"
           decoding="async"
+          @load="captureAspectRatio"
         />
       </div>
       <TemplateImageComparison v-else :template="template" />
@@ -53,7 +76,6 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 <style scoped lang="scss">
 .template-card {
   width: 100%;
-  height: 100%;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -76,7 +98,6 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 .template-card-media {
   position: relative;
   width: 100%;
-  height: 100%;
   min-width: 0;
   overflow: hidden;
   background: var(--field);
@@ -85,7 +106,7 @@ const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 .template-single-preview {
   position: relative;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   overflow: hidden;
 
   img {

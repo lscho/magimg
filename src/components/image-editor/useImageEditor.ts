@@ -13,7 +13,7 @@ import type {
   PencilBrush,
   Rect as FabricRect,
   TSimplePathData
-} from "fabric";
+} from "fabric/es";
 import {
   createEmptyImageEditorDocument,
   isPristineImageEditorDocument,
@@ -32,17 +32,18 @@ import {
   hasImageAdjustments,
   normalizeImageAdjustments
 } from "./imageAdjustments";
+import type { FabricRuntime } from "./fabricRuntime";
 
-type FabricModule = typeof import("fabric");
+let fabricRuntimePromise: Promise<FabricRuntime> | null = null;
 
-let fabricRuntimePromise: Promise<FabricModule> | null = null;
-
-export function preloadImageEditorRuntime(): Promise<FabricModule> {
+export function preloadImageEditorRuntime(): Promise<FabricRuntime> {
   if (!fabricRuntimePromise) {
-    fabricRuntimePromise = import("fabric").catch((exception) => {
-      fabricRuntimePromise = null;
-      throw exception;
-    });
+    fabricRuntimePromise = import("./fabricRuntime")
+      .then(({ fabricRuntime }) => fabricRuntime)
+      .catch((exception) => {
+        fabricRuntimePromise = null;
+        throw exception;
+      });
   }
   return fabricRuntimePromise;
 }
@@ -124,7 +125,7 @@ export function useImageEditor(source: ImageEditorSource) {
   const textBold = shallowRef(false);
   const adjustments = reactive({ ...DEFAULT_IMAGE_ADJUSTMENTS });
 
-  let fabricModule: FabricModule | null = null;
+  let fabricModule: FabricRuntime | null = null;
   let canvas: FabricCanvas | null = null;
   let baseCanvas: HTMLCanvasElement | null = null;
   let viewport: HTMLElement | null = null;

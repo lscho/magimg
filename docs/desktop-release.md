@@ -20,6 +20,8 @@ Windows 构建通过 `src-tauri/tauri.windows.conf.json` 使用英文产品名 `
 
 原生 AI 抠图使用的官方 ONNX Runtime 1.22 Windows DLL 依赖 MSVC C++ 运行库。`beforeBuildCommand` 会调用 `scripts/prepare-windows-runtime.mjs`，从目标架构的 MSVC v143 工具链中复制完整 `Microsoft.VC143.CRT` DLL 集；Tauri 随后通过 Windows 专属资源映射将这些 DLL 放到应用主程序同目录。该 app-local 部署同时覆盖首次安装和 NSIS 自动更新，无需管理员权限或联网安装前置组件。Windows runner 必须安装对应架构的 MSVC v143 C++ Build Tools；自建 runner 无法自动定位时，应设置 `MSVC_CRT_DIR` 为架构专属的 `Microsoft.VC143.CRT` 目录。
 
+Rust 正式构建固定启用完整 LTO、单 codegen unit、`panic=abort` 和符号裁剪，同时保留默认 `opt-level=3`，以缩减包含静态 ONNX Runtime 的主程序并维持本地图片处理性能。该配置会增加干净环境下的 Release 编译时间；发布流水线的 120 分钟平台超时已经包含这部分余量。
+
 ## 2. 一次性配置
 
 正式构建读取仓库根目录 `.env.production`：

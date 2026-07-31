@@ -2,7 +2,7 @@
 import { computed, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ImagePlus, LayoutTemplate, LoaderCircle, Wand2 } from "lucide-vue-next";
-import PromptTemplateCard from "@/components/PromptTemplateCard.vue";
+import TemplateMasonryGrid from "@/components/TemplateMasonryGrid.vue";
 import { useAppStore } from "@/stores/app";
 import type { GenerationMode, PromptTemplate } from "@/types";
 
@@ -86,14 +86,11 @@ function useTemplate(template: PromptTemplate) {
       <span>{{ app.templatesError }}</span>
       <button class="secondary-button" type="button" @click="app.refreshTemplates">重新加载</button>
     </div>
-    <div v-else-if="visibleTemplates.length" class="template-grid">
-      <PromptTemplateCard
-        v-for="item in visibleTemplates"
-        :key="item.id"
-        :template="item"
-        @use="useTemplate"
-      />
-    </div>
+    <TemplateMasonryGrid
+      v-else-if="visibleTemplates.length"
+      :templates="visibleTemplates"
+      @use="useTemplate"
+    />
     <div v-else class="empty-state full">
       <div class="empty-visual"><LayoutTemplate :size="30" /></div>
       <strong>暂无可用模板</strong>
@@ -171,14 +168,6 @@ function useTemplate(template: PromptTemplate) {
   white-space: nowrap;
 }
 
-.template-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, 264px);
-  grid-auto-rows: 264px;
-  align-items: start;
-  gap: 12px;
-}
-
 @media (max-width: 900px) {
   .template-page-heading {
     align-items: flex-start;
@@ -217,7 +206,6 @@ function useTemplate(template: PromptTemplate) {
     padding-top: 21px;
   }
 
-  .template-grid { justify-content: center; }
 }
 
 </style>
