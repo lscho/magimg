@@ -16,8 +16,7 @@ describe("CNB desktop release trigger", () => {
       githubRepository: "lscho/magimg"
     }), {
       event: "api_trigger_desktop_release",
-      tag: "v1.2.3",
-      sha,
+      branch: "main",
       title: "Publish desktop release v1.2.3",
       sync: "false",
       env: {

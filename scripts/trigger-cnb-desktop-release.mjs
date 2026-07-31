@@ -40,8 +40,7 @@ export function createStartBuildRequest({ tag, sha, githubRepository }) {
   const sourceRepository = validateRepository(githubRepository, "GITHUB_RELEASE_REPOSITORY");
   return {
     event: RELEASE_EVENT,
-    tag: releaseTag,
-    sha: releaseSha,
+    branch: "main",
     title: `Publish desktop release ${releaseTag}`,
     sync: "false",
     env: {

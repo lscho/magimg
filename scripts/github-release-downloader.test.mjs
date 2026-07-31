@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  createReleaseDownloadPlan,
   downloadGithubDesktopRelease,
   githubReleaseAssetUrl,
   releaseAssetDescriptors
@@ -59,7 +60,17 @@ function releaseFixture() {
     ]
   };
   files.set("huanhua-desktop-release-manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-  return { files, manifest };
+  const release = {
+    tag_name: "v1.2.3",
+    draft: false,
+    assets: [...files.entries()].map(([name, content]) => ({
+      name,
+      size: Buffer.byteLength(content),
+      digest: `sha256:${sha256(content)}`,
+      browser_download_url: `https://github.com/lscho/magimg/releases/download/v1.2.3/${encodeURIComponent(name)}`
+    }))
+  };
+  return { files, manifest, release };
 }
 
 describe("GitHub desktop release downloader", () => {
@@ -75,9 +86,27 @@ describe("GitHub desktop release downloader", () => {
     assert.equal(releaseAssetDescriptors(manifest).length, 10);
   });
 
+  it("maps manifest files to GitHub-normalized asset names by digest", () => {
+    const { manifest, release } = releaseFixture();
+    const updater = release.assets.find(asset => asset.name === "win-x64.exe");
+    const signature = release.assets.find(asset => asset.name === "win-x64.exe.sig");
+    updater.name = "Huanhua.AI_1.2.3_x64-setup.exe";
+    updater.browser_download_url = `https://github.com/lscho/magimg/releases/download/v1.2.3/${updater.name}`;
+    signature.name = `${updater.name}.sig`;
+    signature.browser_download_url = `https://github.com/lscho/magimg/releases/download/v1.2.3/${signature.name}`;
+
+    const plan = createReleaseDownloadPlan(manifest, release, "lscho/magimg", "v1.2.3");
+    const mappedUpdater = plan.find(asset => asset.fileName === "win-x64.exe");
+    assert.equal(mappedUpdater.releaseFileName, "Huanhua.AI_1.2.3_x64-setup.exe");
+    assert.equal(
+      plan.find(asset => asset.fileName === "win-x64.exe.sig").releaseFileName,
+      "Huanhua.AI_1.2.3_x64-setup.exe.sig"
+    );
+  });
+
   it("downloads only manifest-declared assets and verifies their content", async () => {
     const directory = await mkdtemp(join(tmpdir(), "huanhua-github-release-"));
-    const { files } = releaseFixture();
+    const { files, release } = releaseFixture();
     const requested = [];
     try {
       const result = await downloadGithubDesktopRelease({
@@ -86,6 +115,9 @@ describe("GitHub desktop release downloader", () => {
         sha: commitSha,
         outputDirectory: directory,
         fetchImpl: async url => {
+          if (url.startsWith("https://api.github.com/")) {
+            return new Response(JSON.stringify(release));
+          }
           const fileName = decodeURIComponent(new URL(url).pathname.split("/").at(-1));
           requested.push(fileName);
           const content = files.get(fileName);

@@ -79,10 +79,87 @@ export function releaseAssetDescriptors(manifest) {
     add({
       kind: "signature",
       fileName: platform.updater.signatureFileName,
+      updaterFileName: platform.updater.fileName,
       signature: platform.updater.signature
     });
   }
   return [...descriptors.values()];
+}
+
+function validatedReleaseAsset(value, repository, tag) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("GitHub release contains invalid asset metadata");
+  }
+  const name = typeof value.name === "string" ? value.name : "";
+  if (!name || basename(name) !== name || name.includes("\\") || name.includes("..")) {
+    throw new Error("GitHub release asset name is invalid");
+  }
+  if (!Number.isSafeInteger(value.size) || value.size <= 0) {
+    throw new Error(`GitHub release asset size is invalid: ${name}`);
+  }
+  const digest = typeof value.digest === "string" ? value.digest.toLowerCase() : "";
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+    throw new Error(`GitHub release asset digest is missing or invalid: ${name}`);
+  }
+  let downloadUrl;
+  try {
+    downloadUrl = new URL(value.browser_download_url);
+  } catch {
+    throw new Error(`GitHub release asset URL is invalid: ${name}`);
+  }
+  const expectedPathPrefix = `/${repository}/releases/download/${encodeURIComponent(tag)}/`;
+  if (
+    downloadUrl.protocol !== "https:"
+    || downloadUrl.hostname !== "github.com"
+    || !downloadUrl.pathname.startsWith(expectedPathPrefix)
+    || downloadUrl.search
+    || downloadUrl.hash
+  ) {
+    throw new Error(`GitHub release asset URL is outside the expected release: ${name}`);
+  }
+  return { name, size: value.size, digest, downloadUrl: downloadUrl.toString() };
+}
+
+export function createReleaseDownloadPlan(manifest, release, repository, tag) {
+  if (!release || typeof release !== "object" || Array.isArray(release)) {
+    throw new Error("GitHub release metadata is invalid");
+  }
+  if (release.tag_name !== tag || release.draft === true) {
+    throw new Error("GitHub release metadata does not match the requested published tag");
+  }
+  if (!Array.isArray(release.assets)) throw new Error("GitHub release assets are missing");
+  const releaseAssets = release.assets.map(asset => validatedReleaseAsset(asset, repository, tag));
+  const matchedBinaries = new Map();
+
+  function binaryAsset(descriptor) {
+    const matches = releaseAssets.filter(asset =>
+      asset.size === descriptor.fileSize && asset.digest === `sha256:${descriptor.sha256}`
+    );
+    if (matches.length !== 1) {
+      throw new Error(`Expected one GitHub release asset matching ${descriptor.fileName}, found ${matches.length}`);
+    }
+    matchedBinaries.set(descriptor.fileName, matches[0]);
+    return matches[0];
+  }
+
+  return releaseAssetDescriptors(manifest).map(descriptor => {
+    if (descriptor.kind === "binary") {
+      const asset = binaryAsset(descriptor);
+      return { ...descriptor, releaseFileName: asset.name, downloadUrl: asset.downloadUrl };
+    }
+    const updaterAsset = matchedBinaries.get(descriptor.updaterFileName);
+    if (!updaterAsset) throw new Error(`Missing matched updater asset for ${descriptor.fileName}`);
+    const expectedSignatureName = `${updaterAsset.name}.sig`;
+    const matches = releaseAssets.filter(asset => asset.name === expectedSignatureName);
+    if (matches.length !== 1) {
+      throw new Error(`Expected one GitHub updater signature ${expectedSignatureName}, found ${matches.length}`);
+    }
+    return {
+      ...descriptor,
+      releaseFileName: matches[0].name,
+      downloadUrl: matches[0].downloadUrl
+    };
+  });
 }
 
 function isRetryableStatus(status) {
@@ -98,7 +175,7 @@ async function fetchWithRetry(url, fetchImpl, attempts = DOWNLOAD_ATTEMPTS) {
         signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
       });
       if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
+        const error = new Error(`HTTP ${response.status} for ${url}`);
         error.retryable = isRetryableStatus(response.status);
         throw error;
       }
@@ -122,6 +199,18 @@ async function fetchManifest(url, fetchImpl) {
   const body = new Uint8Array(await response.arrayBuffer());
   if (body.byteLength > MAX_MANIFEST_SIZE) throw new Error("GitHub release manifest is too large");
   return new TextDecoder().decode(body);
+}
+
+async function fetchReleaseMetadata(repository, tag, fetchImpl) {
+  const url = `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`;
+  const response = await fetchWithRetry(url, fetchImpl);
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > MAX_MANIFEST_SIZE) throw new Error("GitHub release metadata is too large");
+  try {
+    return JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new Error("GitHub release metadata returned invalid JSON");
+  }
 }
 
 async function downloadAsset(url, destination, descriptor, fetchImpl) {
@@ -208,11 +297,19 @@ export async function downloadGithubDesktopRelease({
   await writeFile(partialManifestPath, rawManifest, { encoding: "utf8", flag: "wx" });
   await rename(partialManifestPath, manifestPath);
 
-  const descriptors = releaseAssetDescriptors(manifest);
+  const release = await fetchReleaseMetadata(sourceRepository, tag, fetchImpl);
+  const descriptors = createReleaseDownloadPlan(manifest, release, sourceRepository, tag);
   await mapWithConcurrency(descriptors, DOWNLOAD_CONCURRENCY, async descriptor => {
-    const url = githubReleaseAssetUrl(sourceRepository, tag, descriptor.fileName);
-    await downloadAsset(url, join(destinationDirectory, descriptor.fileName), descriptor, fetchImpl);
-    console.log(`Downloaded and verified ${descriptor.fileName}`);
+    await downloadAsset(
+      descriptor.downloadUrl,
+      join(destinationDirectory, descriptor.fileName),
+      descriptor,
+      fetchImpl
+    );
+    const renamed = descriptor.releaseFileName === descriptor.fileName
+      ? descriptor.fileName
+      : `${descriptor.releaseFileName} -> ${descriptor.fileName}`;
+    console.log(`Downloaded and verified ${renamed}`);
   });
   return { manifest, assets: descriptors };
 }

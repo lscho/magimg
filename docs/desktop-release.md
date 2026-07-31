@@ -75,8 +75,8 @@ updater 私钥和 Apple 凭据继续只保存在 GitHub Secrets，COS SecretKey 
 5. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
 6. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
 7. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
-8. `trigger-cnb-release` 调用 CNB StartBuild API，以 `api_trigger_desktop_release` 事件传入 GitHub repository、tag 和完整 commit SHA；CNB 必须能检出同一个 SHA。
-9. CNB 从公开 GitHub Release 下载初始清单及清单声明的资产，不信任其他附件；仓库、tag、commit、文件大小、SHA-256 或 updater 签名任一不匹配都会终止发布。
+8. `trigger-cnb-release` 调用 CNB StartBuild API，以 `api_trigger_desktop_release` 事件在 CNB `main` 分支运行最新发布器，并通过环境变量传入 GitHub repository、tag 和完整 commit SHA。发布器代码与待发布客户端提交解耦，旧版本重试时可以直接使用 `main` 上的修复。
+9. CNB 从公开 GitHub Release 下载初始清单及清单声明的资产，不信任其他附件。GitHub 可能把上传文件名中的空格改为点号或移除非 ASCII 前缀，因此发布器通过 Release API 按文件大小和 GitHub SHA-256 定位实际下载 URL，再保存为清单文件名；仓库、tag、commit、大小、SHA-256 或 updater 签名任一不匹配都会终止发布。
 10. CNB 把制品上传到 `desktop/releases/v<version>/`。16 MiB 以上文件使用 8 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`。
 11. CNB 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
 12. CNB 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。GitHub 每 15 秒查询 CNB 状态，直到成功、失败或取消，因此后续流程失败会回传到 GitHub 标签工作流。
@@ -93,7 +93,7 @@ git push origin v1.2.3
 git push github v1.2.3
 ```
 
-也可以在 CNB 配置从 GitHub 自动同步，但必须保证 `atmomo/huanhua-client` 中存在 GitHub Actions 传入的完整 SHA 与标签。只推 GitHub 标签而未同步 CNB 时，StartBuild 会因无法检出 SHA 失败。
+也可以在 CNB 配置从 GitHub 自动同步。CNB 发布器从 `main` 读取，不要求检出待发布标签的 commit，但初始清单中的完整 GitHub SHA 仍必须与 GitHub Actions 传入值一致，否则发布失败。
 
 ## 4. 发布清单
 
