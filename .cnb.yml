@@ -1,20 +1,21 @@
 # GitHub Actions builds and signs the native applications. CNB only handles the
 # network-sensitive publishing path after the GitHub Release is complete.
-api_trigger_desktop_release:
-  - name: publish-desktop-release
-    runner:
-      tags: cnb:arch:amd64
-      cpus: 4
-    docker:
-      image: node:22-bookworm-slim
-      volumes:
-        - /root/.npm
-    imports:
-      - https://cnb.cool/atmomo/huanhua-release-secrets/-/blob/main/desktop-release.yml
-    stages:
-      - name: install-release-dependencies
-        script: npm ci --ignore-scripts --no-audit --no-fund
-      - name: download-and-verify-github-release
-        script: node scripts/download-github-desktop-release.mjs
-      - name: upload-to-cos-and-register-backend
-        script: node scripts/publish-desktop-release.mjs
+$:
+  api_trigger_desktop_release:
+    - name: publish-desktop-release
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        image: node:22-bookworm-slim
+        volumes:
+          - /root/.npm
+      imports:
+        - https://cnb.cool/atmomo/huanhua-release-secrets/-/blob/main/desktop-release.yml
+      stages:
+        - name: install-release-dependencies
+          script: npm ci --ignore-scripts --no-audit --no-fund
+        - name: download-and-verify-github-release
+          script: node scripts/download-github-desktop-release.mjs
+        - name: upload-to-cos-and-register-backend
+          script: node scripts/publish-desktop-release.mjs

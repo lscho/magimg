@@ -60,7 +60,7 @@ allow_events:
   - api_trigger_desktop_release
 ```
 
-`.cnb.yml` 已通过 `imports` 引用该文件。`allow_slugs` 和 `allow_events` 将密钥限制到当前仓库与发布事件。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，禁止 DeleteObject 和全桶管理。CNB 到同地域 COS 默认保持 `TENCENT_COS_USE_ACCELERATE=false`；只有实测跨地域链路更快并已为 bucket 开启全球加速时才设为 `true`。
+`.cnb.yml` 已在 `$` 兜底分支的 `api_trigger_desktop_release` 事件中通过 `imports` 引用该文件。CNB 的 API 触发属于仓库级事件，不能把事件直接写在配置顶层。`allow_slugs` 和 `allow_events` 将密钥限制到当前仓库与发布事件。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，禁止 DeleteObject 和全桶管理。CNB 到同地域 COS 默认保持 `TENCENT_COS_USE_ACCELERATE=false`；只有实测跨地域链路更快并已为 bucket 开启全球加速时才设为 `true`。
 
 updater 私钥和 Apple 凭据继续只保存在 GitHub Secrets，COS SecretKey 和后台 Webhook Secret 只保存在 CNB 密钥仓库。更换 updater 密钥会使已安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本。
 
