@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from "vue";
+import { computed, onMounted, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ImagePlus, LayoutTemplate, LoaderCircle, Wand2 } from "lucide-vue-next";
 import TemplateMasonryGrid from "@/components/TemplateMasonryGrid.vue";
@@ -24,6 +24,10 @@ const visibleTemplates = computed(() =>
 
 watch(activeMode, () => {
   activeCategory.value = "全部";
+});
+
+onMounted(() => {
+  void app.refreshTemplates();
 });
 
 function useTemplate(template: PromptTemplate) {
@@ -99,10 +103,14 @@ function useTemplate(template: PromptTemplate) {
 </template>
 
 <style scoped lang="scss">
+.template-gallery-view {
+  padding-top: 22px;
+}
+
 .template-page-heading {
   align-items: center;
   margin-bottom: 0;
-  padding-bottom: 18px;
+  padding-bottom: 14px;
 }
 
 .template-heading-copy {
@@ -145,19 +153,19 @@ function useTemplate(template: PromptTemplate) {
 }
 
 .template-toolbar {
-  min-height: 58px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
 
 .category-filters {
   min-width: 0;
   margin: 0;
-  padding: 12px 0;
+  padding: 10px 0;
 }
 
 .template-result-count {
@@ -176,6 +184,10 @@ function useTemplate(template: PromptTemplate) {
 }
 
 @media (max-width: 600px) {
+  .template-gallery-view {
+    padding-top: 16px;
+  }
+
   .template-page-heading {
     display: grid;
   }

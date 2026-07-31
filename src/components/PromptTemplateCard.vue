@@ -103,6 +103,13 @@ function captureAspectRatio(event: Event) {
   background: var(--field);
 }
 
+.template-card:not(.compact) {
+  .template-single-preview,
+  :deep(.template-comparison) {
+    max-height: min(48vh, 460px);
+  }
+}
+
 .template-single-preview {
   position: relative;
   width: 100%;
@@ -113,19 +120,24 @@ function captureAspectRatio(event: Event) {
     width: 100%;
     height: 100%;
     display: block;
-    object-fit: cover;
+    object-fit: contain;
+    object-position: center;
   }
 
   &.crop-source,
   &.crop-effect {
     img {
-      width: 200%;
+      position: absolute;
+      inset: 0 auto auto 50%;
+      width: auto;
+      height: 100%;
       max-width: none;
-      object-fit: cover;
+      object-fit: contain;
     }
   }
 
-  &.crop-effect img { transform: translateX(-50%); }
+  &.crop-source img { transform: translateX(-25%); }
+  &.crop-effect img { transform: translateX(-75%); }
 }
 
 .template-card-overlay {

@@ -22,6 +22,7 @@ const visibleTemplates = computed(() =>
 
 onMounted(() => {
   dialog.value?.focus();
+  void app.refreshTemplates();
 });
 </script>
 

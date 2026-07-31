@@ -12,22 +12,15 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ use: [template: PromptTemplate] }>();
 const grid = useTemplateRef<HTMLElement>("grid");
-const columnCount = shallowRef(3);
+const columnCount = shallowRef(4);
 let resizeObserver: ResizeObserver | null = null;
 
 const columns = computed(() => {
-  const result = Array.from({ length: columnCount.value }, () => ({
-    estimatedHeight: 0,
-    items: [] as PromptTemplate[]
-  }));
+  const result = Array.from({ length: columnCount.value }, () => [] as PromptTemplate[]);
 
-  for (const template of props.templates) {
-    const target = result.reduce((shortest, column) =>
-      column.estimatedHeight < shortest.estimatedHeight ? column : shortest
-    );
-    target.items.push(template);
-    target.estimatedHeight += estimatedAspectHeight(template) + 0.04;
-  }
+  props.templates.forEach((template, index) => {
+    result[index % columnCount.value]?.push(template);
+  });
 
   return result;
 });
@@ -47,15 +40,10 @@ onBeforeUnmount(() => {
   resizeObserver = null;
 });
 
-function estimatedAspectHeight(template: PromptTemplate) {
-  if (template.width && template.height) return template.height / template.width;
-  if (template.previewCrop && template.previewCrop !== "full") return 1;
-  return 1;
-}
-
 function updateColumnCount(width: number) {
-  if (width >= 840) columnCount.value = 3;
-  else if (width >= 540) columnCount.value = 2;
+  if (width >= 840) columnCount.value = 4;
+  else if (width >= 640) columnCount.value = 3;
+  else if (width >= 440) columnCount.value = 2;
   else columnCount.value = 1;
 }
 </script>
@@ -68,7 +56,7 @@ function updateColumnCount(width: number) {
   >
     <div v-for="(column, index) in columns" :key="index" class="template-masonry-column">
       <PromptTemplateCard
-        v-for="item in column.items"
+        v-for="item in column"
         :key="item.id"
         :template="item"
         :compact="compact"

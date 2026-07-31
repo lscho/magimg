@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   CircleAlert,
@@ -52,6 +52,10 @@ const contextMenuTarget = shallowRef<GenerationRecord | null>(null);
 const cutoutContextMenuTarget = shallowRef<CutoutHistoryRecord | null>(null);
 const contextMenuX = shallowRef(0);
 const contextMenuY = shallowRef(0);
+
+onMounted(() => {
+  void app.refreshTaskHistory();
+});
 
 const filteredGenerationHistory = computed(() => {
   if (activeTab.value === "cutout") return [];

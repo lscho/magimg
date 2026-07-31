@@ -5,7 +5,8 @@ import type { PromptTemplate } from "@/types";
 
 const props = defineProps<{ template: PromptTemplate }>();
 
-const position = shallowRef(50);
+const initialPosition = 15;
+const position = shallowRef(initialPosition);
 const loadedAspectRatio = shallowRef<number | null>(null);
 const combinedPreview = computed(() => !props.template.sourceImage);
 const mediaStyle = computed(() => {
@@ -24,7 +25,7 @@ watch(
   () => [props.template.previewImage, props.template.sourceImage],
   () => {
     loadedAspectRatio.value = null;
-    position.value = 50;
+    position.value = initialPosition;
   }
 );
 
@@ -115,7 +116,8 @@ function updatePosition(event: Event) {
 
 .comparison-image {
   display: block;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   pointer-events: none;
   user-select: none;
 }
@@ -123,6 +125,7 @@ function updatePosition(event: Event) {
 .comparison-source {
   z-index: 1;
   overflow: hidden;
+  background: var(--field);
   will-change: clip-path;
 }
 
@@ -197,12 +200,15 @@ function updatePosition(event: Event) {
 
 .combined-preview {
   .comparison-image {
-    width: 200%;
+    inset: 0 auto auto 50%;
+    width: auto;
+    height: 100%;
     max-width: none;
-    object-fit: cover;
+    object-fit: contain;
   }
 
-  .comparison-effect { transform: translateX(-50%); }
+  .comparison-source .comparison-image { transform: translateX(-25%); }
+  .comparison-effect { transform: translateX(-75%); }
 }
 
 @media (prefers-reduced-motion: reduce) {
