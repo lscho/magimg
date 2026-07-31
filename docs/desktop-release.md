@@ -1,6 +1,6 @@
 # 桌面客户端发布流程
 
-本文说明幻画 AI Windows 和 macOS 客户端从 Git 标签、GitHub Actions 构建，到后端登记并开放自动更新的完整流程。接口响应细节以 [客户端 API 文档](CLIENT_API.md#310-get-versionlatesttauri) 为准。
+本文说明幻画 AI Windows 和 macOS 客户端从 Git 标签、GitHub Actions 构建、CNB 国内发布，到后端登记并开放自动更新的完整流程。接口响应细节以 [客户端 API 文档](CLIENT_API.md#310-get-versionlatesttauri) 为准。
 
 ## 1. 发布产物
 
@@ -31,7 +31,7 @@ VITE_API_BASE_URL=https://api.example.com
 VITE_ENABLE_UPDATER=true
 ```
 
-GitHub 仓库还需要配置：
+GitHub 仓库需要配置：
 
 | 类型 | 名称 | 用途 |
 | --- | --- | --- |
@@ -39,15 +39,32 @@ GitHub 仓库还需要配置：
 | Secret | `TAURI_SIGNING_PRIVATE_KEY` | 构建 updater 包的 `.sig` |
 | Secret | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码；无密码时可不配置 |
 | Variable/Secret | Apple 签名与公证字段 | 详见 README 的桌面打包章节 |
-| Environment Variable | `TENCENT_COS_BUCKET` / `TENCENT_COS_REGION` | COS bucket 与地域 |
-| Environment Variable | `DESKTOP_RELEASE_CDN_BASE_URL` | 公开 HTTPS CDN 基础地址，可包含固定路径前缀 |
-| Environment Variable | `DESKTOP_RELEASE_API_URL` | website 的 `/api/internal/desktop-releases` 完整 HTTPS 地址 |
-| Environment Secret | `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY` | 仅有发布前缀权限的 CAM 凭据 |
-| Environment Secret | `DESKTOP_RELEASE_WEBHOOK_SECRET` | 与 website 一致、至少 32 字符的 HMAC 密钥 |
+| Secret | `CNB_TRIGGER_TOKEN` | CNB OpenAPI 访问令牌，权限为 `repo-cnb-trigger:rw` |
 
-COS 和后台登记配置放在名为 `production-release` 的 GitHub Environment 中，并限制为正式版本标签使用。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，禁止 DeleteObject 和全桶管理。所有私钥只能保存在 GitHub Actions Secrets。更换 updater 密钥会使已经安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本，再开始使用新私钥。
+在 CNB 的“个人设置 -> 访问令牌”创建令牌，授予 `repo-cnb-trigger:rw`，并确认令牌所属用户能访问 `atmomo/huanhua-client`。把令牌只保存为 GitHub Repository Secret `CNB_TRIGGER_TOKEN`，不要写入 `.cnb.yml`。
 
-## 3. GitHub Actions 流程
+在 CNB 新建密钥仓库 `atmomo/huanhua-release-secrets`，仅通过 CNB 网页在其 `main` 分支创建 `desktop-release.yml`：
+
+```yaml
+TENCENT_COS_SECRET_ID: "..."
+TENCENT_COS_SECRET_KEY: "..."
+TENCENT_COS_BUCKET: "bucket-appid"
+TENCENT_COS_REGION: "ap-guangzhou"
+TENCENT_COS_USE_ACCELERATE: "false"
+DESKTOP_RELEASE_CDN_BASE_URL: "https://download.example.com"
+DESKTOP_RELEASE_API_URL: "https://api.example.com/api/internal/desktop-releases"
+DESKTOP_RELEASE_WEBHOOK_SECRET: "至少 32 字符并与 website 配置一致"
+allow_slugs:
+  - atmomo/huanhua-client
+allow_events:
+  - api_trigger_desktop_release
+```
+
+`.cnb.yml` 已通过 `imports` 引用该文件。`allow_slugs` 和 `allow_events` 将密钥限制到当前仓库与发布事件。CAM 身份只允许目标 bucket 的 `desktop/releases/*` 前缀执行 PutObject、GetObject、InitiateMultipartUpload、UploadPart、CompleteMultipartUpload 和 AbortMultipartUpload，禁止 DeleteObject 和全桶管理。CNB 到同地域 COS 默认保持 `TENCENT_COS_USE_ACCELERATE=false`；只有实测跨地域链路更快并已为 bucket 开启全球加速时才设为 `true`。
+
+updater 私钥和 Apple 凭据继续只保存在 GitHub Secrets，COS SecretKey 和后台 Webhook Secret 只保存在 CNB 密钥仓库。更换 updater 密钥会使已安装的旧客户端无法验证新密钥签出的更新包；若确需轮换，必须先用旧私钥签发一个包含新公钥的过渡版本。
+
+## 3. GitHub Actions 与 CNB 流程
 
 推送 `v*` 标签会运行 `.github/workflows/build-desktop.yml`：
 
@@ -58,11 +75,25 @@ COS 和后台登记配置放在名为 `production-release` 的 GitHub Environmen
 5. `prepare-release` 作业检查每个平台恰好存在一套匹配产物；缺包、空签名或重名资产会使流程失败。
 6. 生成 `huanhua-desktop-release-manifest.json`，记录文件名、大小、SHA-256、签名和 GitHub Release 来源 URL。
 7. 标签构建创建或更新同名 GitHub Release，并上传所有安装包、updater 包、签名和发布清单。
-8. `sync-and-notify` 把制品上传到 `desktop/releases/v<version>/`。1 MiB 以上文件自动使用 1 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次，覆盖所有安装包和 updater。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`，否则发布失败。
-9. 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
-10. 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。
+8. `trigger-cnb-release` 调用 CNB StartBuild API，以 `api_trigger_desktop_release` 事件传入 GitHub repository、tag 和完整 commit SHA；CNB 必须能检出同一个 SHA。
+9. CNB 从公开 GitHub Release 下载初始清单及清单声明的资产，不信任其他附件；仓库、tag、commit、文件大小、SHA-256 或 updater 签名任一不匹配都会终止发布。
+10. CNB 把制品上传到 `desktop/releases/v<version>/`。16 MiB 以上文件使用 8 MiB 分片、4 路并发，每个分片遇到临时网络错误最多尝试 4 次。简单上传与完成分片都使用 COS `x-cos-forbid-overwrite`；对象已存在或并发创建时必须同时匹配文件大小和 `x-cos-meta-sha256`。
+11. CNB 通过 CDN HEAD 重新校验公开对象，生成含 CDN URL 和签名文件元数据的最终清单。
+12. CNB 使用 `HMAC-SHA256(secret, timestamp + "\n" + sha256(rawBody))` 通知 website，原子创建或更新四个平台草稿。GitHub 每 15 秒查询 CNB 状态，直到成功、失败或取消，因此后续流程失败会回传到 GitHub 标签工作流。
 
-手动运行 workflow 也会生成四个平台 Artifact 和发布清单，但不会创建 GitHub Release、上传 COS 或登记后台。Artifact 保留 14 天。COS、CDN 或后台接口任一步失败都会使标签 workflow 失败；再次运行同一标签只会校验已有对象并更新未发布草稿。
+手动运行 workflow 只生成四个平台 Artifact 和发布清单，不创建 GitHub Release、触发 CNB、上传 COS 或登记后台。Artifact 保留 14 天。再次运行失败的标签 workflow 时，CNB 会校验已有不可变对象并只补齐缺失对象，随后更新未发布草稿。
+
+GitHub 与 CNB 是两个远端。创建版本标签前先保证相同提交已推送到两边，并先把标签推到 CNB，最后推到 GitHub 触发 Actions：
+
+```bash
+git push github main
+git push origin main
+git tag v1.2.3
+git push origin v1.2.3
+git push github v1.2.3
+```
+
+也可以在 CNB 配置从 GitHub 自动同步，但必须保证 `atmomo/huanhua-client` 中存在 GitHub Actions 传入的完整 SHA 与标签。只推 GitHub 标签而未同步 CNB 时，StartBuild 会因无法检出 SHA 失败。
 
 ## 4. 发布清单
 
@@ -98,7 +129,7 @@ COS 和后台登记配置放在名为 `production-release` 的 GitHub Environmen
 }
 ```
 
-初始清单的 `sourceUrl` 指向 GitHub Release。`sync-and-notify` 会生成最终清单，把安装包和 updater 的 `sourceUrl` 改为长期公开的 CDN URL，并为 updater 增加 `signatureSourceUrl`、`signatureFileSize` 和 `signatureSha256`。手动构建的初始 `sourceUrl` 为 `null`。
+初始清单的 `sourceUrl` 指向 GitHub Release。CNB 发布任务会生成最终清单，把安装包和 updater 的 `sourceUrl` 改为长期公开的 CDN URL，并为 updater 增加 `signatureSourceUrl`、`signatureFileSize` 和 `signatureSha256`。手动构建的初始 `sourceUrl` 为 `null`。
 
 ## 5. 后端登记流程
 

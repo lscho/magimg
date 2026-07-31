@@ -106,13 +106,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const { idempotencyKey, ...fetchOptions } = options;
   const isFormData = fetchOptions.body instanceof FormData;
   const requestUrl = buildApiUrl(path);
+  const requestToken = token;
   let response: Response;
   try {
     response = await fetchHttp(requestUrl, {
       ...fetchOptions,
       headers: {
         ...(!isFormData && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(requestToken ? { Authorization: `Bearer ${requestToken}` } : {}),
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
         ...fetchOptions.headers
       }
@@ -135,7 +136,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) {
     const errorPayload = payload as ApiErrorPayload | null;
-    if (response.status === 401 && unauthorizedHandler) {
+    if (
+      response.status === 401 &&
+      requestToken !== null &&
+      requestToken === token &&
+      unauthorizedHandler
+    ) {
       await unauthorizedHandler();
     }
     throw new ApiError(errorMessage(errorPayload, response.status), response.status);

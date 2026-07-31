@@ -86,7 +86,7 @@
 Authorization: Bearer <client-token>
 ```
 
-- Token 由登录/注册成功后返回，会话有效期 **30 天**（`client-auth.ts` 中 `SESSION_SECONDS = 30 * 24 * 60 * 60`）。
+- Token 由登录/注册成功后返回，会话有效期 **180 天**（`client-auth.ts` 中 `SESSION_SECONDS = 180 * 24 * 60 * 60`）。
 - 服务端仅存储 token 的 SHA-256 哈希；每次请求按 `sha256(token)` 查 `ls_user_session`，校验 `revoked_time IS NULL` 与 `expire_time`。
 - 客户端 token 与管理员 token 体系独立，不可跨用。
 

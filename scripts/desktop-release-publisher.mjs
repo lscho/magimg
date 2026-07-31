@@ -11,8 +11,8 @@ export const RELEASE_PLATFORMS = [
   "macos-arm"
 ];
 
-export const COS_MULTIPART_THRESHOLD = 1024 * 1024;
-export const COS_MULTIPART_CHUNK_SIZE = 1024 * 1024;
+export const COS_MULTIPART_THRESHOLD = 16 * 1024 * 1024;
+export const COS_MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
 export const COS_MULTIPART_CONCURRENCY = 4;
 export const COS_MULTIPART_MAX_ATTEMPTS = 4;
 

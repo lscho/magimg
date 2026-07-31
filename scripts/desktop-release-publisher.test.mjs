@@ -123,8 +123,8 @@ describe("uploadImmutableCosAsset", () => {
   };
 
   it("uses multipart defaults suitable for every desktop binary", () => {
-    assert.equal(COS_MULTIPART_THRESHOLD, 1024 * 1024);
-    assert.equal(COS_MULTIPART_CHUNK_SIZE, 1024 * 1024);
+    assert.equal(COS_MULTIPART_THRESHOLD, 16 * 1024 * 1024);
+    assert.equal(COS_MULTIPART_CHUNK_SIZE, 8 * 1024 * 1024);
     assert.equal(COS_MULTIPART_CONCURRENCY, 4);
   });
 

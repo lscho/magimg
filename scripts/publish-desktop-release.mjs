@@ -40,7 +40,12 @@ const finalManifest = rewriteManifestForCdn(manifest, cdnBaseUrl, signatureMetad
 const { rawBody, asset: manifestAsset } = await writeFinalManifest(finalManifestPath, finalManifest);
 const allAssets = [...assets, manifestAsset];
 
-const cos = new COS({ SecretId: secretId, SecretKey: secretKey });
+const cos = new COS({
+  SecretId: secretId,
+  SecretKey: secretKey,
+  Protocol: "https:",
+  UseAccelerate: process.env.TENCENT_COS_USE_ACCELERATE === "true"
+});
 for (const asset of allAssets) {
   const result = await uploadImmutableCosAsset(cos, {
     bucket,

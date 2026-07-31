@@ -92,7 +92,7 @@ describe("background repair API contract", () => {
     expect(fetchHttp.mock.calls[1][1].method).toBe("POST");
   });
 
-  it("surfaces 409 and invokes unauthorized handling for 401", async () => {
+  it("surfaces 409 and invokes unauthorized handling for the current token's 401", async () => {
     fetchHttp.mockResolvedValueOnce(jsonResponse({ message: "积分不足" }, 409));
     await expect(apiClient.chargeMatting("cloud")).rejects.toMatchObject({
       statusCode: 409,
@@ -101,11 +101,45 @@ describe("background repair API contract", () => {
 
     const unauthorized = vi.fn();
     setUnauthorizedHandler(unauthorized);
+    setAccessToken("current-token");
     fetchHttp.mockResolvedValueOnce(jsonResponse({}, 401));
     await expect(apiClient.backgroundRepair("repair-1")).rejects.toMatchObject({
       statusCode: 401
     });
     expect(unauthorized).toHaveBeenCalledOnce();
+  });
+
+  it("does not clear a newer session when an old token request returns 401 late", async () => {
+    let resolveOldRequest: ((response: Response) => void) | undefined;
+    fetchHttp.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => {
+        resolveOldRequest = resolve;
+      })
+    );
+    const unauthorized = vi.fn();
+    setUnauthorizedHandler(unauthorized);
+    setAccessToken("old-token");
+
+    const oldRequest = apiClient.backgroundRepair("repair-1");
+    await vi.waitFor(() => expect(fetchHttp).toHaveBeenCalledOnce());
+    expect(fetchHttp.mock.calls[0][1].headers.Authorization).toBe("Bearer old-token");
+
+    setAccessToken("new-token");
+    resolveOldRequest?.(jsonResponse({}, 401));
+
+    await expect(oldRequest).rejects.toMatchObject({ statusCode: 401 });
+    expect(unauthorized).not.toHaveBeenCalled();
+  });
+
+  it("does not clear session state for an unauthenticated endpoint's 401", async () => {
+    const unauthorized = vi.fn();
+    setUnauthorizedHandler(unauthorized);
+    fetchHttp.mockResolvedValueOnce(jsonResponse({ message: "手机号或密码错误" }, 401));
+
+    await expect(apiClient.login("18888888888", "wrong-password")).rejects.toMatchObject({
+      statusCode: 401
+    });
+    expect(unauthorized).not.toHaveBeenCalled();
   });
 
   it("keeps optional cloud capability fields absent for older servers", async () => {

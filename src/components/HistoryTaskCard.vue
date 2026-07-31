@@ -105,15 +105,17 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
           <span class="history-meta credits-value" :title="creditsTitle">
             <Coins :size="13" aria-hidden="true" />{{ creditsLabel }}
           </span>
+          <span class="history-size-tag">{{ record.params.size }}</span>
+        </div>
+        <div class="history-task-actions">
           <time
-            class="history-meta"
+            class="history-created-at"
             :datetime="record.createdAt"
             :title="new Date(record.createdAt).toLocaleString('zh-CN')"
           >
             <CalendarDays :size="13" aria-hidden="true" />
             {{ dateFormatter.format(new Date(record.createdAt)) }}
           </time>
-          <span class="history-size-tag">{{ record.params.size }}</span>
           <button
             type="button"
             class="history-copy-prompt"
@@ -283,6 +285,13 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
   gap: 6px;
 }
 
+.history-task-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .history-status {
   display: inline-flex;
   align-items: center;
@@ -338,6 +347,19 @@ function openContextMenuFromKeyboard(event: KeyboardEvent) {
 .credits-value {
   color: #f5d783;
   background: rgba(245, 215, 131, 0.12);
+}
+
+.history-created-at {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 9px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-copy-prompt {

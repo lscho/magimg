@@ -275,13 +275,12 @@ jobs:
               --repo "$GITHUB_REPOSITORY"
           fi
 
-  sync-and-notify:
-    name: Sync release to COS and register backend draft
+  trigger-cnb-release:
+    name: Publish release through CNB
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: production-release
     permissions:
       contents: read
     steps:
@@ -292,34 +291,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
-      - name: Install release dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Download desktop bundles and manifest
-        uses: actions/download-artifact@v4
-        with:
-          pattern: huanhua-*
-          path: release-artifacts
-
-      - name: Upload immutable release assets and register backend draft
+      - name: Trigger CNB publisher and wait for completion
         env:
-          RELEASE_ARTIFACTS_DIR: release-artifacts
-          FINAL_RELEASE_MANIFEST_PATH: release-manifest-final/huanhua-desktop-release-manifest.json
-          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
-          TENCENT_COS_BUCKET: ${{ vars.TENCENT_COS_BUCKET }}
-          TENCENT_COS_REGION: ${{ vars.TENCENT_COS_REGION }}
-          DESKTOP_RELEASE_CDN_BASE_URL: ${{ vars.DESKTOP_RELEASE_CDN_BASE_URL }}
-          DESKTOP_RELEASE_API_URL: ${{ vars.DESKTOP_RELEASE_API_URL }}
-          DESKTOP_RELEASE_WEBHOOK_SECRET: ${{ secrets.DESKTOP_RELEASE_WEBHOOK_SECRET }}
-        run: node scripts/publish-desktop-release.mjs
-
-      - name: Upload final CDN release manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: huanhua-desktop-release-final-manifest
-          path: release-manifest-final/huanhua-desktop-release-manifest.json
-          if-no-files-found: error
-          retention-days: 30
+          CNB_TRIGGER_TOKEN: ${{ secrets.CNB_TRIGGER_TOKEN }}
+          CNB_REPOSITORY: atmomo/huanhua-client
+          GITHUB_RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: node scripts/trigger-cnb-desktop-release.mjs
