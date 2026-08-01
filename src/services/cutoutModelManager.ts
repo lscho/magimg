@@ -10,6 +10,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
+import { CUTOUT_MODEL_DOWNLOAD_BASE_URL } from "@/constants/cutoutModels";
 import { fetchHttp } from "@/services/desktop";
 import type {
   CutoutModelDescriptor,
@@ -17,9 +18,6 @@ import type {
   CutoutModelStatus
 } from "@/types";
 
-const MODEL_REVISION = "bab18593f44e652f04cf18b60b3690f60e8996b0";
-const MODEL_REPOSITORY =
-  `https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/resolve/${MODEL_REVISION}/onnx`;
 const MODELS_DIR_NAME = "models";
 const MANIFEST_FILENAME = "model-manifest.json";
 const MANIFEST_VERSION = 3;
@@ -33,25 +31,25 @@ const OBSOLETE_MODEL_FILE_NAMES = [
 const MODEL_FILES = [
   {
     fileName: "vision_encoder_quantized.onnx",
-    url: `${MODEL_REPOSITORY}/vision_encoder_quantized.onnx`,
+    url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/vision_encoder_quantized.onnx`,
     sizeBytes: 861_193,
     sha256: "dadc94ee17c53bd55d98d15836cdd7d9d7eb80162d4b8bbcbd10e1a5dfeff50e"
   },
   {
     fileName: "vision_encoder_quantized.onnx_data",
-    url: `${MODEL_REPOSITORY}/vision_encoder_quantized.onnx_data`,
+    url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/vision_encoder_quantized.onnx_data`,
     sizeBytes: 98_862_416,
     sha256: "ecef22cbdb519a7e153b7e4ddec37e64404229d38f5190bf76db20775c003a79"
   },
   {
     fileName: "prompt_encoder_mask_decoder.onnx",
-    url: `${MODEL_REPOSITORY}/prompt_encoder_mask_decoder.onnx`,
+    url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/prompt_encoder_mask_decoder.onnx`,
     sizeBytes: 213_114,
     sha256: "f39eeec20243ed1c8f2cd013812e77813d937ddbc800fa4bc703761adc7e63cd"
   },
   {
     fileName: "prompt_encoder_mask_decoder.onnx_data",
-    url: `${MODEL_REPOSITORY}/prompt_encoder_mask_decoder.onnx_data`,
+    url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/prompt_encoder_mask_decoder.onnx_data`,
     sizeBytes: 20_958_208,
     sha256: "445cd3f72a218815db10e336f4f1c46a6eb2713a0160a85af5365134607f32a7"
   }

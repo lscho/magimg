@@ -12,6 +12,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
+import { CUTOUT_MODEL_DOWNLOAD_BASE_URL } from "@/constants/cutoutModels";
 import { fetchHttp } from "@/services/desktop";
 import type { ModelDownloadProgress } from "@/services/cutoutModelManager";
 import type {
@@ -19,9 +20,6 @@ import type {
   CutoutRefinerDescriptor
 } from "@/types";
 
-const MODEL_REVISION = "6bc1297f6140f055a227b6d2cfe8c093281f35d2";
-const MODEL_REPOSITORY =
-  `https://huggingface.co/Xenova/vitmatte-small-composition-1k/resolve/${MODEL_REVISION}`;
 const MODELS_DIR_NAME = "models";
 const MANIFEST_FILENAME = "cutout-refiner-manifest.json";
 const MANIFEST_VERSION = 1;
@@ -30,7 +28,7 @@ const READ_CHUNK_BYTES = 512 * 1024;
 export const CUTOUT_REFINER: CutoutRefinerDescriptor = {
   id: "vitmatte-small-composition-1k",
   name: "ViTMatte Small",
-  url: `${MODEL_REPOSITORY}/onnx/model.onnx`,
+  url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/model.onnx`,
   fileName: "cutout-refiner-vitmatte-small.onnx",
   sizeBytes: 103_885_865,
   sha256: "bf28d2e0be2c073286e88d60ad649d7123da2749a2d99133fd1098d5887e0225",

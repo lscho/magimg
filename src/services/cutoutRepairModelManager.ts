@@ -11,6 +11,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
+import { CUTOUT_MODEL_DOWNLOAD_BASE_URL } from "@/constants/cutoutModels";
 import { fetchHttp } from "@/services/desktop";
 import type { ModelDownloadProgress } from "@/services/cutoutModelManager";
 import type {
@@ -18,7 +19,6 @@ import type {
   CutoutRepairDescriptor
 } from "@/types";
 
-const MODEL_REVISION = "c3c0c9e468934d62e79c329e35d82dd09ff8c444";
 const MODELS_DIR_NAME = "models";
 const MANIFEST_FILENAME = "cutout-repair-manifest.json";
 const MANIFEST_VERSION = 1;
@@ -26,7 +26,7 @@ const MANIFEST_VERSION = 1;
 export const CUTOUT_REPAIR_MODEL: CutoutRepairDescriptor = {
   id: "big-lama-fp32-512",
   name: "Big-LaMa",
-  url: `https://huggingface.co/Carve/LaMa-ONNX/resolve/${MODEL_REVISION}/lama_fp32.onnx`,
+  url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/lama_fp32.onnx`,
   fileName: "cutout-repair-big-lama-fp32.onnx",
   sizeBytes: 208_044_816,
   sha256: "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
