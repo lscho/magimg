@@ -20,7 +20,6 @@ import {
   getRefinerStatus
 } from "@/services/cutoutRefinerManager";
 import {
-  CUTOUT_REPAIR_MODEL,
   downloadRepairModel,
   getRepairModelStatus
 } from "@/services/cutoutRepairModelManager";
@@ -99,7 +98,6 @@ const INSTALL_STAGE_INDEX: Record<ModelInstallStage, number> = {
   installing: 2
 };
 const INSTALL_STAGE_COUNT = Object.keys(INSTALL_STAGE_INDEX).length;
-const RESOURCE_DOWNLOAD_SIZE_BYTES = CUTOUT_MODEL.sizeBytes + CUTOUT_REFINER.sizeBytes;
 const MIN_ALPHA_CONTAINMENT = 0.7;
 
 function abortError() {
@@ -626,10 +624,8 @@ export function useCutoutInference() {
     phase: readonly(phase),
     resourceStatus,
     resourceProgress: readonly(resourceProgress),
-    resourceDownloadSizeBytes: RESOURCE_DOWNLOAD_SIZE_BYTES,
     repairResourceStatus,
     repairProgress: readonly(repairProgress),
-    repairDownloadSizeBytes: CUTOUT_REPAIR_MODEL.sizeBytes,
     progress: readonly(progress),
     error: readonly(error),
     localModelsSupported,

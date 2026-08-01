@@ -25,7 +25,6 @@ const props = defineProps<{
   phase: CutoutPhase;
   resourceStatus: CutoutResourceStatus;
   resourceProgress: CutoutResourceProgress | null;
-  resourceDownloadSizeBytes: number;
   progress: CutoutProgress | null;
   error: string;
   copyingId: string | null;
@@ -38,7 +37,6 @@ const props = defineProps<{
   cloudRepairEnabled: boolean;
   repairResourceStatus: CutoutResourceStatus;
   repairProgress: CutoutResourceProgress | null;
-  repairDownloadSizeBytes: number;
   localModelsSupported: boolean;
   cost: number;
   balance: number;
@@ -259,7 +257,6 @@ onBeforeUnmount(() => {
         :status="resourceStatus"
         :phase="phase"
         :progress="resourceProgress"
-        :download-size-bytes="resourceDownloadSizeBytes"
         :local-models-supported="localModelsSupported"
         @install="emit('installResources')"
       />
@@ -299,7 +296,6 @@ onBeforeUnmount(() => {
         :status="repairResourceStatus"
         :phase="phase"
         :progress="repairProgress"
-        :download-size-bytes="repairDownloadSizeBytes"
         :local-models-supported="localModelsSupported"
         title="本地背景修复模型"
         description="按需安装，不影响普通抠图资源"

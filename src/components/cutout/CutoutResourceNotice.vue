@@ -16,7 +16,6 @@ const props = defineProps<{
   status: CutoutResourceStatus;
   phase: CutoutPhase;
   progress: CutoutResourceProgress | null;
-  downloadSizeBytes: number;
   localModelsSupported: boolean;
   title?: string;
   description?: string;
@@ -36,9 +35,6 @@ const operationLabel = computed(() => {
   if (props.phase === "installing") return "正在安装资源";
   return "正在下载资源";
 });
-const downloadSizeLabel = computed(
-  () => `${(props.downloadSizeBytes / 1024 / 1024).toFixed(1)} MB`
-);
 const resourceName = computed(() => props.title || "AI 抠图资源包");
 const installAriaLabel = computed(
   () => `${props.status === "error" ? "重新下载" : "下载"}${resourceName.value}`
@@ -53,7 +49,7 @@ const installAriaLabel = computed(
         <h3 :id="headingId">{{ title || '首次使用需下载资源包' }}</h3>
         <p v-if="!localModelsSupported">请在桌面客户端中下载并使用</p>
         <p v-else-if="status === 'error'">资源未完整安装，请重新下载</p>
-        <p v-else>{{ description || '包含完整分割与边缘优化能力' }} · {{ downloadSizeLabel }}</p>
+        <p v-else>{{ description || '包含完整分割与边缘优化能力' }}</p>
       </div>
     </div>
 
