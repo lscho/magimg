@@ -108,10 +108,10 @@ const CUTOUT_MODELS: [ModelSpec; 1] = [ModelSpec {
 }];
 
 const CUTOUT_REFINER: RefinerSpec = RefinerSpec {
-    id: "vitmatte-small-composition-1k",
-    file_name: "cutout-refiner-vitmatte-small.onnx",
-    size_bytes: 103_885_865,
-    crc32: 0xa0a30d4f,
+    id: "vitmatte-base-composition-1k",
+    file_name: "cutout-refiner-vitmatte-base.onnx",
+    size_bytes: 387_371_620,
+    crc32: 0x03f9d3b3,
 };
 
 const CUTOUT_REPAIRER: RepairSpec = RepairSpec {
@@ -1465,6 +1465,58 @@ mod tests {
             .expect_err("refiner output shape should be validated");
 
         assert!(error.contains("不兼容的 alpha 尺寸"));
+    }
+
+    /// 用本机 ONNX 与预处理后的 NCHW Float32 输入验证精修模型契约和推理：
+    /// CUTOUT_REFINER_MODEL_PATH=<model.onnx> \
+    /// CUTOUT_REFINER_INPUT_PATH=<input.f32> \
+    /// CUTOUT_REFINER_INPUT_WIDTH=800 CUTOUT_REFINER_INPUT_HEIGHT=960 \
+    /// cargo test refiner_accepts_local_model_and_input -- --ignored --nocapture
+    #[test]
+    #[ignore = "需要本机精修模型和预处理输入文件"]
+    fn refiner_accepts_local_model_and_input() {
+        use ort::value::Tensor;
+
+        let model_path = std::env::var("CUTOUT_REFINER_MODEL_PATH")
+            .expect("CUTOUT_REFINER_MODEL_PATH must point to an ONNX model");
+        let input_path = std::env::var("CUTOUT_REFINER_INPUT_PATH")
+            .expect("CUTOUT_REFINER_INPUT_PATH must point to Float32 input");
+        let width = std::env::var("CUTOUT_REFINER_INPUT_WIDTH")
+            .expect("CUTOUT_REFINER_INPUT_WIDTH is required")
+            .parse::<usize>()
+            .expect("CUTOUT_REFINER_INPUT_WIDTH must be numeric");
+        let height = std::env::var("CUTOUT_REFINER_INPUT_HEIGHT")
+            .expect("CUTOUT_REFINER_INPUT_HEIGHT is required")
+            .parse::<usize>()
+            .expect("CUTOUT_REFINER_INPUT_HEIGHT must be numeric");
+        let bytes = std::fs::read(input_path).expect("refiner input should be readable");
+        let values = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), width * height * 4);
+
+        let mut session = super::create_session(std::path::Path::new(&model_path), "精修模型")
+            .expect("refiner session should load");
+        super::validate_refiner_contract(&session).expect("refiner contract should match");
+        let input = Tensor::from_array(([1_usize, 4, height, width], values))
+            .expect("refiner input tensor should be valid");
+        let started_at = std::time::Instant::now();
+        let outputs = session
+            .run(ort::inputs! { "pixel_values" => input })
+            .expect("refiner inference should succeed");
+        let (shape, values) = outputs["alphas"]
+            .try_extract_tensor::<f32>()
+            .expect("refiner alpha should be float32");
+        let alpha = super::refiner_output_alpha(shape, values, width, height)
+            .expect("refiner output should be valid");
+        if let Ok(output_path) = std::env::var("CUTOUT_REFINER_OUTPUT_PATH") {
+            std::fs::write(output_path, alpha).expect("refiner output should be writable");
+        }
+        println!(
+            "refiner inference: {:.3}s",
+            started_at.elapsed().as_secs_f64()
+        );
     }
 
     #[test]

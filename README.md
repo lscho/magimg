@@ -78,17 +78,18 @@ SAM 2.1 模型的 encoder、decoder 及两份 external-data 权重会逐文件�
 
 Windows 的官方 ONNX Runtime 二进制依赖 Microsoft Visual C++ 运行库。桌面正式构建会从目标架构的 MSVC v143 工具链中提取 `Microsoft.VC143.CRT`，并将其中的 DLL 作为 app-local 资源放在主程序同目录；安装和自动更新均不要求用户另行安装 VC++ Redistributable。Windows 打包机必须安装对应架构的 MSVC v143 C++ Build Tools；脚本无法自动定位时，可将 `MSVC_CRT_DIR` 指向目标架构的 `Microsoft.VC143.CRT` 目录。
 
-基础链路由 SAM 2.1 decoder 按 `iou_scores` 选择评分最高的 `pred_masks` 候选，并把阈值附近的浮点 logits 转为 8 位软 alpha。客户端随后固定以 SAM mask 生成三值 trimap，在带上下文的选区裁剪上运行 ViTMatte；确定前景与外部背景会在推理后强制回填，封闭的主体内部缺口保留为未知区域交给 ViTMatte 判断，避免主体中间被错误抠空。优化后的 alpha 双线性恢复到原图坐标后与原图 alpha 相乘，最终按用户选区边界输出透明 PNG。每个结果支持单个复制/保存；桌面批量导出只需选择一次目录。浏览器预览保留画布交互，但不能下载或运行本地模型。
+基础链路由 SAM 2.1 decoder 根据 `iou_scores` 选择 `pred_masks` 候选，并把阈值附近的浮点 logits 转为 8 位软 alpha。只有一个独立提取框时，若两个候选分数差不超过 0.001 且较低分候选的确定前景面积至少大 2%，客户端会优先采用更完整的主体，减少人像脸部、肢体和衣物内部因近似同分候选产生的孔洞；多框、嵌套框和背景修复仍沿用最高分候选。客户端随后固定以 SAM mask 生成三值 trimap，在带上下文的选区裁剪上运行 ViTMatte；确定前景与外部背景会在推理后强制回填，封闭的主体内部缺口保留为未知区域交给 ViTMatte 判断，避免主体中间被错误抠空。优化后的 alpha 双线性恢复到原图坐标后与原图 alpha 相乘，最终按用户选区边界输出透明 PNG。每个结果支持单个复制/保存；桌面批量导出只需选择一次目录。浏览器预览保留画布交互，但不能下载或运行本地模型。
 
-截至 2026-07，Meta 官方最新版本是 [SAM 3.1](https://github.com/facebookresearch/sam3)，但其授权权重与运行环境没有适配本项目的原生 encoder/decoder ONNX 契约。当前资源包按桌面 CPU 推理兼容性固定使用以下量化模型：
+截至 2026-07，Meta 官方最新版本是 [SAM 3.1](https://github.com/facebookresearch/sam3)，但其授权权重与运行环境没有适配本项目的原生 encoder/decoder ONNX 契约。当前资源包按桌面 CPU 推理兼容性固定使用以下模型：
 
 | 档位 | 下载大小 | 内置下载地址 |
 | --- | ---: | --- |
 | SAM 2.1 Hiera Base+（quantized ONNX） | 103.6 MiB | [幻画模型镜像](https://download.atmomo.cn/model/) |
+| ViTMatte Base（full precision ONNX） | 369.4 MiB | [固定版本文件](https://huggingface.co/Xenova/vitmatte-base-composition-1k/resolve/1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a/onnx/model.onnx) |
 
 SAM 2.1 ONNX 资源来自 Apache-2.0 许可的 [onnx-community/sam2.1-hiera-base-plus-ONNX](https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/tree/bab18593f44e652f04cf18b60b3690f60e8996b0/onnx)，内容固定到提交 `bab18593f44e652f04cf18b60b3690f60e8996b0`，总计 `108676041` 字节。客户端从幻画模型镜像下载该提交中的 `vision_encoder_quantized.onnx`、`vision_encoder_quantized.onnx_data`、`prompt_encoder_mask_decoder.onnx` 和 `prompt_encoder_mask_decoder.onnx_data`，并按固定大小和 SHA-256 校验，避免镜像或上游内容变化导致模型与校验信息不一致。旧 ViT-H、ViT-L、ViT-B 和 MobileSAM 文件不会被主动删除，但客户端不再展示、下载或加载。
 
-资源包同时包含 Apache-2.0 许可的 [Xenova/vitmatte-small-composition-1k](https://huggingface.co/Xenova/vitmatte-small-composition-1k)，全精度 ONNX 文件固定到提交 `6bc1297f6140f055a227b6d2cfe8c093281f35d2`，并通过镜像 [model.onnx](https://download.atmomo.cn/model/model.onnx) 下载。客户端校验精确大小 `103885865` 字节和 SHA-256 `bf28d2e0be2c073286e88d60ad649d7123da2749a2d99133fd1098d5887e0225`。统一资源入口的总下载量为 `212561906` 字节（约 202.7 MiB），底层仍分别使用 `model-manifest.json` 与 `cutout-refiner-manifest.json` 持久化安装状态，因此能跳过已存在的部分并只补齐缺失资源；模型不随安装包分发。
+资源包同时包含 Apache-2.0 许可的 [Xenova/vitmatte-base-composition-1k](https://huggingface.co/Xenova/vitmatte-base-composition-1k)，全精度 ONNX 文件固定到提交 `1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a`。客户端校验精确大小 `387371620` 字节和 SHA-256 `f6978437f5068849bcbf49b1f4e37b90aaca5155744e9fde4e6c689f70c2b9ee`。统一资源入口的总下载量为 `496047661` 字节（约 473.1 MiB），底层仍分别使用 `model-manifest.json` 与 `cutout-refiner-manifest.json` 持久化安装状态，因此能跳过已存在的部分并只补齐缺失资源；Base 安装成功后会删除旧 Small 文件，模型不随安装包分发。`tests/cinematic-portrait.webp` 的同输入 CPU 回归中，Base 推理约 2.894 秒，原 Small 约 1.325 秒；两者视觉差异较细微，因此此次替换主要提高复杂边缘的模型容量，同时接受更大的下载体积和约 2.2 倍精修耗时。量化 Base 在该素材上出现发丝缺失、肩部锯齿和暗色边缘色带，未纳入客户端。
 
 本地背景修复使用自动混合策略：按钮、头像框等纯色或缓渐变 UI 先从当前素材 Alpha 内且修复蒙版外统计主背景色，再以二维调和扩散补全涂抹区域；没有直接子框、关闭智能吸附并使用“添加”产生的纯手动涂抹固定走该扩散路径，与命令行回归脚本一致，不再回退到 LaMa。双框背景的移除蒙版同时合并 ViTMatte 精修 Alpha 和其附近的 SAM 粗蒙版弱响应，并按子元素长边的 2.5% 动态扩张（限制 4–18 px），用于覆盖阴影、描边和发丝碎片；粗蒙版只在子框附近参与合并，不会扩散到父框边缘。嵌套子框、智能吸附或复杂纹理场景仍可调用 Apache-2.0 许可的 [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX/tree/c3c0c9e468934d62e79c329e35d82dd09ff8c444) [lama_fp32.onnx](https://download.atmomo.cn/model/lama_fp32.onnx)。模型固定提交 `c3c0c9e468934d62e79c329e35d82dd09ff8c444`、大小 `208044816` 字节、SHA-256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`，输入固定为 512×512。客户端以父级精修 Alpha 收紧当前素材的真实内容边界，Alpha 外像素和模型方形留白统一使用素材主背景色，不再拉伸边缘形成条纹；矩形选框余量中的底图和框外图片内容不会进入修复上下文。模型输出再映射回素材边界，两条路径都只在羽化后的修复蒙版内合成。进入修复阶段前会释放已完成工作的 SAM 与 ViTMatte 会话，避免三个原生模型同时占用内存。模型使用独立 `cutout-repair-manifest.json`，由用户首次选择本地修复时下载。
 

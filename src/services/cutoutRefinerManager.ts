@@ -12,7 +12,6 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { CUTOUT_MODEL_DOWNLOAD_BASE_URL } from "@/constants/cutoutModels";
 import { fetchHttp } from "@/services/desktop";
 import type { ModelDownloadProgress } from "@/services/cutoutModelManager";
 import type {
@@ -22,16 +21,17 @@ import type {
 
 const MODELS_DIR_NAME = "models";
 const MANIFEST_FILENAME = "cutout-refiner-manifest.json";
-const MANIFEST_VERSION = 1;
+const MANIFEST_VERSION = 2;
 const READ_CHUNK_BYTES = 512 * 1024;
+const LEGACY_REFINER_FILE_NAME = "cutout-refiner-vitmatte-small.onnx";
 
 export const CUTOUT_REFINER: CutoutRefinerDescriptor = {
-  id: "vitmatte-small-composition-1k",
-  name: "ViTMatte Small",
-  url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/model.onnx`,
-  fileName: "cutout-refiner-vitmatte-small.onnx",
-  sizeBytes: 103_885_865,
-  sha256: "bf28d2e0be2c073286e88d60ad649d7123da2749a2d99133fd1098d5887e0225",
+  id: "vitmatte-base-composition-1k",
+  name: "ViTMatte Base",
+  url: "https://huggingface.co/Xenova/vitmatte-base-composition-1k/resolve/1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a/onnx/model.onnx",
+  fileName: "cutout-refiner-vitmatte-base.onnx",
+  sizeBytes: 387_371_620,
+  sha256: "f6978437f5068849bcbf49b1f4e37b90aaca5155744e9fde4e6c689f70c2b9ee",
   description: "精修透明边缘，并保护主体内部细节。"
 };
 
@@ -261,6 +261,9 @@ export async function downloadRefiner(
         installedAt: new Date().toISOString()
       }
     });
+    if (descriptor.id === CUTOUT_REFINER.id) {
+      await remove(await join(modelsDir, LEGACY_REFINER_FILE_NAME)).catch(() => undefined);
+    }
   } catch (exception) {
     await remove(path).catch(() => undefined);
     throw exception;

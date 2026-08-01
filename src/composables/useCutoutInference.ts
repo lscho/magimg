@@ -47,6 +47,7 @@ import {
   repairBackgroundLocally
 } from "@/services/cutoutBackgroundRepair";
 import { maskArea, unionMasks } from "@/services/cutoutLayering";
+import { chooseSingleElementMaskCandidate } from "@/services/cutoutMaskCandidate";
 import {
   cloneCutoutSelections,
   selectionChildren
@@ -369,16 +370,32 @@ export function useCutoutInference() {
       );
       const coarseMasks = new Map<string, Uint8Array>();
       const refinedMasks = new Map<string, Uint8Array>();
+      const optimizeSingleElement = selections.length === 1 &&
+        selections[0].behavior === "extract" &&
+        !selections[0].parentId;
       for (let index = 0; index < selections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = selections[index];
         progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
-        const mask = await decodeCutoutBox(
-          CUTOUT_MODEL,
-          embedding,
-          selection,
-          controller.signal
-        );
+        let mask: Uint8Array;
+        if (optimizeSingleElement) {
+          const candidates = await decodeCutoutCandidates(
+            CUTOUT_MODEL,
+            embedding,
+            { box: selection },
+            controller.signal
+          );
+          const candidate = chooseSingleElementMaskCandidate(candidates);
+          if (!candidate) throw new Error("SAM 2.1 未返回可用的主体遮罩。");
+          mask = candidate.alpha;
+        } else {
+          mask = await decodeCutoutBox(
+            CUTOUT_MODEL,
+            embedding,
+            selection,
+            controller.signal
+          );
+        }
         coarseMasks.set(selection.id, mask);
         progress.value = { current: index + 1, total: selections.length, stage: "refining" };
         refinedMasks.set(selection.id, await refineCutoutMask(
