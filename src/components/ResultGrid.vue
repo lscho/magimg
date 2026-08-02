@@ -221,7 +221,6 @@ async function copyPrimaryImage() {
 }
 
 function openImageContextMenu(event: MouseEvent, image: GeneratedImage, index: number) {
-  if (props.record?.mode !== "text-to-image") return;
   event.preventDefault();
   event.stopPropagation();
 
@@ -233,7 +232,7 @@ function openImageContextMenu(event: MouseEvent, image: GeneratedImage, index: n
 
 function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: GeneratedImage, index: number) {
   const isMenuShortcut = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
-  if (!isMenuShortcut || props.record?.mode !== "text-to-image") return;
+  if (!isMenuShortcut) return;
   event.preventDefault();
   event.stopPropagation();
 
@@ -248,7 +247,7 @@ function openImageContextMenuFromKeyboard(event: KeyboardEvent, image: Generated
 
 function showImageContextMenu(image: GeneratedImage, index: number, requestedX: number, requestedY: number) {
   contextMenuX.value = Math.max(8, Math.min(requestedX, window.innerWidth - 176));
-  contextMenuY.value = Math.max(8, Math.min(requestedY, window.innerHeight - 124));
+  contextMenuY.value = Math.max(8, Math.min(requestedY, window.innerHeight - 160));
   contextMenuTarget.value = { image, index };
 }
 
@@ -288,6 +287,13 @@ async function useContextImageAsReference() {
   }
 }
 
+async function cutoutContextImage() {
+  const target = contextMenuTarget.value;
+  closeContextMenu();
+  if (!target) return;
+  await openCutout(target.image, target.index);
+}
+
 async function openEditor() {
   const originalImage = resultImages.value[0];
   if (!originalImage || !props.record) return;
@@ -315,8 +321,10 @@ async function openEditor() {
   }
 }
 
-async function openCutout() {
-  const originalImage = resultImages.value[0];
+async function openCutout(
+  originalImage = resultImages.value[0],
+  index = 0
+) {
   if (!originalImage || !props.record) return;
   loadingCutout.value = true;
   actionError.value = "";
@@ -327,7 +335,7 @@ async function openCutout() {
     emit("cutoutImage", {
       selectedFile: imageBlobToSelectedFile(
         originalBlob,
-        suggestedImageName(0),
+        suggestedImageName(index),
         mimeType
       )
     });
@@ -398,8 +406,8 @@ onBeforeUnmount(() => {
           :key="image.id"
           class="result-image"
           :style="imageFrameStyle(image)"
-          :tabindex="record?.mode === 'text-to-image' ? 0 : undefined"
-          :aria-label="record?.mode === 'text-to-image' ? `生成图片 ${index + 1}，可打开图片菜单` : undefined"
+          tabindex="0"
+          :aria-label="`生成图片 ${index + 1}，可打开图片菜单`"
           @contextmenu="openImageContextMenu($event, image, index)"
           @keydown="openImageContextMenuFromKeyboard($event, image, index)"
         >
@@ -445,7 +453,7 @@ onBeforeUnmount(() => {
           title="AI 抠图"
           aria-label="AI 抠图"
           :disabled="loadingCutout"
-          @click="openCutout"
+          @click="openCutout()"
         >
           <LoaderCircle v-if="loadingCutout" class="saving-spinner" :size="16" />
           <Scissors v-else :size="16" />
@@ -478,6 +486,7 @@ onBeforeUnmount(() => {
         :y="contextMenuY"
         @close="closeContextMenu"
         @copy="copyContextImage"
+        @cutout="cutoutContextImage"
         @download="downloadContextImage"
         @use-as-reference="useContextImageAsReference"
       />

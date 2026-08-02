@@ -11,6 +11,7 @@
     "core:window:allow-toggle-maximize",
     "allow-toggle-devtools",
     "allow-cutout-inference",
+    "allow-image-compression",
     "dialog:default",
     "os:allow-arch",
     "os:allow-platform",

@@ -1,9 +1,11 @@
+mod compression;
 mod cutout;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(cutout::CutoutState::default())
+        .manage(compression::CompressionState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -31,7 +33,12 @@ pub fn run() {
             cutout::cutout_refine,
             cutout::cutout_repair,
             cutout::cutout_cancel,
-            cutout::cutout_release
+            cutout::cutout_release,
+            compression::compression_prepare,
+            compression::compression_thumbnail,
+            compression::compression_run,
+            compression::compression_cancel,
+            compression::compression_release
         ])
         .run(tauri::generate_context!())
         .expect("error while running huanhua ai");

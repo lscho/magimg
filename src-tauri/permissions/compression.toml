@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-image-compression"
+description = "Allow the main window to prepare, preview, run, cancel, and release local image compression sessions."
+commands.allow = [
+  "compression_prepare",
+  "compression_thumbnail",
+  "compression_run",
+  "compression_cancel",
+  "compression_release",
+]

@@ -68,7 +68,7 @@
 | `GET` | `/tasks/:id` | 当前用户任务详情 |
 | `POST` | `/tasks/:id/cancel` | 取消排队中任务并退款 |
 | `POST` | `/feedback` | 提交意见反馈 |
-| `POST` | `/matting` | AI 抠图或云端背景修复预扣积分 |
+| `POST` | `/matting` | AI 抠图、自动分层或云端背景修复预扣积分 |
 | `POST` | `/matting/:id/refund` | 本地抠图失败退款 |
 | `POST` | `/background-repairs` | 创建云端背景修复任务（需幂等键） |
 | `GET` | `/background-repairs/:id` | 查询云端背景修复任务 |
@@ -783,14 +783,14 @@ curl -i "https://api.example.com/api/client/v1/config"
 
 ### 4.11 `POST /matting`
 
-AI 抠图和背景修复预扣积分。`mode=local` 时服务端扣 `mattingCost`，抠图与可选 Big-LaMa 修复均在客户端本地完成；`mode=cloud` 时整次操作只扣一次 `backgroundRepairCost`，同一个 `mattingId` 随后绑定一张联合蒙版云端任务。
+AI 抠图、自动分层和背景修复预扣积分。`mode=local` 时服务端扣 `mattingCost`，抠图、自动分层与可选 Big-LaMa 修复均在客户端本地完成；`mode=cloud` 时整次操作只扣一次 `backgroundRepairCost`，同一个 `mattingId` 随后绑定一张联合蒙版云端任务。
 
 **两阶段计费流程**：
 
-1. 客户端发起抠图前调用本接口预扣积分，拿到 `mattingId`。
-2. 客户端本地执行抠图。
-3. 抠图**成功**：无需再调用，扣费生效。
-4. 抠图**失败**：用 `mattingId` 调 `POST /matting/:id/refund` 退回原扣费金额。
+1. 客户端发起抠图或自动分层前调用本接口预扣积分，拿到 `mattingId`。
+2. 客户端本地执行抠图或自动分层。
+3. 本地处理**成功**：无需再调用，扣费生效。
+4. 本地处理**失败或取消**：用 `mattingId` 调 `POST /matting/:id/refund` 退回原扣费金额。
 
 **请求头**
 

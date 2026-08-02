@@ -376,6 +376,84 @@ export interface LocalDatabase {
   session: UserSession | null;
 }
 
+/* ---------- 图片压缩（桌面本地能力） ---------- */
+
+export type CompressionFormat = "png" | "jpeg" | "webp";
+export type CompressionInputMode = "files" | "folder";
+export type CompressionConflictPolicy = "skip" | "overwrite" | "rename";
+export type PngCompressionLevel = "fast" | "balanced" | "maximum";
+export type WebpCompressionMode = "lossy" | "lossless";
+export type CompressionItemStatus =
+  | "pending"
+  | "processing"
+  | "succeeded"
+  | "noBenefit"
+  | "skipped"
+  | "failed"
+  | "cancelled";
+
+export interface CompressionSettings {
+  pngLevel: PngCompressionLevel;
+  jpegQuality: number;
+  jpegProgressive: boolean;
+  webpMode: WebpCompressionMode;
+  webpQuality: number;
+  conflictPolicy: CompressionConflictPolicy;
+  skipNoBenefit: boolean;
+}
+
+export interface CompressionSourceItem {
+  id: string;
+  relativePath: string;
+  format: CompressionFormat;
+  width: number;
+  height: number;
+  size: number;
+}
+
+export interface CompressionPreparedSession {
+  sessionId: string;
+  inputMode: CompressionInputMode;
+  sourceName: string;
+  items: CompressionSourceItem[];
+  rejectedCount: number;
+  totalBytes: number;
+}
+
+export interface CompressionSummary {
+  total: number;
+  succeeded: number;
+  noBenefit: number;
+  skipped: number;
+  failed: number;
+  cancelled: number;
+  originalBytes: number;
+  outputBytes: number;
+  savedBytes: number;
+  wasCancelled: boolean;
+}
+
+export type CompressionProgressEvent =
+  | { type: "started"; total: number }
+  | {
+      type: "itemStarted";
+      itemId: string;
+      index: number;
+      total: number;
+      relativePath: string;
+    }
+  | {
+      type: "itemFinished";
+      itemId: string;
+      index: number;
+      status: Exclude<CompressionItemStatus, "pending" | "processing" | "cancelled">;
+      outputRelativePath: string | null;
+      outputSize: number | null;
+      savedPercent: number | null;
+      message: string | null;
+    }
+  | { type: "finished"; summary: CompressionSummary };
+
 /* ---------- AI 抠图（客户端本地模型） ---------- */
 
 /**

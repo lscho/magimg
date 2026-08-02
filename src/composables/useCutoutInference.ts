@@ -100,12 +100,53 @@ const INSTALL_STAGE_INDEX: Record<ModelInstallStage, number> = {
 const INSTALL_STAGE_COUNT = Object.keys(INSTALL_STAGE_INDEX).length;
 const MIN_ALPHA_CONTAINMENT = 0.7;
 
+export interface AutoLayerMaterial {
+  id: string;
+  blob: Blob;
+  width: number;
+  height: number;
+  sourceBox: CutoutSelectionBox;
+}
+
+export interface AutoLayerInferenceResult {
+  backgroundBlob: Blob;
+  materials: AutoLayerMaterial[];
+}
+
 function abortError() {
   return new DOMException("抠图已取消。", "AbortError");
 }
 
 function hasMask(mask: Uint8Array) {
   return maskArea(mask) > 0;
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("分层背景导出失败。")),
+      "image/png"
+    );
+  });
+}
+
+function expandedRepairBox(
+  box: CutoutSelectionBox,
+  imageWidth: number,
+  imageHeight: number
+): CutoutSelectionBox {
+  const padding = Math.max(12, Math.round(Math.max(box.width, box.height) * 0.18));
+  const x = Math.max(0, Math.round(box.x) - padding);
+  const y = Math.max(0, Math.round(box.y) - padding);
+  const right = Math.min(imageWidth, Math.round(box.x + box.width) + padding);
+  const bottom = Math.min(imageHeight, Math.round(box.y + box.height) + padding);
+  return {
+    id: box.id,
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y)
+  };
 }
 
 /**
@@ -613,6 +654,154 @@ export function useCutoutInference() {
     }
   }
 
+  async function createAutoLayers(
+    image: CanvasImageSource,
+    imageWidth: number,
+    imageHeight: number,
+    inputSelections: CutoutSelection[],
+    onMaterial?: (material: AutoLayerMaterial) => void
+  ): Promise<AutoLayerInferenceResult | null> {
+    if (phase.value !== "idle") return null;
+    if (!inputSelections.length) {
+      error.value = "请先在左侧原图上框选要分层的内容。";
+      return null;
+    }
+
+    phase.value = "processing";
+    progress.value = { current: 1, total: inputSelections.length, stage: "segmenting" };
+    error.value = "";
+    const controller = new AbortController();
+    abortController.value = controller;
+    const materials: AutoLayerMaterial[] = [];
+
+    try {
+      const [nextSegmenterStatus, nextRefinerStatus, nextRepairStatus] = await Promise.all([
+        getModelStatus(CUTOUT_MODEL),
+        getRefinerStatus(CUTOUT_REFINER),
+        getRepairModelStatus()
+      ]);
+      segmenterStatus.value = nextSegmenterStatus;
+      refinerStatus.value = nextRefinerStatus;
+      repairStatus.value = nextRepairStatus;
+      resourceStatusChecked.value = true;
+      repairStatusChecked.value = true;
+      if (nextSegmenterStatus !== "ready" || nextRefinerStatus !== "ready") {
+        throw new Error("请先下载完整的 AI 抠图资源包。");
+      }
+      if (nextRepairStatus !== "ready") {
+        throw new Error("请先下载本地背景修复模型。");
+      }
+
+      const selections = cloneCutoutSelections(inputSelections).map((selection) => ({
+        ...selection,
+        behavior: "extract" as const,
+        parentId: null,
+        relationSource: "manual" as const,
+        removalStrokes: []
+      }));
+      const embedding = await encodeCutoutImage(
+        CUTOUT_MODEL,
+        image,
+        imageWidth,
+        imageHeight,
+        controller.signal
+      );
+      const removalMasks: Array<{ selection: CutoutSelection; alpha: Uint8Array }> = [];
+
+      for (let index = 0; index < selections.length; index += 1) {
+        if (controller.signal.aborted) throw abortError();
+        const selection = selections[index];
+        progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
+        const candidates = await decodeCutoutCandidates(
+          CUTOUT_MODEL,
+          embedding,
+          { box: selection },
+          controller.signal
+        );
+        const candidate = chooseSingleElementMaskCandidate(candidates);
+        if (!candidate) throw new Error("SAM 2.1 未返回可用的分层遮罩。");
+
+        progress.value = { current: index + 1, total: selections.length, stage: "refining" };
+        const refinedAlpha = await refineCutoutMask(
+          CUTOUT_REFINER,
+          image,
+          imageWidth,
+          imageHeight,
+          candidate.alpha,
+          selection,
+          controller.signal
+        );
+        const exported = await maskToTransparentPng(
+          image,
+          imageWidth,
+          imageHeight,
+          refinedAlpha,
+          selection
+        );
+        const material: AutoLayerMaterial = {
+          id: selection.id,
+          blob: exported.blob,
+          width: exported.width,
+          height: exported.height,
+          sourceBox: { ...selection }
+        };
+        materials.push(material);
+        onMaterial?.(material);
+        removalMasks.push({
+          selection,
+          alpha: prepareRepairMask(buildHighRecallChildMask({
+            refinedAlpha,
+            coarseAlpha: candidate.alpha,
+            width: imageWidth,
+            height: imageHeight,
+            child: selection
+          }), imageWidth, imageHeight)
+        });
+      }
+
+      await releaseInferenceSession(CUTOUT_MODEL.id);
+      const fullAlpha = new Uint8Array(imageWidth * imageHeight);
+      fullAlpha.fill(255);
+      let repairedSource: CanvasImageSource = image;
+      for (let index = 0; index < removalMasks.length; index += 1) {
+        if (controller.signal.aborted) throw abortError();
+        const current = removalMasks[index];
+        progress.value = { current: index + 1, total: removalMasks.length, stage: "repairing" };
+        repairedSource = await repairBackgroundLocally(
+          repairedSource,
+          imageWidth,
+          imageHeight,
+          current.alpha,
+          fullAlpha,
+          expandedRepairBox(current.selection, imageWidth, imageHeight),
+          { signal: controller.signal }
+        );
+      }
+
+      const backgroundCanvas = document.createElement("canvas");
+      backgroundCanvas.width = imageWidth;
+      backgroundCanvas.height = imageHeight;
+      const context = backgroundCanvas.getContext("2d");
+      if (!context) throw new Error("当前设备无法合成分层背景。");
+      context.drawImage(repairedSource, 0, 0, imageWidth, imageHeight);
+      return {
+        backgroundBlob: await canvasToPngBlob(backgroundCanvas),
+        materials
+      };
+    } catch (exception) {
+      error.value = controller.signal.aborted
+        ? "自动分层已取消。"
+        : exception instanceof Error
+          ? exception.message
+          : "自动分层失败，请稍后重试。";
+      return null;
+    } finally {
+      phase.value = "idle";
+      progress.value = null;
+      abortController.value = null;
+    }
+  }
+
   void Promise.all([refreshResourceStatus(), refreshRepairResourceStatus()]);
 
   onBeforeUnmount(() => {
@@ -634,6 +823,7 @@ export function useCutoutInference() {
     installResourcePackage,
     installRepairResource,
     segmentSelections,
+    createAutoLayers,
     cancel
   };
 }

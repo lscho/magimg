@@ -6,10 +6,13 @@ import {
   Coins,
   CircleArrowUp,
   History,
+  Image as ImageIcon,
   ImagePlus,
   LayoutTemplate,
+  Layers3,
   LogIn,
   Menu,
+  Minimize2,
   QrCode,
   Scissors,
   Settings,
@@ -25,6 +28,7 @@ import UpdateModal from "@/components/UpdateModal.vue";
 import WindowControls from "@/components/WindowControls.vue";
 import { useAppUpdater } from "@/composables/useAppUpdater";
 import { useAppStore } from "@/stores/app";
+import { isDesktopRuntime } from "@/services/imageCompression";
 
 const app = useAppStore();
 const {
@@ -51,6 +55,7 @@ const showCreditLog = shallowRef(false);
 const showSettings = shallowRef(false);
 const showQrcode = shallowRef(false);
 const sidebarOpen = shallowRef(false);
+const desktopAvailable = isDesktopRuntime();
 const formattedBalance = computed(() => new Intl.NumberFormat("zh-CN").format(app.balance.balance));
 
 onMounted(() => {
@@ -131,38 +136,63 @@ function openRechargeFromCreditLog() {
     <div class="workspace" :class="{ 'sidebar-is-open': sidebarOpen }">
       <aside class="sidebar" aria-label="主导航">
         <nav class="main-nav" aria-label="创作导航">
-          <RouterLink
-            class="nav-item"
-            :class="{ active: currentMode === 'text-to-image' }"
-            to="/generate/text-to-image"
-            aria-label="文生图"
-            @click="closeSidebar"
-          >
-            <Wand2 :size="17" />
-            <span class="rail-tooltip" aria-hidden="true">文生图</span>
-          </RouterLink>
-          <RouterLink
-            class="nav-item"
-            :class="{ active: currentMode === 'image-to-image' }"
-            to="/generate/image-to-image"
-            aria-label="图生图"
-            @click="closeSidebar"
-          >
-            <ImagePlus :size="17" />
-            <span class="rail-tooltip" aria-hidden="true">图生图</span>
-          </RouterLink>
-          <RouterLink class="nav-item" to="/cutout" aria-label="AI 抠图" @click="closeSidebar">
-            <Scissors :size="17" />
-            <span class="rail-tooltip" aria-hidden="true">AI 抠图</span>
-          </RouterLink>
-          <RouterLink class="nav-item nav-item-spaced" to="/templates" aria-label="模板广场" @click="closeSidebar">
-            <LayoutTemplate :size="17" />
-            <span class="rail-tooltip" aria-hidden="true">模板广场</span>
-          </RouterLink>
-          <RouterLink class="nav-item" to="/history" aria-label="历史记录" @click="closeSidebar">
-            <History :size="17" />
-            <span class="rail-tooltip" aria-hidden="true">历史记录</span>
-          </RouterLink>
+          <div class="nav-group" role="group" aria-label="AI 创作">
+            <RouterLink
+              class="nav-item"
+              :class="{ active: currentMode === 'text-to-image' }"
+              to="/generate/text-to-image"
+              aria-label="文生图"
+              @click="closeSidebar"
+            >
+              <Wand2 :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">文生图</span>
+            </RouterLink>
+            <RouterLink
+              class="nav-item"
+              :class="{ active: currentMode === 'image-to-image' }"
+              to="/generate/image-to-image"
+              aria-label="图生图"
+              @click="closeSidebar"
+            >
+              <ImagePlus :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">图生图</span>
+            </RouterLink>
+            <RouterLink class="nav-item" to="/cutout" aria-label="AI 抠图" @click="closeSidebar">
+              <Scissors :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">AI 抠图</span>
+            </RouterLink>
+            <RouterLink class="nav-item" to="/auto-layer" aria-label="自动分层" @click="closeSidebar">
+              <Layers3 :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">自动分层</span>
+            </RouterLink>
+            <RouterLink class="nav-item" to="/templates" aria-label="模板广场" @click="closeSidebar">
+              <LayoutTemplate :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">模板广场</span>
+            </RouterLink>
+            <RouterLink class="nav-item" to="/history" aria-label="历史记录" @click="closeSidebar">
+              <History :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">历史记录</span>
+            </RouterLink>
+          </div>
+
+          <span class="nav-separator" aria-hidden="true" />
+
+          <div class="nav-group" role="group" aria-label="图片工具与内容">
+            <RouterLink
+              v-if="desktopAvailable"
+              class="nav-item"
+              to="/compress"
+              aria-label="图片压缩"
+              @click="closeSidebar"
+            >
+              <Minimize2 :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">图片压缩</span>
+            </RouterLink>
+            <RouterLink class="nav-item" to="/editor" aria-label="图片编辑" @click="closeSidebar">
+              <ImageIcon :size="17" />
+              <span class="rail-tooltip" aria-hidden="true">图片编辑</span>
+            </RouterLink>
+          </div>
         </nav>
 
         <div class="sidebar-footer">
@@ -349,9 +379,25 @@ function openRechargeFromCreditLog() {
   flex: 1;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   padding: 12px 9px 0;
   overflow: visible;
+}
+
+.nav-group {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-separator {
+  width: 28px;
+  height: 1px;
+  flex: 0 0 1px;
+  margin: 10px 0;
+  background: var(--line-strong);
 }
 
 .nav-item {
@@ -373,10 +419,6 @@ function openRechargeFromCreditLog() {
 
   svg {
     flex: 0 0 auto;
-  }
-
-  &-spaced {
-    margin-top: 14px;
   }
 
   &:hover {
@@ -538,6 +580,15 @@ function openRechargeFromCreditLog() {
   .main-nav {
     align-items: stretch;
     padding: 0;
+  }
+
+  .nav-group {
+    align-items: stretch;
+  }
+
+  .nav-separator {
+    width: auto;
+    margin: 10px 8px;
   }
 
   .nav-item,

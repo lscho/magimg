@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, useTemplateRef } from "vue";
-import { Clipboard, Download, ImagePlus } from "lucide-vue-next";
+import { Clipboard, Download, ImagePlus, Scissors } from "lucide-vue-next";
 
 defineProps<{
   x: number;
@@ -10,6 +10,7 @@ defineProps<{
 const emit = defineEmits<{
   close: [];
   copy: [];
+  cutout: [];
   download: [];
   useAsReference: [];
 }>();
@@ -81,6 +82,10 @@ onBeforeUnmount(() => {
     <button type="button" role="menuitem" @click="emit('useAsReference')">
       <ImagePlus :size="15" aria-hidden="true" />
       <span>图生图</span>
+    </button>
+    <button type="button" role="menuitem" @click="emit('cutout')">
+      <Scissors :size="15" aria-hidden="true" />
+      <span>AI 抠图</span>
     </button>
   </div>
 </template>

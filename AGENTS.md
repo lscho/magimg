@@ -9,6 +9,8 @@
 - `gpt-image-2` 文生图与图生图参数配置。
 - 本地 PNG、JPEG、WebP 图片编辑与临时预览。
 - 基于量化 SAM 2.1 Hiera Base+、ViTMatte、Big-LaMa 与 Tauri/Rust 原生 ONNX Runtime 的 AI 抠图，支持嵌套框分层、消除修复和透明 PNG 导出。
+- 基于同一套本地模型的自动分层，支持多框素材提取、底图逐区修复、图层拖动/缩放和手动可编辑文字图层。
+- 基于 Rust 原生编码器的 PNG、JPEG、WebP 桌面本地图片压缩，支持多文件、递归文件夹和目录结构保持。
 - 提示词模板广场和生成页内模板选择。
 - 登录、注册、积分余额、积分日志和充值套餐。
 - 本地历史、设置持久化、输出目录选择和自动保存。
@@ -49,10 +51,12 @@ src-tauri/           Rust 入口、桌面配置和 capability
 - 真实客户端接口以 `docs/CLIENT_API.md` 为准，旧 `docs/backend-api.md` 契约已废弃。
 - 设置中的 `apiBaseUrl` 保存后会动态改变 `apiClient.ts` 的请求地址。
 - 真实图生图会先上传参考图，再用 `inputAssetId` 创建任务。
+- 自动分层路由 `/auto-layer` 位于第一组 AI 抠图之后。页面左侧复用抠图框选工作台，右侧以清理背景和独立素材重建原图；每个素材支持拖动、20%–400% 等比缩放、显隐与层级调整，也可切换成可编辑文字并修改内容、字号和颜色。当前没有 OCR 模型或服务端文字识别契约，不能描述为自动还原原始字样。一次分层只编码原图一次，逐框执行 SAM -> ViTMatte，并用 Big-LaMa/扩散逐区清理底图；计费复用 `POST /matting mode=local`，失败或取消退款。分层文档只在页面会话中存活，不写 Pinia、抠图历史或服务端，浏览器不能运行或模拟本地推理。
 - 浏览器预览使用 `localStorage` 保存设置、历史和登录会话；Tauri 使用 plugin-store。
 - 自动更新仅在正式构建启用，使用独立签名端点，不跟随设置中的 `apiBaseUrl`；浏览器预览不检查更新。
-- 结果区已接入复制、跳转图片编辑、桌面“另存为”和打开默认保存位置；编辑按钮将当前结果一次性交接到独立 `/editor` 页面，不使用弹窗。`/editor` 不在主导航展示，仅由文生图、图生图结果区域进入。图片编辑页无独立页头、外边距或底部状态栏，采用“主内容区 + 右侧栏”布局；主内容区包含 44px 单列工具栏和透明棋盘画布，支持缩放与拖动，右侧栏只包含尺寸、工具属性与应用操作。无图片时整块棋盘投放面支持点击或拖放本地文件；应用后图片右键菜单提供复制和另存为。当前模式存在成功结果时生成主按钮显示“重新生成”。编辑页状态只在该页面存活，不回写结果预览、服务端任务或创作历史。
-- 项目使用 Vitest 覆盖 AI 抠图选区树、修复蒙版、历史迁移和 API 客户端契约；`npm run test:repair` 使用 `tests/background-repair.case.json` 对 `tests/test.png` 执行无需启动应用的 UI 背景修复回归，并把图像与诊断结果写入 `tests/output/background-repair/`；目前没有 E2E 测试脚本。
+- 结果区已接入复制、跳转图片编辑、AI 抠图、桌面“另存为”和打开默认保存位置；文生图与图生图结果均支持右键菜单和右上角悬浮 AI 抠图入口。编辑按钮将当前结果一次性交接到独立 `/editor` 页面，不使用弹窗。主导航上方分为两组：模板广场和历史记录位于第一组 AI 抠图之后，`/editor` 位于第二组并紧跟桌面专属的 `/compress` 之后。图片编辑页无独立页头、外边距或底部状态栏，采用“主内容区 + 右侧栏”布局；主内容区包含 44px 单列工具栏和透明棋盘画布，支持缩放与拖动，右侧栏只包含尺寸、工具属性与应用操作。无图片时整块棋盘投放面支持点击或拖放本地文件；应用后图片右键菜单提供复制和另存为。当前模式存在成功结果时生成主按钮显示“重新生成”。编辑页状态只在该页面存活，不回写结果预览、服务端任务或创作历史。
+- 图片压缩路由 `/compress` 是桌面主导航第二组首项，`/editor` 紧随其后；压缩状态只在 `useImageCompression` 与 Rust 页面会话中存活，不进入 Pinia、历史或服务端。多文件与递归文件夹导入只接受静态 PNG/JPEG/WebP；PNG 使用 oxipng 无损优化，JPEG 使用 mozjpeg，WebP 使用静态 libwebp，三者保持原格式、应用方向、保留色彩信息并移除隐私元数据。待处理列表由 Rust 会话按需生成缩略图，接近可视区时加载并支持悬停或键盘聚焦放大预览，绝对源路径不暴露给前端。右侧栏显示输出目录与逐项结果，编码参数集中在设置弹窗；默认同名策略为自动重命名，单文件输出目录可与源文件目录相同但原文件不可覆盖。文件夹输出用输出根替换源根并保留相对目录。浏览器隐藏入口，直接访问仅显示不可用边界，不实现 Canvas/WASM 降级。
+- 项目使用 Vitest 覆盖 AI 抠图选区树、修复蒙版、自动分层图层变换、历史迁移和 API 客户端契约；`npm run test:repair` 使用 `tests/background-repair.case.json` 对 `tests/test.png` 执行无需启动应用的 UI 背景修复回归，并把图像与诊断结果写入 `tests/output/background-repair/`；目前没有 E2E 测试脚本。
 - `GeneratorPanel` 固定模型为 `gpt-image-2`、数量为 1、背景为 `auto`。
 - 任务接口使用 camelCase 的 `outputFormat`，并仅为 JPEG/WebP 接收 `output_compression`；背景、审核、流式、风格和图生图强度等旧参数仍不接收，差异见 `docs/client-api-integration-gaps.md`。
 - AI 抠图推理为纯客户端本地能力，使用 Rust `ort 2.0.0-rc.10` 与原生 ONNX Runtime 1.22 运行量化 SAM 2.1 Hiera Base+ 和全精度 `Xenova/vitmatte-base-composition-1k`，不再使用 `onnxruntime-web`/WASM；但计费走正式 API：本地抠图开始前调用 `POST /matting`（带 `Idempotency-Key`）预扣 `mattingCost` 积分拿到 `mattingId`，抠图失败或取消时用 `mattingId` 调 `POST /matting/:id/refund` 全额退回，成功则扣费生效。`mattingCost` 由 `GET /capabilities` 下发（默认 5，取值 1–1,000,000 正整数），服务端权威读取不可篡改。未登录时点击抠图弹出 `LoginModal context="matting"`，登录成功后自动重试；积分不足（余额 < `mattingCost` 或预扣返回 409）时禁用按钮并提示充值。右侧不展示模型列表或开关；仅在 SAM 2.1 与 ViTMatte 任一缺失时显示统一资源包下载提示，两部分均就绪后提示隐藏。一次安装会跳过已就绪部分，并以连续总进度补齐其余资源。SAM 2.1 ONNX 固定到 `onnx-community/sam2.1-hiera-base-plus-ONNX` 提交 `bab18593f44e652f04cf18b60b3690f60e8996b0`，逐文件流式写入 encoder、decoder 与两份 external-data 权重，并按大小和 SHA-256 校验，安装状态写入 `model-manifest.json`；ViTMatte Base 固定到提交 `1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a`（387371620 字节），由 `cutoutRefinerManager.ts` 按 SHA-256 校验并通过 v2 `cutout-refiner-manifest.json` 管理，安装成功后清理旧 Small 文件。模型统一保存到 `appDataDir/models/`，不随安装包分发；Windows NSIS 会把目标架构的 MSVC v143 app-local CRT DLL 放到主程序同目录，以满足官方 ONNX Runtime 的原生依赖。Rust 只从该目录的白名单加载文件并在会话创建前再次校验；前端按 ImageNet 均值方差生成 1024x1024 NCHW 输入并通过 Raw IPC 发送，Rust 持有 decoder、三层 embedding 与优化模型会话，encoder 完成后释放。同一任务只编码图片一次，多选区复用 embedding；取消会终止当前 ONNX Runtime 运行。固定链路为 SAM -> 三值 trimap -> ViTMatte：一般选区由 decoder 按 `iou_scores` 选取最高分 `pred_masks` 候选并输出软 alpha；只有一个独立提取框时，近似同分候选会优先选择确定前景明显更完整的主体，减少人像内部孔洞。选区包含少量上下文，确定前景与外部连通背景强制回填，封闭内部缺口保持未知以避免主体被抠穿，再将 alpha 双线性恢复并与原图 alpha 相乘。浏览器预览不能下载与加载模型。官方最新 SAM 3.1 需要 PyTorch/CUDA、授权权重且暂无适配当前链路的官方 ONNX，不能描述为客户端已支持。旧 ViT-H/ViT-L/ViT-B/MobileSAM 文件不会自动删除，但不再展示、下载或加载。框选坐标统一存图像坐标系，结果按选区 bbox 裁剪导出透明 PNG。路由 `/cutout` 在主导航中位于图生图下方，也可从文生图/图生图结果区与图片编辑页右键菜单进入。
