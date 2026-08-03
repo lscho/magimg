@@ -9,8 +9,9 @@ import {
   RotateCcw,
   Type
 } from "lucide-vue-next";
-import { resetAutoLayer, scaleAutoLayer, setAutoLayerKind } from "@/services/autoLayerModel";
-import type { AutoLayerItem, AutoLayerItemKind } from "./types";
+import { materialToText, resetAutoLayer, scaleAutoLayer, textToMaterial } from "@/services/autoLayerModel";
+import { fitAutoLayerTextFontSize } from "@/services/autoLayerRecognition";
+import type { AutoLayerFontCategory, AutoLayerItem } from "./types";
 
 const props = defineProps<{
   layers: AutoLayerItem[];
@@ -34,17 +35,19 @@ const selectedScale = computed(() => {
   return Math.round(layer.width / Math.max(1, layer.sourceBox.width) * 100);
 });
 
-function replaceLayer(id: string, patch: Partial<AutoLayerItem>) {
+function replaceLayer(id: string, patch: Record<string, unknown>) {
   emit("updateLayers", props.layers.map((layer) =>
-    layer.id === id ? { ...layer, ...patch } : layer
+    layer.id === id ? { ...layer, ...patch } as AutoLayerItem : layer
   ));
 }
 
-function setKind(kind: AutoLayerItemKind) {
+function setKind(kind: AutoLayerItem["kind"]) {
   const layer = selectedLayer.value;
   if (!layer) return;
   emit("updateLayers", props.layers.map((item) =>
-    item.id === layer.id ? setAutoLayerKind(item, kind) : item
+    item.id === layer.id
+      ? kind === item.kind ? item : item.kind === "material" ? materialToText(item) : textToMaterial(item)
+      : item
   ));
 }
 
@@ -58,6 +61,23 @@ function setScale(event: Event) {
       ? scaleAutoLayer(item, scale, props.imageWidth, props.imageHeight)
       : item
   ));
+}
+
+function setText(value: string) {
+  const layer = selectedLayer.value;
+  if (!layer || layer.kind !== "text") return;
+  const text = value.replace(/\s+/gu, " ");
+  replaceLayer(layer.id, {
+    text,
+    fontSize: fitAutoLayerTextFontSize({
+      text,
+      width: layer.sourceBox.width,
+      height: layer.sourceBox.height,
+      fontWeight: layer.fontWeight,
+      fontCategory: layer.fontCategory,
+      maxFontSize: layer.fontSize
+    })
+  });
 }
 
 function resetSelected() {
@@ -171,11 +191,11 @@ function moveLayer(id: string, direction: 1 | -1) {
 
       <label v-if="selectedLayer.kind === 'text'" class="auto-layer-field">
         <span>文字内容</span>
-        <textarea
+        <input
+          type="text"
           :value="selectedLayer.text"
-          rows="3"
           maxlength="300"
-          @input="replaceLayer(selectedLayer.id, { text: ($event.target as HTMLTextAreaElement).value })"
+          @input="setText(($event.target as HTMLInputElement).value)"
         />
       </label>
 
@@ -184,11 +204,12 @@ function moveLayer(id: string, direction: 1 | -1) {
           <span>字号</span>
           <input
             type="number"
-            min="8"
+            min="4"
             max="512"
+            step="0.1"
             :value="selectedLayer.fontSize"
             @change="replaceLayer(selectedLayer.id, {
-              fontSize: Math.min(512, Math.max(8, Number(($event.target as HTMLInputElement).value) || 8))
+              fontSize: Math.min(512, Math.max(4, Number(($event.target as HTMLInputElement).value) || 4))
             })"
           />
         </label>
@@ -201,6 +222,37 @@ function moveLayer(id: string, direction: 1 | -1) {
           />
         </label>
       </div>
+
+      <template v-if="selectedLayer.kind === 'text'">
+        <label class="auto-layer-field">
+          <span>字重</span>
+          <input
+            type="number"
+            min="100"
+            max="900"
+            step="100"
+            :value="selectedLayer.fontWeight"
+            @change="replaceLayer(selectedLayer.id, {
+              fontWeight: Math.min(900, Math.max(100, Number(($event.target as HTMLInputElement).value) || 400))
+            })"
+          />
+        </label>
+        <label class="auto-layer-field">
+          <span>字体类别</span>
+          <select
+            :value="selectedLayer.fontCategory"
+            @change="replaceLayer(selectedLayer.id, {
+              fontCategory: ($event.target as HTMLSelectElement).value as AutoLayerFontCategory
+            })"
+          >
+            <option value="sans">Sans</option>
+            <option value="serif">Serif</option>
+            <option value="rounded">Rounded</option>
+            <option value="display">Display</option>
+            <option value="calligraphic">Calligraphic</option>
+          </select>
+        </label>
+      </template>
 
       <label class="auto-layer-range-field">
         <span>缩放 <strong>{{ selectedScale }}%</strong></span>
@@ -327,7 +379,6 @@ function moveLayer(id: string, direction: 1 | -1) {
 
   input[type="text"],
   input[type="number"] { height: 34px; padding: 0 9px; }
-  textarea { resize: vertical; min-height: 62px; padding: 8px 9px; line-height: 1.45; }
 }
 
 .auto-layer-kind-control {

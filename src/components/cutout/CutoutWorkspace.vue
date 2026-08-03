@@ -4,6 +4,7 @@ import { LoaderCircle, X } from "lucide-vue-next";
 import CutoutToolbar from "./CutoutToolbar.vue";
 import { useCutoutSelection, type CutoutTool } from "@/composables/useCutoutSelection";
 import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
+import { pointInCutoutPolygon } from "@/services/cutoutSelectionShape";
 import type {
   CutoutSelection,
   CutoutSelectionBox
@@ -15,11 +16,13 @@ const props = withDefaults(defineProps<{
   importing?: boolean;
   clearing?: boolean;
   locked?: boolean;
+  mode?: "cutout" | "auto-layer";
 }>(), {
   initialSelections: () => [],
   importing: false,
   clearing: false,
-  locked: false
+  locked: false,
+  mode: "cutout"
 });
 
 const emit = defineEmits<{
@@ -42,6 +45,21 @@ const stackStyle = computed(() => ({
   height: `${canvas.previewHeight.value}px`,
   transform: `translate(calc(-50% + ${canvas.panX.value}px), calc(-50% + ${canvas.panY.value}px))`
 }));
+const polygonSelections = computed(() =>
+  canvas.selections.value.filter((selection) => Boolean(selection.polygon?.length))
+);
+const draftPolygonPoints = computed(() => {
+  const points = canvas.draftPolygon.value;
+  const cursor = canvas.polygonCursor.value;
+  return cursor && points.length ? [...points, cursor] : points;
+});
+const polygonCloseReady = computed(() => {
+  const points = canvas.draftPolygon.value;
+  const cursor = canvas.polygonCursor.value;
+  if (points.length < 3 || !cursor) return false;
+  return Math.hypot(points[0].x - cursor.x, points[0].y - cursor.y) <=
+    10 / Math.max(canvas.previewScale.value, 0.01);
+});
 
 watch(
   () => canvas.selections.value,
@@ -84,6 +102,10 @@ function strokePoints(stroke: {
   return stroke.points.map((point) => `${point.x},${point.y}`).join(" ");
 }
 
+function polygonPoints(points: readonly { readonly x: number; readonly y: number }[]) {
+  return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
 function visibleStrokes() {
   return canvas.selections.value.flatMap((selection) =>
     selection.removalStrokes.map((stroke) => ({ selectionId: selection.id, stroke }))
@@ -94,6 +116,9 @@ function selectionContainsPoint(
   selection: CutoutSelection,
   point: { x: number; y: number }
 ) {
+  if (selection.polygon?.length) {
+    return pointInCutoutPolygon(point, selection.polygon);
+  }
   return point.x >= selection.x && point.y >= selection.y &&
     point.x <= selection.x + selection.width &&
     point.y <= selection.y + selection.height;
@@ -116,6 +141,8 @@ function updatePointerState(event: PointerEvent) {
     return;
   }
 
+  canvas.updatePolygonCursorFromClient(event.clientX, event.clientY);
+
   const point = canvas.clientToImage(event.clientX, event.clientY);
   if (!point.inside) {
     hoveredSelectionId.value = null;
@@ -133,7 +160,8 @@ function updatePointerState(event: PointerEvent) {
     return;
   }
 
-  if (canvas.draftBox.value || canvas.movingSelectionId.value || canvas.panning.value) {
+  if (canvas.draftBox.value || canvas.draftPolygon.value.length ||
+    canvas.movingSelectionId.value || canvas.panning.value) {
     hoveredSelectionId.value = null;
     brushCursor.value = null;
     return;
@@ -158,10 +186,11 @@ function updatePointerState(event: PointerEvent) {
 
 function handleCanvasPointerDown(event: PointerEvent) {
   if (props.locked || event.button !== 0) return;
+  viewport.value?.focus({ preventScroll: true });
   const target = event.target as HTMLElement | null;
   const selectionAction = target?.closest("[data-selection-action]");
   const moveHandle = target?.closest<HTMLElement>("[data-selection-move-id]");
-  if (moveHandle && canvas.activeTool.value === "box") {
+  if (moveHandle && ["box", "polygon", "text-box"].includes(canvas.activeTool.value)) {
     const selectionId = moveHandle.dataset.selectionMoveId;
     const started = selectionId
       ? canvas.beginMoveSelection(selectionId, event.clientX, event.clientY)
@@ -177,6 +206,12 @@ function handleCanvasPointerDown(event: PointerEvent) {
   let started = false;
   if (canvas.activeTool.value === "pan") {
     started = canvas.startPan(event.clientX, event.clientY);
+  } else if (canvas.activeTool.value === "polygon") {
+    if (event.detail > 1 && canvas.draftPolygon.value.length >= 3) {
+      started = canvas.finishPolygon();
+    } else {
+      started = canvas.addPolygonPointFromClient(event.clientX, event.clientY);
+    }
   } else if (canvas.activeTool.value === "erase") {
     const selection = selectionFromPointer(event);
     if (!selection) return;
@@ -192,6 +227,7 @@ function handleCanvasPointerDown(event: PointerEvent) {
   }
   if (!started) return;
   event.preventDefault();
+  if (canvas.activeTool.value === "polygon") return;
   viewport.value?.setPointerCapture(event.pointerId);
 }
 
@@ -221,6 +257,7 @@ function handleCanvasPointerMove(event: PointerEvent) {
 function handleCanvasPointerLeave() {
   hoveredSelectionId.value = null;
   brushCursor.value = null;
+  canvas.clearPolygonCursor();
 }
 
 function handleCanvasPointerUp(event: PointerEvent) {
@@ -261,6 +298,21 @@ function handleLostPointerCapture() {
 
 function handleKeydown(event: KeyboardEvent) {
   if (props.locked) return;
+  if (event.key === "Escape" && canvas.draftPolygon.value.length) {
+    event.preventDefault();
+    canvas.cancelPolygon();
+    return;
+  }
+  if (event.key === "Enter" && canvas.draftPolygon.value.length >= 3) {
+    event.preventDefault();
+    canvas.finishPolygon();
+    return;
+  }
+  if (event.key === "Backspace" && canvas.draftPolygon.value.length) {
+    event.preventDefault();
+    canvas.removeLastPolygonPoint();
+    return;
+  }
   if (event.key === "Escape" && canvas.draftBox.value) {
     event.preventDefault();
     canvas.cancelBox();
@@ -331,6 +383,7 @@ function handleWheel(event: WheelEvent) {
         :brush-operation="canvas.brushOperation.value"
         :brush-radius="canvas.brushRadius.value"
         :smart-brush="canvas.smartBrush.value"
+        :mode="mode"
         @select-tool="selectTool"
         @clear-selections="canvas.clearSelections"
         @import-image="emit('import')"
@@ -354,7 +407,8 @@ function handleWheel(event: WheelEvent) {
           'is-empty': !canvas.ready.value,
           'is-dragging-file': dragDepth > 0,
           'is-pan-tool': canvas.ready.value && canvas.activeTool.value === 'pan',
-          'is-box-tool': canvas.ready.value && canvas.activeTool.value === 'box',
+          'is-box-tool': canvas.ready.value && ['box', 'text-box'].includes(canvas.activeTool.value),
+          'is-polygon-tool': canvas.ready.value && canvas.activeTool.value === 'polygon',
           'is-erase-tool': canvas.ready.value && canvas.activeTool.value === 'erase',
           'is-erase-target': canvas.activeTool.value === 'erase' && hoveredSelectionId && !brushCursor,
           'is-erase-brush-ready': canvas.activeTool.value === 'erase' && brushCursor,
@@ -421,7 +475,41 @@ function handleWheel(event: WheelEvent) {
               :r="canvas.brushRadius.value"
             />
           </svg>
-          <div class="cutout-selection-layer" aria-label="框选区域">
+          <svg
+            class="cutout-polygon-layer"
+            :viewBox="`0 0 ${canvas.imageWidth.value} ${canvas.imageHeight.value}`"
+            aria-hidden="true"
+          >
+            <polygon
+              v-for="selection in polygonSelections"
+              :key="selection.id"
+              :class="{
+                'is-active': canvas.activeSelectionId.value === selection.id,
+                'is-background': selection.behavior === 'background',
+                'is-hovered': hoveredSelectionId === selection.id
+              }"
+              :points="polygonPoints(selection.polygon!)"
+            />
+            <polygon
+              v-if="draftPolygonPoints.length && polygonCloseReady"
+              class="is-draft"
+              :points="polygonPoints(draftPolygonPoints)"
+            />
+            <polyline
+              v-else-if="draftPolygonPoints.length"
+              class="is-draft"
+              :points="polygonPoints(draftPolygonPoints)"
+            />
+            <circle
+              v-for="(point, index) in canvas.draftPolygon.value"
+              :key="`${point.x}-${point.y}-${index}`"
+              :class="{ 'is-start': index === 0, 'is-close-ready': index === 0 && polygonCloseReady }"
+              :cx="point.x"
+              :cy="point.y"
+              :r="index === 0 ? 4 / Math.max(canvas.previewScale.value, 0.01) : 3 / Math.max(canvas.previewScale.value, 0.01)"
+            />
+          </svg>
+          <div class="cutout-selection-layer" aria-label="抠图选区">
             <div
               v-for="(selection, index) in canvas.selections.value"
               :key="selection.id"
@@ -429,6 +517,8 @@ function handleWheel(event: WheelEvent) {
               :class="{
                 'is-active': canvas.activeSelectionId.value === selection.id,
                 'is-background': selection.behavior === 'background',
+                'is-text': selection.layerKind === 'text',
+                'is-polygon': Boolean(selection.polygon?.length),
                 'is-hovered': hoveredSelectionId === selection.id,
                 'is-erase-switch-target': canvas.activeTool.value === 'erase' && hoveredSelectionId === selection.id && canvas.activeSelectionId.value !== selection.id,
                 'is-moving': canvas.movingSelectionId.value === selection.id
@@ -534,6 +624,7 @@ function handleWheel(event: WheelEvent) {
 
   &.is-pan-tool { cursor: grab; }
   &.is-box-tool { cursor: crosshair; }
+  &.is-polygon-tool { cursor: crosshair; }
   &.is-erase-tool { cursor: default; }
   &.is-erase-target { cursor: pointer; }
   &.is-erase-brush-ready { cursor: none; }
@@ -601,6 +692,53 @@ function handleWheel(event: WheelEvent) {
   }
 }
 
+.cutout-polygon-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+
+  polygon,
+  polyline {
+    fill: rgba(120, 152, 245, 0.12);
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  polygon.is-background {
+    fill: rgba(228, 160, 107, 0.1);
+    stroke: var(--warm);
+  }
+
+  polygon.is-active,
+  polygon.is-hovered {
+    stroke: var(--text);
+  }
+
+  .is-draft {
+    fill: rgba(120, 152, 245, 0.16);
+    stroke-dasharray: 5 4;
+  }
+
+  circle {
+    fill: var(--surface-raised);
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+
+    &.is-close-ready {
+      fill: var(--accent);
+      stroke: var(--text);
+    }
+  }
+}
+
 .cutout-selection-edge {
   position: absolute;
   z-index: 1;
@@ -636,6 +774,7 @@ function handleWheel(event: WheelEvent) {
 .cutout-selection-layer {
   position: absolute;
   inset: 0;
+  z-index: 2;
   overflow: hidden;
   pointer-events: none;
 }
@@ -676,6 +815,15 @@ function handleWheel(event: WheelEvent) {
   &.is-draft {
     border-style: dashed;
     background: rgba(120, 152, 245, 0.18);
+  }
+
+  &.is-polygon {
+    border: 1px dashed rgba(120, 152, 245, 0.4);
+    background: transparent;
+  }
+
+  &.is-polygon.is-background {
+    border-color: rgba(228, 160, 107, 0.42);
   }
 }
 

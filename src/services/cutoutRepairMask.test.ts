@@ -3,7 +3,10 @@ import {
   buildHighRecallChildMask,
   buildRemovalMask,
   chooseSmartRemovalCandidate,
+  expandTextRepairMask,
+  highRecallChildMaskPadding,
   prepareRepairMask,
+  repairMaskRadius,
   sampleStrokePoints
 } from "@/services/cutoutRepairMask";
 import type { CutoutRemovalStroke, CutoutSelectionBox } from "@/types";
@@ -98,6 +101,25 @@ describe("repair masks", () => {
     expect(prepared[3 * width + 4]).toBe(0);
   });
 
+  it("expands OCR glyph alpha without filling the whole text box", () => {
+    const width = 30;
+    const height = 20;
+    const mask = new Uint8Array(width * height);
+    mask[10 * width + 15] = 16;
+    const expanded = expandTextRepairMask(mask, width, height, {
+      id: "text",
+      x: 5,
+      y: 5,
+      width: 20,
+      height: 10
+    });
+
+    expect(expanded[10 * width + 15]).toBe(255);
+    expect(expanded[10 * width + 17]).toBe(255);
+    expect(expanded[10 * width + 18]).toBe(0);
+    expect(expanded[5 * width + 5]).toBe(0);
+  });
+
   it("rejects smart candidates that cover most of the parent", () => {
     const width = 10;
     const height = 10;
@@ -133,5 +155,11 @@ describe("repair masks", () => {
     expect(mask[15 * width + 19]).toBe(255);
     expect(mask[15 * width + 23]).toBe(255);
     expect(mask[35 * width + 35]).toBe(0);
+  });
+
+  it("reports the same bounded expansion used by high-recall and feather masks", () => {
+    expect(highRecallChildMaskPadding({ id: "small", x: 0, y: 0, width: 40, height: 40 })).toBe(12);
+    expect(highRecallChildMaskPadding({ id: "large", x: 0, y: 0, width: 1200, height: 400 })).toBe(54);
+    expect(repairMaskRadius(1536, 2730)).toBe(5);
   });
 });

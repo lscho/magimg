@@ -22,6 +22,7 @@ import {
 import { localDb } from "@/services/localStorage";
 import type {
   AppSettings,
+  AutoLayerTask,
   BackgroundRepairTask,
   ClientAuthResponse,
   ClientGenerationMode,
@@ -30,9 +31,9 @@ import type {
   CreditTransaction,
   CreditTransactionKind,
   CreateBackgroundRepairInput,
+  CreateAutoLayerTaskInput,
   CutoutHistoryAsset,
   CutoutHistoryRecord,
-  CutoutRepairMode,
   GenerationMode,
   GenerationRecord,
   GenerationSettings,
@@ -41,6 +42,7 @@ import type {
   GeneratedImage,
   ImageParams,
   MattingChargeResult,
+  MattingMode,
   PointLedgerEntry,
   PromptTemplate,
   SelectedImageFile,
@@ -53,6 +55,8 @@ const fallbackCapabilities: GenerationSettings = {
   textToImageCost: 10,
   imageToImageCost: 15,
   mattingCost: 5,
+  autoLayerEnabled: false,
+  autoLayerCost: 20,
   maxAttempts: 3,
   uploadMaxBytes: 5 * 1024 * 1024,
   supportedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
@@ -849,7 +853,7 @@ export const useAppStore = defineStore("app", () => {
     return result;
   }
 
-  async function chargeMatting(mode: CutoutRepairMode = "local"): Promise<MattingChargeResult> {
+  async function chargeMatting(mode: MattingMode = "local"): Promise<MattingChargeResult> {
     if (!session.value) throw new Error("请先登录后再使用 AI 抠图。");
     const result = await apiClient.chargeMatting(mode);
     balance.value = { balance: result.balance, frozen: 0, updatedAt: new Date().toISOString() };
@@ -909,6 +913,48 @@ export const useAppStore = defineStore("app", () => {
 
   async function downloadBackgroundRepairOutput(task: BackgroundRepairTask) {
     if (!task.outputUrl) throw new Error("云端背景修复未返回图片。");
+    return apiClient.downloadBackgroundRepairOutput(task.outputUrl);
+  }
+
+  async function createAutoLayerTask(input: CreateAutoLayerTaskInput): Promise<AutoLayerTask> {
+    if (!session.value) throw new Error("请先登录后再使用自动分层。");
+    const task = await apiClient.createAutoLayerTask(input);
+    balance.value = { balance: task.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    return task;
+  }
+
+  async function waitForAutoLayerTask(initialTask: AutoLayerTask, signal: AbortSignal): Promise<AutoLayerTask> {
+    let task = initialTask;
+    while (task.status === "pending" || task.status === "processing") {
+      if (signal.aborted) {
+        await apiClient.cancelAutoLayerTask(task.id).catch(() => undefined);
+        throw new DOMException("自动分层云端背景已取消。", "AbortError");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          window.clearTimeout(timer);
+          reject(new DOMException("自动分层云端背景已取消。", "AbortError"));
+        };
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, 1500);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }).catch(async (exception) => {
+        await apiClient.cancelAutoLayerTask(task.id).catch(() => undefined);
+        throw exception;
+      });
+      task = await apiClient.autoLayerTask(task.id);
+      balance.value = { balance: task.balance, frozen: 0, updatedAt: new Date().toISOString() };
+    }
+    if (task.status !== "succeeded" || !task.outputUrl) {
+      throw new Error(task.errorMessage || (task.status === "canceled" ? "自动分层已取消。" : "自动分层云端背景失败。"));
+    }
+    return task;
+  }
+
+  async function downloadAutoLayerOutput(task: AutoLayerTask) {
+    if (!task.outputUrl) throw new Error("自动分层任务未返回背景图片。");
     return apiClient.downloadBackgroundRepairOutput(task.outputUrl);
   }
 
@@ -1035,6 +1081,9 @@ export const useAppStore = defineStore("app", () => {
     createBackgroundRepair,
     waitForBackgroundRepair,
     downloadBackgroundRepairOutput,
+    createAutoLayerTask,
+    waitForAutoLayerTask,
+    downloadAutoLayerOutput,
     selectTemplate,
     consumeTemplate,
     resolveHistoryTask,

@@ -2,7 +2,11 @@
 
 基于 Tauri 2、Vue 3、TypeScript 的桌面端 AI 图片生成工作台，包含 `gpt-image-2` 文生图与图生图、本地图片编辑、AI 抠图与自动分层（本地模型）、PNG/JPEG/WebP 本地图片压缩、提示词模板广场、登录注册、卡密购买与积分兑换、积分日志、支持文生图、图生图与 AI 抠图筛选和分页的创作历史，以及保存目录设置。
 
-自动分层页（`/auto-layer`）采用左侧原图框选、右侧分层结果的等宽工作台。每个框选复用 SAM 2.1 与 ViTMatte 生成独立透明素材，再使用 Big-LaMa 或确定性扩散清理底图；生成后的素材可拖动、等比缩放、调整层级和显隐，也可切换为文字图层并编辑文字、字号与颜色。当前没有 OCR 模型或服务端文字识别契约，文字内容由用户在切换为文字图层后录入。该功能复用本地抠图计费，失败或取消退款，页面状态不写入抠图历史或服务端；浏览器预览不能运行本地模型。
+自动分层页（`/auto-layer`）采用混合链路：元素框使用 SAM 2.1 与 ViTMatte，文字框使用 PP-OCRv5 按行生成可编辑单行文字，元素类型由本地识别给出英文 kebab-case 名称；本地关系判断容忍少量贴边误差，并保证父层位于全部后代下方。元素分割使用带有界上下文的 SAM 提示；默认沿用最高分候选，只有另一可靠候选轮廓近似相同且能明显补全内部透明洞时才保守回退。每个父级只合并直接子层的高召回 Alpha，文字使用真实字形 Alpha 做 2–4px 有界扩张。
+
+云端输入是一张由暗色留白分隔的修复图集，包含连续整页背景区和所有需要清除直接子层的父素材细节区。整张图集只调用一次生成式图片编辑，返回后分别回填整页背景与父素材；整页区只延续场景，父素材区只延续已有卡片、面板、按钮或图标表面。图集同时遵守服务端像素和字节上限，无损 PNG 超限时使用高质量 WebP，仍超限则按实际编码体积等比缩小。云背景完成前只显示原图；失败时保留不可预览草稿并允许只重试背景。完整结果可导出 `preview.png`、`background.png`、透明素材、`texts.json` 和 schema v1 `manifest.json`。桌面端可保存最多 50 条选区记录；分层文档仍只在页面会话中存在，浏览器预览不能保存或恢复选区、运行模型或导出项目目录。
+
+当前质量策略还会在精修 Alpha 确实越过紧选框边缘时，仅向触边方向小幅扩展素材导出范围。自动字重不会输出 `700`：普通中文 UI 和带描边、阴影的小字默认使用 `400`，只有极强粗体证据才提升到 `600`。云端请求提交前会清空图集联合蒙版区域的 Alpha 与隐藏 RGB，服务端只在每个分区的原蒙版内合成一次；客户端拆分时直接采用已合成 RGB 并保留素材 Alpha，不再重复羽化。
 
 ## 启动
 
@@ -58,6 +62,17 @@ VITE_ENABLE_UPDATER=true
 
 `.env.production` 会随仓库进入 GitHub Actions。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件；构建会校验正式 API 必须使用 HTTPS。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
 
+自动分层的 OCR/命名资源复用 AI 抠图的 `CUTOUT_MODEL_DOWNLOAD_BASE_URL` 下载前缀，当前为 `https://download.atmomo.cn/model`，不增加独立环境变量。服务器需要在该目录部署以下四个固定文件名。首次点击“一键分层”会确认下载，下载进度直接显示在主按钮内，完成后自动继续分层。
+
+| 部署文件名 | 固定上游地址 | 字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| `auto-layer-ocr-det.onnx` | `https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx` | 4,826,518 | `a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d` |
+| `auto-layer-ocr-rec.onnx` | `https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/ed152b8b495f84de93cda5709d768548a9127622/inference.onnx` | 16,534,782 | `da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092` |
+| `auto-layer-siglip2-vision-int8.onnx` | `https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model_quantized.onnx` | 94,553,333 | `5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070` |
+| `auto-layer-ocr-inference.yml` | `https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/ed152b8b495f84de93cda5709d768548a9127622/inference.yml` | 下载时记录 | 下载时记录 |
+
+例如检测模型必须能通过 `https://download.atmomo.cn/model/auto-layer-ocr-det.onnx` 直接访问。客户端会校验三个 ONNX 文件的固定大小与 SHA-256；字符表会在首次安装时记录大小与 SHA-256。后续如需调整统一下载前缀，只修改 `src/constants/cutoutModels.ts` 即可同时作用于 AI 抠图和自动分层资源。
+
 客户端只连接正式 API，不提供本地 Mock 数据。短信认证、模板、积分、图片上传和生成任务都会请求 `VITE_API_BASE_URL` 配置的服务；客户端会自动添加 `/api/client/v1`，该变量也可以直接填写包含基础路径的地址。模板广场和模板选择弹窗使用跟随图片比例的四列瀑布流，较窄窗口自动降为三列、两列或单列；宽屏模板广场会限制超长卡片的最大高度，文生图和图生图预览均完整显示并使用媒体背景承接空余区域，模板弹窗继续按原始比例展示。创作历史继续使用 264×264px 固定卡片的规则网格。图生图模板的对比分割线默认位于左侧 15%，支持拖动查看原图和生成结果；模板信息与操作在悬停或键盘聚焦时显示。
 
 客户端支持手机号登录、短信注册与重置密码、卡密兑换、服务端模板、图生图上传、输出格式与 JPEG/WebP 压缩率、异步任务轮询和排队任务取消。每次打开模板广场、生成页模板弹窗或创作历史页，客户端都会重新请求对应的模板或服务端任务数据。
@@ -74,13 +89,13 @@ VITE_ENABLE_UPDATER=true
 
 压缩任务默认自动重命名同名输出并跳过无体积收益的候选文件，也可改为跳过同名文件、覆盖已有输出或强制写出。单文件模式允许输出目录与源文件目录相同，自动重命名会生成带编号的新文件；原文件在所有策略下都不会被覆盖。文件夹输出根不能等于源根或位于源根内部。右侧栏直接展示输出目录和逐项压缩结果，同名策略、无收益开关及 PNG/JPEG/WebP 编码参数集中在设置弹窗中。每批最多 10,000 张，单文件不超过 256 MiB，单图不超过 64 MP；动画 APNG、动画 WebP、符号链接和隐藏目录会被忽略。原生端单线程逐文件处理，先在目标目录写临时文件再重命名；取消会等待当前编码结束，并且不再启动下一项。浏览器预览隐藏导航入口，直接访问路由只显示桌面能力不可用状态，不提供 Canvas 或 WASM 模拟实现。
 
-AI 抠图页（`/cutout`）在左侧主导航中位于“图生图”下方，也可从文生图/图生图结果区工具栏或图片编辑页右键菜单进入，沿用与生成页一致的两栏布局。页面始终显示透明棋盘工作台；无图片时不切换提示页，可通过左侧导入按钮或直接拖入 PNG、JPEG、WebP。框选使用原生 Pointer Capture，绘制时实时跟随指针；多个选区并存，选框上不显示编号或用途文字，删除按钮仅在鼠标悬停或键盘聚焦选框时出现，并支持单独删除、撤销与重做。框选工具下可拖动选框四条边移动选区，松手后重新计算嵌套关系并把整次移动写入一条撤销记录；框内空白仍用于继续绘制嵌套小框。独立框保持原有透明素材提取；小框至少 95% 位于大框且面积小于其 80% 时自动建立最近父子关系，小框提取前景，大框合并直接子级遮罩并修复背景，用户可把选区切回独立提取。消除修复工具支持 SAM 智能吸附、手动添加/恢复和图像坐标系笔刷，全部操作进入同一撤销历史；没有选框时不显示笔刷光标，多选框下悬停会提示可切换目标，首次点击只激活目标，只有当前背景选区内才允许开始涂抹。
+AI 抠图页（`/cutout`）在左侧主导航中位于“图生图”下方，也可从文生图/图生图结果区工具栏或图片编辑页右键菜单进入，沿用与生成页一致的两栏布局。页面始终显示透明棋盘工作台；无图片时不切换提示页，可通过左侧导入按钮或直接拖入 PNG、JPEG、WebP。矩形框选使用原生 Pointer Capture，绘制时实时跟随指针；不规则素材可使用“点选轮廓”逐点建立多边形，点击起点、双击或按 Enter 闭合，Backspace 撤回最后一点，Escape 取消本次点选。多个选区并存，选区上不显示编号或用途文字，删除按钮仅在鼠标悬停或键盘聚焦时出现，并支持单独删除、撤销与重做。框选工具下可拖动选框四条边移动选区，点选轮廓移动时同步平移全部顶点；松手后重新计算嵌套关系并把整次移动写入一条撤销记录。独立选区保持原有透明素材提取；小选区至少 95% 位于大选区且面积小于其 80% 时自动建立最近父子关系，小选区提取前景，大选区合并直接子级遮罩并修复背景，用户可把选区切回独立提取。消除修复工具支持 SAM 智能吸附、手动添加/恢复和图像坐标系笔刷，全部操作进入同一撤销历史；没有选区时不显示笔刷光标，多选区下悬停会提示可切换目标，首次点击只激活目标，只有当前背景选区内才允许开始涂抹。
 
 背景选区出现后，右侧显示本地/云端修复档位。本地档首次使用时单独按需下载 Big-LaMa，不增加普通抠图资源包体积；云端档只在 `GET /capabilities` 明确下发 `backgroundRepairEnabled: true` 时显示，首次提交原图、所有背景选区坐标和联合灰度蒙版，同一原图后续微调复用服务端素材 ID、只上传新蒙版与选框坐标。服务端按背景选区分别裁剪后修复，模型不会读取框外大图内容。两档都只合成修复蒙版内的 RGB，框外与未遮挡像素保持原值，父级精修 Alpha 仍决定最终透明边界。云端失败或取消由服务端幂等退款，页面保留已经完成的前景素材。右侧结果以“素材/背景”标记区分类型。
 
 桌面端会在完整抠图成功后把原图、选区关系、矢量笔画和全部透明 PNG 保存到 `appDataDir/cutout-history/`，任务清单由 plugin-store 管理，最多保留最近 100 条。历史 schema v2 会把旧矩形记录兼容迁移为独立前景选区。创作历史中的“AI 抠图”页签支持多选下载和删除；任务卡右键只提供恢复工作和保存全部素材。恢复工作后调整选区、关系或笔画会清空旧结果，再次抠图会重新扣费并新增独立历史任务，不覆盖原记录。浏览器预览不读取、写入或模拟这些记录。
 
-SAM 2.1 模型的 encoder、decoder 及两份 external-data 权重会逐文件流式写入本地，并按固定大小和 SHA-256 校验；不再下载或解压旧 SAM ZIP。推理使用 Tauri/Rust 原生 `ort 2.0.0-rc.10` 与 ONNX Runtime 1.22，不加载 `onnxruntime-web` 或 WASM：前端将图片直接缩放到 1024x1024，按 ImageNet 均值方差生成 NCHW 输入，再通过 Raw IPC 发送；Rust 从 `appDataDir/models/` 白名单路径加载并再次校验四个文件，encoder 产生三层 image embedding 后立即释放大会话，decoder 与 embedding 留存供同一任务的多个框选和智能笔画复用。框选提示通过 `input_boxes` 传入，智能笔画最多采样 8 个前景点并复用 `input_points`；取消操作会终止当前原生运行。
+SAM 2.1 模型的 encoder、decoder 及两份 external-data 权重会逐文件流式写入本地，并按固定大小和 SHA-256 校验；不再下载或解压旧 SAM ZIP。推理使用 Tauri/Rust 原生 `ort 2.0.0-rc.10` 与 ONNX Runtime 1.22，不加载 `onnxruntime-web` 或 WASM：前端将图片直接缩放到 1024x1024，按 ImageNet 均值方差生成 NCHW 输入，再通过 Raw IPC 发送；Rust 从 `appDataDir/models/` 白名单路径加载并再次校验四个文件，encoder 产生三层 image embedding 后立即释放大会话，decoder 与 embedding 留存供同一任务的多个选区和智能笔画复用。矩形与点选轮廓都通过外接框向 `input_boxes` 提示主体，点选轮廓会在 ViTMatte 精修后再次约束最终 Alpha；智能笔画最多采样 8 个前景点并复用 `input_points`。取消操作会终止当前原生运行。
 
 Windows 的官方 ONNX Runtime 二进制依赖 Microsoft Visual C++ 运行库。桌面正式构建会从目标架构的 MSVC v143 工具链中提取 `Microsoft.VC143.CRT`，并将其中的 DLL 作为 app-local 资源放在主程序同目录；安装和自动更新均不要求用户另行安装 VC++ Redistributable。Windows 打包机必须安装对应架构的 MSVC v143 C++ Build Tools；脚本无法自动定位时，可将 `MSVC_CRT_DIR` 指向目标架构的 `Microsoft.VC143.CRT` 目录。
 
@@ -108,6 +123,14 @@ npm run test:repair -- tests/background-repair.case.json
 
 用例中的 `selection` 使用原图坐标，`parentAlpha` 和 `removalMask` 使用相对选框的坐标，支持 `rect`、`roundedRect` 和 `ellipse`。结果写入被 Git 忽略的 `tests/output/background-repair/`，包含原始裁剪、灰度蒙版、蒙版叠加图、扩散结果和 `diagnostics.json`。诊断文件会记录主背景色、近似色覆盖率，以及生产逻辑当前会选择扩散还是 LaMa；当建议使用 LaMa 时，脚本仍输出扩散结果用于调试分类阈值，但不会在命令行加载 ONNX 模型。
 
+自动分层可直接复用桌面端保存的最新选区记录运行真实 Tauri IPC 和本地 ONNX 链路。默认不请求服务端、不扣积分；产物写入 `tests/output/auto-layer/run-*-local/`，包含全部候选与精修蒙版、父层修复蒙版、云端整页输入、透明素材、OCR 元数据和本地预览。显式传入 `--cloud` 才会在本地推理后创建一次正式云任务并消耗 20 积分：
+
+```bash
+npm run test:auto-layer
+npm run test:auto-layer -- --record=<选区记录 ID>
+npm run test:auto-layer -- --cloud
+```
+
 开发服务器会把 `/api/client/v1`、`/images` 和 `/uploads` 代理到 `VITE_API_BASE_URL`，避免浏览器预览受跨域限制。生产 Tauri 应用通过原生 HTTP 插件请求该地址，不受 WebView CORS 限制；浏览器直接访问正式 API 时，后端仍需配置正常的 CORS 响应头。
 
 正式桌面构建设置 `VITE_ENABLE_UPDATER=true` 后，客户端启动时会通过签名更新端点检查新版本。普通更新由用户确认，强制更新会阻断使用；更新包安装完成后客户端立即重启。浏览器预览和未启用 updater 的本地构建不会发起更新请求。发布脚本根据构建时的 `VITE_API_BASE_URL` 生成 `/api/client/v1/version/latest/tauri?platform={{target}}`，生成结果写入 Tauri 构建配置，不跟随设置中可修改的 `apiBaseUrl`。
@@ -117,6 +140,7 @@ npm run test:repair -- tests/background-repair.case.json
 ```bash
 npm run test
 npm run test:repair
+npm run test:auto-layer
 npm run typecheck
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml

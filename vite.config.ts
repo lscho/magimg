@@ -48,6 +48,7 @@ function validateProductionEnv(env: Record<string, string>) {
   if (parsedApiBaseUrl.protocol !== "https:") {
     throw new Error(".env.production 中的 VITE_API_BASE_URL 必须使用 HTTPS");
   }
+
 }
 
 function apiOrigin(value?: string) {

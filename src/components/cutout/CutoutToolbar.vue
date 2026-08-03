@@ -9,7 +9,9 @@ import {
   Plus,
   Redo2,
   Scan,
+  Spline,
   SquareDashed,
+  Type,
   Trash2,
   Undo2
 } from "lucide-vue-next";
@@ -19,7 +21,7 @@ import type {
   CutoutSelection
 } from "@/types";
 
-defineProps<{
+const props = withDefaults(defineProps<{
   activeTool: CutoutTool;
   busy: boolean;
   ready: boolean;
@@ -33,7 +35,21 @@ defineProps<{
   brushOperation: CutoutBrushOperation;
   brushRadius: number;
   smartBrush: boolean;
-}>();
+  mode?: "cutout" | "auto-layer";
+}>(), { mode: "cutout" });
+
+const primaryTools = props.mode === "auto-layer"
+  ? [
+      { id: "box", label: "框选元素", icon: SquareDashed },
+      { id: "text-box", label: "框选文字", icon: Type },
+      { id: "pan", label: "拖动", icon: Hand }
+    ]
+  : [
+      { id: "box", label: "框选", icon: SquareDashed },
+      { id: "polygon", label: "点选轮廓", icon: Spline },
+      { id: "erase", label: "消除修复", icon: Eraser },
+      { id: "pan", label: "拖动", icon: Hand }
+    ];
 
 const emit = defineEmits<{
   selectTool: [tool: CutoutTool];
@@ -57,11 +73,7 @@ const emit = defineEmits<{
   <aside class="cutout-toolbar" role="toolbar" aria-label="抠图工具">
     <div class="cutout-tool-group">
       <button
-        v-for="tool in [
-          { id: 'box', label: '框选', icon: SquareDashed },
-          { id: 'erase', label: '消除修复', icon: Eraser },
-          { id: 'pan', label: '拖动', icon: Hand }
-        ]"
+        v-for="tool in primaryTools"
         :key="tool.id"
         class="cutout-tool-button"
         :class="{ active: activeTool === tool.id }"

@@ -625,8 +625,9 @@ function openRechargeFromCreditLog() {
   }
 
   .content {
-    min-height: 100vh;
-    overflow: visible;
+    min-height: calc(100vh - 48px);
+    height: calc(100vh - 48px);
+    overflow: hidden;
   }
 
   .mobile-menu {

@@ -2,6 +2,7 @@ import { fetchHttp } from "@/services/desktop";
 import type {
   CardRedeemResult,
   BackgroundRepairTask,
+  AutoLayerTask,
   ClientAsset,
   ClientAuthResponse,
   ClientGenerationMode,
@@ -15,8 +16,9 @@ import type {
   GenerationTemplate,
   MattingChargeResult,
   MattingRefundResult,
-  CutoutRepairMode,
   CreateBackgroundRepairInput,
+  CreateAutoLayerTaskInput,
+  MattingMode,
   PointLedgerEntry,
   TemplateCategory
 } from "@/types";
@@ -288,7 +290,7 @@ export const apiClient = {
     return request<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   },
 
-  chargeMatting(mode: CutoutRepairMode = "local") {
+  chargeMatting(mode: MattingMode = "local") {
     return request<MattingChargeResult>("/matting", {
       method: "POST",
       body: JSON.stringify({ mode }),
@@ -346,6 +348,30 @@ export const apiClient = {
       throw new ApiError(defaultErrorMessage(response.status), response.status);
     }
     return response.blob();
+  },
+
+  createAutoLayerTask(input: CreateAutoLayerTaskInput) {
+    if (Boolean(input.image) === Boolean(input.inputAssetId)) {
+      throw new Error("自动分层必须且只能提供原图或可复用素材 ID。");
+    }
+    const body = new FormData();
+    if (input.image) body.append("image", input.image, input.image.name);
+    if (input.inputAssetId) body.append("inputAssetId", input.inputAssetId);
+    body.append("mask", input.mask, "auto-layer-mask.png");
+    body.append("mattingId", input.mattingId);
+    return request<AutoLayerTask>("/auto-layer-tasks", {
+      method: "POST",
+      body,
+      idempotencyKey: input.idempotencyKey ?? idempotencyKey()
+    });
+  },
+
+  autoLayerTask(id: string) {
+    return request<AutoLayerTask>(`/auto-layer-tasks/${encodeURIComponent(id)}`);
+  },
+
+  cancelAutoLayerTask(id: string) {
+    return request<AutoLayerTask>(`/auto-layer-tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   },
 
   config() {

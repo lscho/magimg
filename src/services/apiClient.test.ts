@@ -32,6 +32,22 @@ describe("background repair API contract", () => {
     expect(options.headers["Idempotency-Key"]).toMatch(/^huanhua:/u);
   });
 
+  it("charges and submits one automatic-layer cloud background task", async () => {
+    fetchHttp
+      .mockResolvedValueOnce(jsonResponse({ mattingId: "m-auto", cost: 20, balance: 80 }))
+      .mockResolvedValueOnce(jsonResponse({ id: "auto-1", inputAssetId: "42", status: "pending", cost: 20, balance: 80 }));
+    await apiClient.chargeMatting("autoLayer");
+    expect(JSON.parse(fetchHttp.mock.calls[0][1].body)).toEqual({ mode: "autoLayer" });
+    await apiClient.createAutoLayerTask({
+      image: new File([new Uint8Array([1])], "source.png", { type: "image/png" }),
+      mask: new Blob([new Uint8Array([2])], { type: "image/png" }),
+      mattingId: "m-auto"
+    });
+    expect(fetchHttp.mock.calls[1][0]).toBe("/api/client/v1/auto-layer-tasks");
+    expect(fetchHttp.mock.calls[1][1].body).toBeInstanceOf(FormData);
+    expect(fetchHttp.mock.calls[1][1].body.get("mattingId")).toBe("m-auto");
+  });
+
   it("submits one multipart image and grayscale mask task", async () => {
     fetchHttp.mockResolvedValue(jsonResponse({
       id: "repair-1",

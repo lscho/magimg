@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from "vue";
 import { Maximize2 } from "lucide-vue-next";
 import { moveAutoLayer, scaleAutoLayer } from "@/services/autoLayerModel";
+import { autoLayerFontFamilies, fitAutoLayerTextFontSize } from "@/services/autoLayerRecognition";
 import type { AutoLayerItem } from "./types";
 
 const props = defineProps<{
@@ -68,9 +69,16 @@ function layerStyle(layer: AutoLayerItem, index: number) {
 }
 
 function textStyle(layer: AutoLayerItem) {
+  if (layer.kind !== "text") return {};
+  const layerScale = Math.min(
+    layer.width / Math.max(1, layer.sourceBox.width),
+    layer.height / Math.max(1, layer.sourceBox.height)
+  );
   return {
     color: layer.color,
-    fontSize: `${Math.max(8, layer.fontSize * previewScale.value)}px`
+    fontSize: `${Math.max(4, layer.fontSize * layerScale * previewScale.value)}px`,
+    fontWeight: layer.fontWeight,
+    fontFamily: autoLayerFontFamilies[layer.fontCategory]
   };
 }
 
@@ -144,9 +152,18 @@ function beginTextEditing(layer: AutoLayerItem, event: MouseEvent) {
 }
 
 function finishTextEditing(layer: AutoLayerItem, event: FocusEvent) {
+  if (layer.kind !== "text") return;
   const target = event.currentTarget as HTMLElement | null;
-  const text = target?.textContent?.trim() || "输入文字";
-  replaceLayer(layer.id, { ...layer, text });
+  const text = target?.textContent?.replace(/\s+/gu, " ").trim() || "输入文字";
+  const fontSize = text === layer.text ? layer.fontSize : fitAutoLayerTextFontSize({
+    text,
+    width: layer.sourceBox.width,
+    height: layer.sourceBox.height,
+    fontWeight: layer.fontWeight,
+    fontCategory: layer.fontCategory,
+    maxFontSize: layer.fontSize
+  });
+  replaceLayer(layer.id, { ...layer, text, fontSize });
   editingId.value = null;
 }
 
@@ -347,9 +364,11 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   align-items: center;
+  justify-content: center;
   overflow: hidden;
-  line-height: 1.15;
-  white-space: pre-wrap;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
   letter-spacing: 0;
   outline: none;

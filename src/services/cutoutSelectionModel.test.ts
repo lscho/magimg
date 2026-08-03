@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyAutomaticNesting,
+  cloneCutoutSelections,
+  selectionDescendants,
   setSelectionIndependent,
   translateCutoutSelection
 } from "@/services/cutoutSelectionModel";
@@ -17,6 +19,14 @@ function byId(selections: CutoutSelection[], id: string) {
 }
 
 describe("applyAutomaticNesting", () => {
+  it("preserves automatic-layer text selection kind while cloning", () => {
+    const [selection] = cloneCutoutSelections([{
+      id: "text", x: 1, y: 2, width: 30, height: 12,
+      layerKind: "text", behavior: "extract", parentId: null,
+      relationSource: "manual", removalStrokes: []
+    }]);
+    expect(selection.layerKind).toBe("text");
+  });
   it("keeps unrelated boxes as independent foregrounds", () => {
     const result = applyAutomaticNesting([
       box("a", 0, 0, 20, 20),
@@ -72,6 +82,42 @@ describe("applyAutomaticNesting", () => {
     expect(byId(result, "parent").behavior).toBe("background");
   });
 
+  it("returns every nested descendant without including siblings or the parent", () => {
+    const result = applyAutomaticNesting([
+      box("outer", 0, 0, 120, 120),
+      box("middle", 10, 10, 80, 80),
+      box("inner", 20, 20, 20, 20),
+      box("sibling", 150, 0, 20, 20)
+    ]);
+
+    expect(selectionDescendants(result, "outer").map(selection => selection.id))
+      .toEqual(["middle", "inner"]);
+    expect(selectionDescendants(result, "middle").map(selection => selection.id))
+      .toEqual(["inner"]);
+  });
+
+  it("supports a small auto-layer edge tolerance without treating partial overlaps as nesting", () => {
+    const tolerated = applyAutomaticNesting([
+      box("parent", 10, 10, 100, 100),
+      box("child", 7, 40, 30, 30)
+    ], { edgeToleranceRatio: 0.1 });
+    expect(byId(tolerated, "child").parentId).toBe("parent");
+
+    const overlap = applyAutomaticNesting([
+      box("parent", 10, 10, 100, 100),
+      box("child", 0, 40, 30, 30)
+    ], { edgeToleranceRatio: 0.1 });
+    expect(byId(overlap, "child").parentId).toBeNull();
+  });
+
+  it("never assigns a text selection as a parent", () => {
+    const result = applyAutomaticNesting([
+      { ...box("text", 0, 0, 100, 100), layerKind: "text" },
+      box("icon", 10, 10, 20, 20)
+    ]);
+    expect(byId(result, "icon").parentId).toBeNull();
+  });
+
   it("does not overwrite a manual independent selection", () => {
     const nested = applyAutomaticNesting([
       box("parent", 0, 0, 100, 100),
@@ -119,5 +165,23 @@ describe("applyAutomaticNesting", () => {
       behavior: "extract"
     });
     expect(byId(moved, "parent").behavior).toBe("extract");
+  });
+
+  it("clones and translates a manual polygon with its bounding box", () => {
+    const [selection] = cloneCutoutSelections([{
+      ...box("polygon", 10, 20, 30, 40),
+      polygon: [{ x: 10, y: 20 }, { x: 40, y: 20 }, { x: 20, y: 60 }],
+      behavior: "extract",
+      parentId: null,
+      relationSource: "auto",
+      removalStrokes: []
+    }]);
+    const moved = translateCutoutSelection([selection], "polygon", 25, 35, 200, 200, false);
+    expect(moved[0].polygon).toEqual([
+      { x: 25, y: 35 },
+      { x: 55, y: 35 },
+      { x: 35, y: 75 }
+    ]);
+    expect(selection.polygon?.[0]).toEqual({ x: 10, y: 20 });
   });
 });

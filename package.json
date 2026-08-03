@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:repair": "vite-node scripts/test-background-repair.ts",
+    "test:auto-layer": "node scripts/test-auto-layer.mjs",
     "test:release": "node --test scripts/*.test.mjs",
     "typecheck": "vue-tsc --noEmit",
     "tauri": "tauri"

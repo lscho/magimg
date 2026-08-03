@@ -1,3 +1,4 @@
+mod auto_layer;
 mod compression;
 mod cutout;
 
@@ -5,6 +6,7 @@ mod cutout;
 pub fn run() {
     tauri::Builder::default()
         .manage(cutout::CutoutState::default())
+        .manage(auto_layer::AutoLayerState::default())
         .manage(compression::CompressionState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -34,6 +36,12 @@ pub fn run() {
             cutout::cutout_repair,
             cutout::cutout_cancel,
             cutout::cutout_release,
+            auto_layer::auto_layer_ocr,
+            auto_layer::auto_layer_ocr_line,
+            auto_layer::auto_layer_classify,
+            auto_layer::auto_layer_release,
+            auto_layer::auto_layer_selection_source_exists,
+            auto_layer::auto_layer_read_selection_source,
             compression::compression_prepare,
             compression::compression_thumbnail,
             compression::compression_run,

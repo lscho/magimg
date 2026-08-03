@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "recordId": "auto-layer-selection-1785758268821-e990eb69-bd6b-4ca7-ae76-288ad20e3724",
+  "source": {
+    "name": "test.png",
+    "width": 1536,
+    "height": 2730
+  },
+  "selectionCount": 24,
+  "materialCount": 18,
+  "textCount": 6,
+  "minimumMaterialSolidRatio": 0.6,
+  "minimumMaterialBoundsRatio": 0.8,
+  "candidateSelections": [
+    {
+      "selectionId": "cutout-sel-1785735507067-8",
+      "selectedCandidateIndex": 2
+    }
+  ],
+  "expectedTexts": [
+    {
+      "sourceSelectionId": "cutout-sel-1785735529366-13",
+      "text": "前往",
+      "fontWeight": 400,
+      "minimumConfidence": 0.7
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1785735531767-14",
+      "text": "5",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1785735533813-15",
+      "text": "10",
+      "fontWeight": 400,
+      "minimumConfidence": 0.2
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1785735537060-16",
+      "text": "完成修行任务",
+      "fontWeight": 400,
+      "minimumConfidence": 0.9
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1785735544378-17",
+      "text": "修行奖励",
+      "fontWeight": 400,
+      "minimumConfidence": 0.9
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1785735548530-18",
+      "text": "(0/3)",
+      "fontWeight": 400,
+      "minimumConfidence": 0.8
+    }
+  ],
+  "repairLayerIds": [
+    "cutout-sel-1785735487639-2",
+    "cutout-sel-1785735514842-9",
+    "cutout-sel-1785735517469-10",
+    "cutout-sel-1785735519812-11",
+    "cutout-sel-1785735522595-12"
+  ],
+  "topLevelSelectionIds": [
+    "cutout-sel-1785735487639-2",
+    "cutout-sel-1785735514842-9",
+    "cutout-sel-1785758239710-1",
+    "cutout-sel-1785758254862-2",
+    "cutout-sel-1785758256963-3",
+    "cutout-sel-1785758258918-4",
+    "cutout-sel-1785758262989-5",
+    "cutout-sel-1785758265448-6",
+    "cutout-sel-1785758267660-7"
+  ],
+  "cloud": {
+    "minimumMaskedMeanDifference": 4,
+    "minimumForegroundMeanDifference": 10,
+    "minimumForegroundChangedRatio": 0.35
+  }
+}

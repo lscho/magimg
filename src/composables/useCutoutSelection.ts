@@ -11,8 +11,13 @@ import {
   setSelectionIndependent,
   translateCutoutSelection
 } from "@/services/cutoutSelectionModel";
+import {
+  cutoutPolygonBounds,
+  pointInCutoutPolygon
+} from "@/services/cutoutSelectionShape";
 import type {
   CutoutBrushOperation,
+  CutoutBrushPoint,
   CutoutRemovalStroke,
   CutoutSelection,
   CutoutSelectionBox
@@ -23,7 +28,7 @@ interface CutoutCanvasElements {
   viewport: HTMLElement;
 }
 
-export type CutoutTool = "box" | "erase" | "pan";
+export type CutoutTool = "box" | "polygon" | "text-box" | "erase" | "pan";
 
 interface SelectionMoveState {
   id: string;
@@ -40,6 +45,7 @@ const MAX_ZOOM_PERCENT = 400;
 const ZOOM_BUTTON_STEP = 25;
 const PAN_VIEWPORT_PADDING_PX = 16;
 const PAN_MIN_VISIBLE_PX = 48;
+const POLYGON_CLOSE_DISTANCE_PX = 10;
 
 let selectionIdCounter = 0;
 
@@ -53,8 +59,8 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /**
- * 管理抠图画布的图片预览、缩放、拖动与矩形选区。
- * 选框使用原生 pointer 事件和 DOM 覆盖层，坐标始终保存为原图像素。
+ * 管理抠图画布的图片预览、缩放、拖动与选区。
+ * 矩形和点选轮廓都使用原生 pointer 事件，坐标始终保存为原图像素。
  */
 export function useCutoutSelection(
   imageSource: { blob: Blob; mimeType: string } | null,
@@ -81,6 +87,8 @@ export function useCutoutSelection(
   const initialSelectionSnapshot = applyAutomaticNesting(initialSelections);
   const selections = shallowRef<CutoutSelection[]>(initialSelectionSnapshot);
   const draftBox = shallowRef<CutoutSelectionBox | null>(null);
+  const draftPolygon = shallowRef<CutoutBrushPoint[]>([]);
+  const polygonCursor = shallowRef<CutoutBrushPoint | null>(null);
   const draftStroke = shallowRef<CutoutRemovalStroke | null>(null);
   const history = shallowRef<CutoutSelection[][]>([
     cloneCutoutSelections(initialSelectionSnapshot)
@@ -98,7 +106,7 @@ export function useCutoutSelection(
   let panOriginX = 0;
   let panOriginY = 0;
 
-  const canClear = computed(() => selections.value.length > 0);
+  const canClear = computed(() => selections.value.length > 0 || draftPolygon.value.length > 0);
   const canUndo = computed(() => historyIndex.value > 0);
   const canRedo = computed(() => historyIndex.value < history.value.length - 1);
   const activeSelection = computed(() =>
@@ -178,6 +186,7 @@ export function useCutoutSelection(
 
   function setTool(tool: CutoutTool) {
     cancelBox();
+    cancelPolygon();
     cancelStroke();
     cancelMoveSelection();
     endPan();
@@ -250,7 +259,7 @@ export function useCutoutSelection(
     clientX: number,
     clientY: number
   ): boolean {
-    if (activeTool.value !== "box" || !ready.value || busy.value) return false;
+    if (!["box", "polygon", "text-box"].includes(activeTool.value) || !ready.value || busy.value) return false;
     const selection = selections.value.find((candidate) => candidate.id === selectionId);
     if (!selection) return false;
     const point = clientToImage(clientX, clientY);
@@ -327,7 +336,7 @@ export function useCutoutSelection(
   }
 
   function beginBoxFromClient(clientX: number, clientY: number): boolean {
-    if (activeTool.value !== "box" || !ready.value || busy.value) return false;
+    if (!["box", "text-box"].includes(activeTool.value) || !ready.value || busy.value) return false;
     const point = clientToImage(clientX, clientY);
     if (!point.inside) return false;
     drawingOrigin = { x: point.x, y: point.y };
@@ -342,6 +351,9 @@ export function useCutoutSelection(
   }
 
   function selectionContains(selection: CutoutSelection, x: number, y: number) {
+    if (selection.polygon?.length) {
+      return pointInCutoutPolygon({ x, y }, selection.polygon);
+    }
     return x >= selection.x && y >= selection.y &&
       x <= selection.x + selection.width && y <= selection.y + selection.height;
   }
@@ -404,6 +416,76 @@ export function useCutoutSelection(
     };
   }
 
+  function updatePolygonCursorFromClient(clientX: number, clientY: number) {
+    if (activeTool.value !== "polygon" || !draftPolygon.value.length) {
+      polygonCursor.value = null;
+      return;
+    }
+    const point = clientToImage(clientX, clientY);
+    polygonCursor.value = point.inside ? { x: point.x, y: point.y } : null;
+  }
+
+  function clearPolygonCursor() {
+    polygonCursor.value = null;
+  }
+
+  function addPolygonPointFromClient(clientX: number, clientY: number): boolean {
+    if (activeTool.value !== "polygon" || !ready.value || busy.value) return false;
+    const point = clientToImage(clientX, clientY);
+    if (!point.inside) return false;
+    const nextPoint = { x: point.x, y: point.y };
+    const first = draftPolygon.value[0];
+    const closeDistance = POLYGON_CLOSE_DISTANCE_PX / Math.max(previewScale.value, 0.01);
+    if (first && draftPolygon.value.length >= 3 &&
+      Math.hypot(first.x - nextPoint.x, first.y - nextPoint.y) <= closeDistance) {
+      return finishPolygon();
+    }
+    draftPolygon.value = [...draftPolygon.value, nextPoint];
+    polygonCursor.value = nextPoint;
+    return true;
+  }
+
+  function finishPolygon(): boolean {
+    const points = draftPolygon.value;
+    const bounds = cutoutPolygonBounds(points);
+    if (points.length < 3 || !bounds) return false;
+    const minSize = 4 / Math.max(previewScale.value, 0.01);
+    if (bounds.width < minSize || bounds.height < minSize) return false;
+    const x = clamp(Math.floor(bounds.x), 0, imageWidth.value - 1);
+    const y = clamp(Math.floor(bounds.y), 0, imageHeight.value - 1);
+    const right = clamp(Math.ceil(bounds.x + bounds.width), x + 1, imageWidth.value);
+    const bottom = clamp(Math.ceil(bounds.y + bounds.height), y + 1, imageHeight.value);
+    const selection: CutoutSelection = {
+      id: nextSelectionId(),
+      x,
+      y,
+      width: right - x,
+      height: bottom - y,
+      layerKind: "element",
+      polygon: points.map((point) => ({ ...point })),
+      behavior: "extract",
+      parentId: null,
+      relationSource: "auto",
+      removalStrokes: []
+    };
+    draftPolygon.value = [];
+    polygonCursor.value = null;
+    commitSelections([...selections.value, selection]);
+    activeSelectionId.value = selection.id;
+    return true;
+  }
+
+  function removeLastPolygonPoint() {
+    if (!draftPolygon.value.length) return;
+    draftPolygon.value = draftPolygon.value.slice(0, -1);
+    if (!draftPolygon.value.length) polygonCursor.value = null;
+  }
+
+  function cancelPolygon() {
+    draftPolygon.value = [];
+    polygonCursor.value = null;
+  }
+
   function commitSelections(
     next: readonly (CutoutSelectionBox | CutoutSelection)[],
     resolveNesting = true
@@ -433,6 +515,7 @@ export function useCutoutSelection(
       y: clamp(Math.round(draft.y), 0, imageHeight.value - 1),
       width: Math.max(1, Math.round(draft.width)),
       height: Math.max(1, Math.round(draft.height)),
+      layerKind: activeTool.value === "text-box" ? "text" : "element",
       behavior: "extract",
       parentId: null,
       relationSource: "auto",
@@ -502,6 +585,7 @@ export function useCutoutSelection(
   }
 
   function clearSelections() {
+    cancelPolygon();
     if (!selections.value.length) return;
     commitSelections([]);
     activeSelectionId.value = null;
@@ -567,6 +651,8 @@ export function useCutoutSelection(
     smartBrush: readonly(smartBrush),
     selections: readonly(selections),
     draftBox: readonly(draftBox),
+    draftPolygon: readonly(draftPolygon),
+    polygonCursor: readonly(polygonCursor),
     draftStroke: readonly(draftStroke),
     canClear,
     canUndo,
@@ -591,6 +677,12 @@ export function useCutoutSelection(
     updateBoxFromClient,
     finishBox,
     cancelBox,
+    updatePolygonCursorFromClient,
+    clearPolygonCursor,
+    addPolygonPointFromClient,
+    finishPolygon,
+    removeLastPolygonPoint,
+    cancelPolygon,
     beginStrokeFromClient,
     updateStrokeFromClient,
     finishStroke,

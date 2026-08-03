@@ -147,6 +147,8 @@ export interface GenerationSettings {
   textToImageCost: number;
   imageToImageCost: number;
   mattingCost: number;
+  autoLayerEnabled?: boolean;
+  autoLayerCost?: number;
   /** 云端背景修复未部署时为 false 或缺省。 */
   backgroundRepairEnabled?: boolean;
   backgroundRepairCost?: number;
@@ -170,8 +172,10 @@ export interface MattingChargeResult {
   mattingId: string;
   cost: number;
   balance: number;
-  mode?: CutoutRepairMode;
+  mode?: MattingMode;
 }
+
+export type MattingMode = CutoutRepairMode | "autoLayer";
 
 export interface MattingRefundResult {
   cost: number;
@@ -203,6 +207,28 @@ export interface CreateBackgroundRepairInput {
   mask: Blob;
   mattingId: string;
   selectionBoxes: CutoutSelectionBox[];
+}
+
+export type AutoLayerTaskStatus = BackgroundRepairStatus;
+
+export interface AutoLayerTask {
+  id: string;
+  inputAssetId: string;
+  status: AutoLayerTaskStatus;
+  cost: number;
+  balance: number;
+  outputUrl?: string;
+  errorMessage?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateAutoLayerTaskInput {
+  image?: File;
+  inputAssetId?: string;
+  mask: Blob;
+  mattingId: string;
+  idempotencyKey?: string;
 }
 
 export interface TemplateCategory {
@@ -548,10 +574,28 @@ export interface CutoutRemovalStroke {
 
 /** 带分层与背景修复信息的工作区选区。 */
 export interface CutoutSelection extends CutoutSelectionBox {
+  /** Only used by automatic layering; old cutout history defaults to element. */
+  layerKind?: "element" | "text";
+  /** Optional closed outline in image coordinates; omitted for rectangular selections. */
+  polygon?: CutoutBrushPoint[];
   behavior: CutoutSelectionBehavior;
   parentId: string | null;
   relationSource: CutoutRelationSource;
   removalStrokes: CutoutRemovalStroke[];
+}
+
+/** 桌面自动分层页保存的可恢复选区；原图只保存用户选择时的绝对路径。 */
+export interface AutoLayerSelectionRecord {
+  schemaVersion: 1;
+  id: string;
+  sourcePath: string;
+  sourceName: string;
+  sourceMimeType: "image/png" | "image/jpeg" | "image/webp";
+  sourceWidth: number;
+  sourceHeight: number;
+  thumbnailUrl: string;
+  selections: CutoutSelection[];
+  createdAt: string;
 }
 
 /** 图像坐标系下的点提示：label 为 1 表示前景点，0 表示背景点。 */

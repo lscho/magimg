@@ -2307,6 +2307,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allow the main window to run automatic-layer recognition and restore saved selection sources.",
+          "type": "string",
+          "const": "allow-auto-layer-recognition",
+          "markdownDescription": "Allow the main window to run automatic-layer recognition and restore saved selection sources."
+        },
+        {
           "description": "Allow the main window to run cutout inference, background repair, and release native sessions.",
           "type": "string",
           "const": "allow-cutout-inference",

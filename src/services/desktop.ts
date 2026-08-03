@@ -1,13 +1,19 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { platform } from "@tauri-apps/plugin-os";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type { GeneratedImage, SelectedImageFile } from "@/types";
 
-const isTauri = "__TAURI_INTERNALS__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export function isDesktopApp() {
+  return isTauri;
+}
 
 export function fetchHttp(input: URL | Request | string, init?: RequestInit): Promise<Response> {
   return isTauri ? tauriFetch(input, init) : window.fetch(input, init);
@@ -84,7 +90,7 @@ export function selectedImageFileFromFile(file: File): SelectedImageFile {
     : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
   return {
     name: normalizedFile.name,
-    path: normalizedFile.name,
+    path: (file as File & { path?: string }).path || normalizedFile.name,
     file: normalizedFile
   };
 }
@@ -134,6 +140,22 @@ export async function chooseImageFile(): Promise<SelectedImageFile | null> {
   return {
     name,
     path: selected,
+    file: new File([bytes], name, { type: mimeTypeFromName(name) })
+  };
+}
+
+export async function autoLayerSelectionSourceExists(path: string): Promise<boolean> {
+  if (!isTauri || !path) return false;
+  return invoke<boolean>("auto_layer_selection_source_exists", { path });
+}
+
+export async function loadAutoLayerSelectionSource(path: string): Promise<SelectedImageFile> {
+  if (!isTauri) throw new Error("选区记录仅支持桌面客户端。");
+  const name = fileNameFromPath(path);
+  const bytes = await invoke<ArrayBuffer>("auto_layer_read_selection_source", { path });
+  return {
+    name,
+    path,
     file: new File([bytes], name, { type: mimeTypeFromName(name) })
   };
 }
@@ -375,6 +397,41 @@ export async function saveImageBlobsToDirectory(
     );
   }
   return { savedCount: downloads.length, directory, cancelled: false };
+}
+
+export interface ProjectFile {
+  relativePath: string;
+  contents: Blob | string;
+}
+
+export async function saveProjectDirectory(suggestedName: string, files: readonly ProjectFile[]) {
+  if (!isTauri) throw new Error("浏览器预览不能导出自动分层项目，请在桌面客户端中使用。");
+  const parent = await open({ directory: true, multiple: false, title: "选择分层项目保存位置" });
+  if (typeof parent !== "string") return null;
+  const safeName = suggestedName.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "-").replace(/^\.+|\.+$/gu, "") || "image-layers";
+  let directory = await join(parent, safeName);
+  let suffix = 2;
+  while (await exists(directory)) {
+    directory = await join(parent, `${safeName}-${suffix}`);
+    suffix += 1;
+  }
+  await mkdir(directory, { recursive: false });
+  for (const file of files) {
+    const segments = file.relativePath.split("/").filter(Boolean);
+    if (!segments.length || segments.some(segment => segment === "." || segment === "..")) {
+      throw new Error("分层项目包含无效文件路径。");
+    }
+    const filename = segments.pop()!;
+    let targetDirectory = directory;
+    for (const segment of segments) targetDirectory = await join(targetDirectory, segment);
+    if (segments.length) await mkdir(targetDirectory, { recursive: true });
+    const path = await join(targetDirectory, filename);
+    const bytes = typeof file.contents === "string"
+      ? new TextEncoder().encode(file.contents)
+      : new Uint8Array(await file.contents.arrayBuffer());
+    await writeImageFile(path, bytes);
+  }
+  return directory;
 }
 
 export interface BatchImageDownload {

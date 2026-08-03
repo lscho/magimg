@@ -69,6 +69,9 @@
 | `POST` | `/tasks/:id/cancel` | 取消排队中任务并退款 |
 | `POST` | `/feedback` | 提交意见反馈 |
 | `POST` | `/matting` | AI 抠图、自动分层或云端背景修复预扣积分 |
+| `POST` | `/auto-layer-tasks` | 创建自动分层整页云背景任务（multipart） |
+| `GET` | `/auto-layer-tasks/:id` | 查询自动分层云背景任务 |
+| `POST` | `/auto-layer-tasks/:id/cancel` | 取消自动分层云背景任务并退款 |
 | `POST` | `/matting/:id/refund` | 本地抠图失败退款 |
 | `POST` | `/background-repairs` | 创建云端背景修复任务（需幂等键） |
 | `GET` | `/background-repairs/:id` | 查询云端背景修复任务 |
@@ -783,7 +786,7 @@ curl -i "https://api.example.com/api/client/v1/config"
 
 ### 4.11 `POST /matting`
 
-AI 抠图、自动分层和背景修复预扣积分。`mode=local` 时服务端扣 `mattingCost`，抠图、自动分层与可选 Big-LaMa 修复均在客户端本地完成；`mode=cloud` 时整次操作只扣一次 `backgroundRepairCost`，同一个 `mattingId` 随后绑定一张联合蒙版云端任务。
+AI 抠图、自动分层和背景修复预扣积分。`mode=local` 扣 `mattingCost`；`mode=cloud` 扣 `backgroundRepairCost`；`mode=autoLayer` 扣 `autoLayerCost`（默认 20）。自动分层的本地元素、OCR、父子关系和修复蒙版完成后，同一个 `mattingId` 只绑定一张修复图集任务；图集同时包含整页背景和需要清除直接子层的父素材。
 
 **两阶段计费流程**：
 
@@ -803,7 +806,7 @@ AI 抠图、自动分层和背景修复预扣积分。`mode=local` 时服务端�
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `mode` | string | 否 | `local` 或 `cloud`，缺省为 `local`，保持旧客户端兼容 |
+| `mode` | string | 否 | `local`、`cloud` 或 `autoLayer`，缺省为 `local`，保持旧客户端兼容 |
 | `inputAssetId` | string | 否 | 输入图片 ID（正整数字符串），用于对账；提供时校验归属当前用户 |
 
 **成功响应（200）**
@@ -822,7 +825,7 @@ AI 抠图、自动分层和背景修复预扣积分。`mode=local` 时服务端�
 | `mattingId` | string | 扣费流水 ID，用于后续失败退款 |
 | `cost` | number | 本次扣除积分（= `mattingCost`） |
 | `balance` | number | 扣费后余额 |
-| `mode` | string | 实际计费档位，`local` 或 `cloud` |
+| `mode` | string | 实际计费档位，`local`、`cloud` 或 `autoLayer` |
 
 **幂等**：`Idempotency-Key` 作为积分流水的 `reference_id`，`uk_point_reference (user_id, type, reference_type, reference_id)` 唯一索引兜底，同一幂等键并发重复请求只扣一次。网络重试（不确定服务端是否扣费）用同一幂等键；重新尝试（已确定失败想再抠一次）用新幂等键。
 
@@ -946,6 +949,45 @@ AI 抠图失败退款。客户端本地抠图失败后，用预扣返回的 `mat
 
 ---
 
+### 4.16 `POST /auto-layer-tasks`
+
+创建自动分层的单图集云修复任务。客户端把一张连续整页原图和所有需要清除直接子层的父素材上下文裁片打包为一张由暗色留白分隔的图集，并提交同尺寸联合蒙版。服务端对整个图集最多调用一次图片编辑；客户端在提交前同时按 `backgroundRepairMaxPixels` 和 `backgroundRepairMaxBytes` 收缩图集，无损 PNG 超限时可改用高质量 WebP，并为 multipart 边界保留字节余量。请求为 `multipart/form-data`，并携带 8–100 字符的 `Idempotency-Key`。同一键重复提交返回原任务，不会再次绑定预扣或调用上游。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `image` | file | 条件必填 | 首次提交的整页修复输入 PNG/JPEG/WebP；与 `inputAssetId` 二选一 |
+| `inputAssetId` | string | 条件必填 | 同一用户之前自动分层任务返回的整页输入资产 ID；与 `image` 二选一 |
+| `mask` | file | 是 | 与整页输入同尺寸、非空的灰度 PNG；只包含顶层元素与顶层文字的联合蒙版 |
+| `mattingId` | string | 是 | `POST /matting` 以 `mode=autoLayer` 返回的预扣流水 ID |
+
+服务端校验能力开关、可用 AI 节点、文件签名、实际尺寸、字节/像素上限、预扣归属、档位、退款状态及唯一绑定关系。worker 对每个任务最多调用一次 `/v1/images/edits`，只在蒙版区域合成返回 RGB；客户端拆分图集时直接采用这份已合成 RGB 并保留素材 Alpha，不得再次按软蒙版混合，避免边缘二次羽化产生残影。租约过期但已标记上游调用的任务直接失败退款，不会重放上游请求。
+
+成功返回 `AutoLayerTask`：
+
+```json
+{
+  "id": "51",
+  "inputAssetId": "72",
+  "status": "pending",
+  "cost": 20,
+  "balance": 80,
+  "createdAt": "2026-08-02T12:00:00.000Z",
+  "updatedAt": "2026-08-02T12:00:00.000Z"
+}
+```
+
+错误码：400（字段、幂等键或蒙版无效）；401；404（预扣或复用素材不存在）；409（能力关闭、无节点、档位错误、已退款或已绑定）；413；415；429。
+
+### 4.17 `GET /auto-layer-tasks/:id`
+
+查询当前用户任务。状态为 `pending | processing | succeeded | failed | canceled`。成功时返回 `outputUrl`；失败时返回 `errorMessage`，并已幂等退回原预扣积分。
+
+### 4.18 `POST /auto-layer-tasks/:id/cancel`
+
+取消未完成任务并在事务内幂等退款。重复取消返回相同终态；已成功任务返回 409，迟到 worker 结果不能覆盖取消状态。
+
+---
+
 ## 5. 数据模型（DTO）
 
 > 以下类型定义见 `app/types/client.ts`。
@@ -992,6 +1034,8 @@ interface GenerationSettings {
   textToImageCost: number
   imageToImageCost: number
   mattingCost: number
+  autoLayerEnabled?: boolean
+  autoLayerCost?: number
   backgroundRepairEnabled?: boolean
   backgroundRepairCost?: number
   backgroundRepairMaxBytes?: number

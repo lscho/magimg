@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createAutoLayerItems,
   moveAutoLayer,
+  orderAutoLayersByHierarchy,
   resetAutoLayer,
   scaleAutoLayer,
   setAutoLayerKind
@@ -52,5 +53,14 @@ describe("auto layer model", () => {
       width: 100,
       height: 50
     });
+  });
+
+  it("orders every parent below its descendants regardless of selection order", () => {
+    const layers = [
+      { ...createAutoLayerItems([{ ...material, id: "icon", parentId: "card" }])[0], id: "icon", parentId: "card" },
+      { ...createAutoLayerItems([{ ...material, id: "button", parentId: "card" }])[0], id: "button", parentId: "card" },
+      { ...createAutoLayerItems([{ ...material, id: "card", parentId: null }])[0], id: "card", parentId: null }
+    ];
+    expect(orderAutoLayersByHierarchy(layers).map(layer => layer.id)).toEqual(["card", "icon", "button"]);
   });
 });

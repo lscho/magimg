@@ -197,6 +197,41 @@ function morphBinary(
   return output;
 }
 
+function highRecallChildRadius(child: CutoutSelectionBox) {
+  return clamp(Math.round(Math.max(child.width, child.height) * 0.025), 4, 18);
+}
+
+export function highRecallChildMaskPadding(child: CutoutSelectionBox) {
+  return highRecallChildRadius(child) * 3;
+}
+
+export function repairMaskRadius(width: number, height: number) {
+  return clamp(Math.round(Math.max(width, height) / 512), 2, 8);
+}
+
+export function textRepairMaskRadius(box: CutoutSelectionBox) {
+  return clamp(Math.round(Math.min(box.width, box.height) * 0.08), 2, 4);
+}
+
+/**
+ * OCR 图层的透明 PNG 只覆盖可见字形。修复前在字形附近做小幅扩张，
+ * 吸收描边和抗锯齿残留，但不把整块文字选框变成修复区域。
+ */
+export function expandTextRepairMask(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  box: CutoutSelectionBox
+) {
+  if (mask.length !== width * height) throw new Error("文字遮罩尺寸与图片不匹配。");
+  return morphBinary(
+    binaryMask(mask, 8),
+    width,
+    height,
+    textRepairMaskRadius(box)
+  );
+}
+
 /**
  * 背景移除优先保证召回率：保留精修 Alpha，并吸收其附近的 SAM 弱响应，
  * 再按子元素尺寸扩张。结果仍限制在子框附近，避免粗蒙版污染父级边框。
@@ -215,11 +250,7 @@ export function buildHighRecallChildMask(options: {
   ) {
     throw new Error("子选区遮罩尺寸与图片不匹配。");
   }
-  const radius = clamp(
-    Math.round(Math.max(child.width, child.height) * 0.025),
-    4,
-    18
-  );
+  const radius = highRecallChildRadius(child);
   const refinedSeed = binaryMask(refinedAlpha, 8);
   const coarseSeed = binaryMask(coarseAlpha, 8);
   const nearby = morphBinary(refinedSeed, width, height, radius * 2);
@@ -232,7 +263,7 @@ export function buildHighRecallChildMask(options: {
   if (!hasRefined) combined.set(coarseSeed);
 
   const expanded = morphBinary(combined, width, height, radius);
-  const padding = radius * 3;
+  const padding = highRecallChildMaskPadding(child);
   const x = Math.max(0, child.x - padding);
   const y = Math.max(0, child.y - padding);
   const right = Math.min(width, child.x + child.width + padding);
@@ -252,7 +283,7 @@ export function prepareRepairMask(
   height: number,
   box?: CutoutSelectionBox
 ) {
-  const radius = clamp(Math.round(Math.max(width, height) / 512), 2, 8);
+  const radius = repairMaskRadius(width, height);
   const dilated = morphBinary(mask, width, height, radius);
   const horizontal = new Uint16Array(mask.length);
   const output = new Uint8Array(mask.length);

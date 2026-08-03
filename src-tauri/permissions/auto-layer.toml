@@ -1,0 +1,11 @@
+[[permission]]
+identifier = "allow-auto-layer-recognition"
+description = "Allow the main window to run automatic-layer recognition and restore saved selection sources."
+commands.allow = [
+  "auto_layer_ocr",
+  "auto_layer_ocr_line",
+  "auto_layer_classify",
+  "auto_layer_release",
+  "auto_layer_selection_source_exists",
+  "auto_layer_read_selection_source"
+]
