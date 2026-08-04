@@ -51,8 +51,10 @@ import { maskArea, unionMasks } from "@/services/cutoutLayering";
 import {
   chooseAutoLayerElementMaskCandidate,
   chooseSingleElementMaskCandidate,
+  createCandidateConsensusAlpha,
   expandAutoLayerMaterialBox,
-  expandAutoLayerSegmentationBox
+  expandAutoLayerSegmentationBox,
+  restoreRefinedAlphaFromCandidateSupport
 } from "@/services/cutoutMaskCandidate";
 import {
   applyAutomaticNesting,
@@ -241,7 +243,7 @@ function expandedRepairBox(
 
 /**
  * 管理 SAM、ViTMatte 与按需下载的 Big-LaMa。所有选区复用一次 encoder；
- * 前景沿用框选链路；点选轮廓会进一步约束 Alpha，背景只在合并移除蒙版后进入修复模型。
+ * 矩形与点选轮廓都沿用 SAM -> ViTMatte，背景只在合并移除蒙版后进入修复模型。
  */
 export function useCutoutInference() {
   const phase = shallowRef<CutoutPhase>("idle");
@@ -507,7 +509,9 @@ export function useCutoutInference() {
         const selection = selections[index];
         progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
         let mask: Uint8Array;
-        if (optimizeSingleElement) {
+        let polygonSupport: Uint8Array | null = null;
+        let polygonConsensusSupport: Uint8Array | null = null;
+        if (selection.polygon?.length) {
           const candidates = (await decodeCutoutCandidates(
             CUTOUT_MODEL,
             embedding,
@@ -522,20 +526,38 @@ export function useCutoutInference() {
               selection
             )
           }));
+          polygonSupport = unionMasks(candidates.map((candidate) => candidate.alpha));
+          polygonConsensusSupport = createCandidateConsensusAlpha(
+            candidates.map((candidate) => candidate.alpha)
+          );
+          const candidate = chooseAutoLayerElementMaskCandidate(
+            candidates,
+            imageWidth,
+            selection
+          );
+          if (!candidate) throw new Error("SAM 2.1 未返回可用的主体遮罩。");
+          mask = candidate.alpha;
+        } else if (optimizeSingleElement) {
+          const candidates = await decodeCutoutCandidates(
+            CUTOUT_MODEL,
+            embedding,
+            { box: selection },
+            controller.signal
+          );
           const candidate = chooseSingleElementMaskCandidate(candidates);
           if (!candidate) throw new Error("SAM 2.1 未返回可用的主体遮罩。");
           mask = candidate.alpha;
         } else {
-          mask = constrainAlphaToSelection(await decodeCutoutBox(
+          mask = await decodeCutoutBox(
             CUTOUT_MODEL,
             embedding,
             selection,
             controller.signal
-          ), imageWidth, imageHeight, selection);
+          );
         }
         coarseMasks.set(selection.id, mask);
         progress.value = { current: index + 1, total: selections.length, stage: "refining" };
-        refinedMasks.set(selection.id, constrainAlphaToSelection(await refineCutoutMask(
+        const refinedAlpha = constrainAlphaToSelection(await refineCutoutMask(
           CUTOUT_REFINER,
           image,
           imageWidth,
@@ -543,7 +565,20 @@ export function useCutoutInference() {
           mask,
           selection,
           controller.signal
-        ), imageWidth, imageHeight, selection));
+        ), imageWidth, imageHeight, selection);
+        refinedMasks.set(
+          selection.id,
+          polygonSupport && polygonConsensusSupport
+            ? restoreRefinedAlphaFromCandidateSupport(
+                refinedAlpha,
+                polygonSupport,
+                polygonConsensusSupport,
+                imageWidth,
+                imageHeight,
+                selection
+              )
+            : refinedAlpha
+        );
       }
 
       const resolvedSelections = validateAutomaticRelations(selections, refinedMasks);

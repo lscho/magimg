@@ -12,6 +12,8 @@ const AUTO_LAYER_MIN_SOLID_GAIN = 1.08;
 const AUTO_LAYER_MIN_OPACITY_GAIN = 0.03;
 const AUTO_LAYER_MAX_BOUNDS_DELTA = 0.08;
 const AUTO_LAYER_EXPORT_ALPHA_THRESHOLD = 8;
+const ENCLOSED_BACKGROUND_ALPHA_THRESHOLD = 128;
+const CONSENSUS_FOREGROUND_ALPHA_THRESHOLD = 128;
 
 function solidMaskArea(alpha: Uint8Array): number {
   let area = 0;
@@ -201,4 +203,129 @@ export function chooseAutoLayerElementMaskCandidate<T extends ScoredCutoutMask>(
     }
   }
   return fallback;
+}
+
+/**
+ * 返回每个像素的第二高候选 Alpha，表示至少两个 SAM 候选共同支持的前景强度。
+ */
+export function createCandidateConsensusAlpha(candidates: readonly Uint8Array[]) {
+  if (!candidates.length) return new Uint8Array();
+  const planeSize = candidates[0].length;
+  if (candidates.some((candidate) => candidate.length !== planeSize)) {
+    throw new Error("SAM 候选遮罩尺寸不一致。");
+  }
+
+  const consensus = new Uint8Array(planeSize);
+  for (let pixel = 0; pixel < planeSize; pixel += 1) {
+    let highest = 0;
+    let secondHighest = 0;
+    for (const candidate of candidates) {
+      const value = candidate[pixel];
+      if (value >= highest) {
+        secondHighest = highest;
+        highest = value;
+      } else if (value > secondHighest) {
+        secondHighest = value;
+      }
+    }
+    consensus[pixel] = secondHighest;
+  }
+  return consensus;
+}
+
+/**
+ * ViTMatte 偶尔会把复合 UI 素材内部降成透明。封闭孔洞可由任一 SAM 候选恢复；
+ * 与外部连通的缺口仅恢复多个候选共同确认的内部像素，保留候选边缘的精修结果。
+ */
+export function restoreRefinedAlphaFromCandidateSupport(
+  refinedAlpha: Uint8Array,
+  supportAlpha: Uint8Array,
+  connectedSupportAlpha: Uint8Array,
+  imageWidth: number,
+  imageHeight: number,
+  region: MaskCoverageRegion
+) {
+  const planeSize = imageWidth * imageHeight;
+  if (
+    imageWidth < 1 ||
+    imageHeight < 1 ||
+    refinedAlpha.length !== planeSize ||
+    supportAlpha.length !== planeSize ||
+    connectedSupportAlpha.length !== planeSize
+  ) {
+    throw new Error("遮罩尺寸与图片不匹配，无法恢复内部 Alpha。");
+  }
+
+  const left = clamp(Math.floor(region.x), 0, imageWidth - 1);
+  const top = clamp(Math.floor(region.y), 0, imageHeight - 1);
+  const right = clamp(Math.ceil(region.x + region.width), left + 1, imageWidth);
+  const bottom = clamp(Math.ceil(region.y + region.height), top + 1, imageHeight);
+  const regionWidth = right - left;
+  const regionHeight = bottom - top;
+  const regionPlaneSize = regionWidth * regionHeight;
+  const exterior = new Uint8Array(regionPlaneSize);
+  const queue = new Uint32Array(regionPlaneSize);
+  let head = 0;
+  let tail = 0;
+  const enqueue = (regionIndex: number) => {
+    const x = regionIndex % regionWidth;
+    const y = Math.floor(regionIndex / regionWidth);
+    const imageIndex = (top + y) * imageWidth + left + x;
+    if (
+      exterior[regionIndex] ||
+      refinedAlpha[imageIndex] >= ENCLOSED_BACKGROUND_ALPHA_THRESHOLD
+    ) return;
+    exterior[regionIndex] = 1;
+    queue[tail] = regionIndex;
+    tail += 1;
+  };
+
+  for (let x = 0; x < regionWidth; x += 1) {
+    enqueue(x);
+    enqueue((regionHeight - 1) * regionWidth + x);
+  }
+  for (let y = 1; y < regionHeight - 1; y += 1) {
+    enqueue(y * regionWidth);
+    enqueue(y * regionWidth + regionWidth - 1);
+  }
+  while (head < tail) {
+    const index = queue[head];
+    head += 1;
+    const x = index % regionWidth;
+    const y = Math.floor(index / regionWidth);
+    if (x > 0) enqueue(index - 1);
+    if (x + 1 < regionWidth) enqueue(index + 1);
+    if (y > 0) enqueue(index - regionWidth);
+    if (y + 1 < regionHeight) enqueue(index + regionWidth);
+  }
+
+  const restored = refinedAlpha.slice();
+  const isConsensusInterior = (x: number, y: number) => {
+    if (x <= 0 || y <= 0 || x + 1 >= regionWidth || y + 1 >= regionHeight) return false;
+    const centerIndex = (top + y) * imageWidth + left + x;
+    if (connectedSupportAlpha[centerIndex] < CONSENSUS_FOREGROUND_ALPHA_THRESHOLD) return false;
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        if (offsetX === 0 && offsetY === 0) continue;
+        const imageIndex = (top + y + offsetY) * imageWidth + left + x + offsetX;
+        if (connectedSupportAlpha[imageIndex] < CONSENSUS_FOREGROUND_ALPHA_THRESHOLD) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  for (let y = 0; y < regionHeight; y += 1) {
+    for (let x = 0; x < regionWidth; x += 1) {
+      const regionIndex = y * regionWidth + x;
+      const imageIndex = (top + y) * imageWidth + left + x;
+      const recoveryAlpha = exterior[regionIndex]
+        ? (isConsensusInterior(x, y) ? connectedSupportAlpha[imageIndex] : 0)
+        : supportAlpha[imageIndex];
+      if (recoveryAlpha > restored[imageIndex]) {
+        restored[imageIndex] = recoveryAlpha;
+      }
+    }
+  }
+  return restored;
 }

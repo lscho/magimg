@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   constrainAlphaToSelection,
   cutoutPolygonBounds,
-  pointInCutoutPolygon
+  pointInCutoutPolygon,
+  rasterizeCutoutPolygon
 } from "@/services/cutoutSelectionShape";
 import type { CutoutSelection } from "@/types";
 
@@ -35,6 +36,27 @@ describe("cutoutSelectionShape", () => {
   it("distinguishes points inside and outside a concave-safe polygon test", () => {
     expect(pointInCutoutPolygon({ x: 1.5, y: 1.5 }, polygon)).toBe(true);
     expect(pointInCutoutPolygon({ x: 3.5, y: 3.5 }, polygon)).toBe(false);
+  });
+
+  it("fills the polygon interior for use as a model-output constraint", () => {
+    const alpha = rasterizeCutoutPolygon(6, 6, [
+      { x: 1, y: 1 },
+      { x: 5, y: 1 },
+      { x: 5, y: 5 },
+      { x: 1, y: 5 }
+    ]);
+    expect(alpha[2 * 6 + 2]).toBe(255);
+    expect(alpha[3 * 6 + 3]).toBe(255);
+    expect(alpha[0]).toBe(0);
+    expect(alpha[5 * 6 + 5]).toBe(0);
+  });
+
+  it("antialiases sloped polygon constraint edges", () => {
+    const alpha = rasterizeCutoutPolygon(5, 5, polygon);
+    expect(alpha[2 * 5 + 1]).toBe(255);
+    expect(alpha[2 * 5 + 2]).toBeGreaterThan(0);
+    expect(alpha[2 * 5 + 2]).toBeLessThan(255);
+    expect(alpha[3 * 5 + 3]).toBe(0);
   });
 
   it("zeros alpha outside the manual outline without mutating the model mask", () => {

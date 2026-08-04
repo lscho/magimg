@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   chooseAutoLayerElementMaskCandidate,
   chooseSingleElementMaskCandidate,
+  createCandidateConsensusAlpha,
   expandAutoLayerMaterialBox,
-  expandAutoLayerSegmentationBox
+  expandAutoLayerSegmentationBox,
+  restoreRefinedAlphaFromCandidateSupport
 } from "@/services/cutoutMaskCandidate";
 
 function candidate(score: number, solidPixels: number, totalPixels = 10) {
@@ -107,5 +109,125 @@ describe("auto layer element candidate selection", () => {
       100,
       120
     )).toEqual({ x: 0, y: 0, width: 90, height: 111 });
+  });
+});
+
+describe("polygon element alpha recovery", () => {
+  const width = 7;
+  const height = 7;
+
+  function solidSquare() {
+    const alpha = new Uint8Array(width * height);
+    for (let y = 1; y < 6; y += 1) alpha.fill(255, y * width + 1, y * width + 6);
+    return alpha;
+  }
+
+  it("restores a model-supported hole enclosed by the refined silhouette", () => {
+    const refined = solidSquare();
+    refined[3 * width + 3] = 32;
+    const support = solidSquare();
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      support,
+      createCandidateConsensusAlpha([support]),
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(255);
+    expect(refined[3 * width + 3]).toBe(32);
+  });
+
+  it("preserves background connected to the exterior even when a candidate is broader", () => {
+    const refined = solidSquare();
+    for (let y = 0; y <= 3; y += 1) refined[y * width + 3] = 0;
+    const support = solidSquare();
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      support,
+      createCandidateConsensusAlpha([support]),
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(0);
+  });
+
+  it("does not invent foreground where no SAM candidate provides support", () => {
+    const refined = solidSquare();
+    refined[3 * width + 3] = 0;
+    const support = solidSquare();
+    support[3 * width + 3] = 0;
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      support,
+      createCandidateConsensusAlpha([support]),
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(0);
+  });
+
+  it("restores an exterior-connected gap inside two-candidate consensus", () => {
+    const refined = solidSquare();
+    for (let y = 3; y < height; y += 1) refined[y * width + 3] = 0;
+    const first = solidSquare();
+    const second = solidSquare();
+    const support = solidSquare();
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      support,
+      createCandidateConsensusAlpha([first, second]),
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(255);
+  });
+
+  it("does not restore an exterior-connected gap supported by only one candidate", () => {
+    const refined = solidSquare();
+    for (let y = 3; y < height; y += 1) refined[y * width + 3] = 0;
+    const support = solidSquare();
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      support,
+      createCandidateConsensusAlpha([support]),
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(0);
+  });
+
+  it("preserves the consensus boundary while restoring its interior", () => {
+    const refined = solidSquare();
+    for (let y = 3; y < height; y += 1) refined[y * width + 3] = 0;
+    const first = solidSquare();
+    const second = solidSquare();
+    const consensus = createCandidateConsensusAlpha([first, second]);
+
+    const restored = restoreRefinedAlphaFromCandidateSupport(
+      refined,
+      first,
+      consensus,
+      width,
+      height,
+      { x: 0, y: 0, width, height }
+    );
+
+    expect(restored[3 * width + 3]).toBe(255);
+    expect(restored[5 * width + 3]).toBe(0);
   });
 });
