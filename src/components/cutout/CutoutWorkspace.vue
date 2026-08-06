@@ -671,9 +671,16 @@ function handleWheel(event: WheelEvent) {
   height: 100%;
   pointer-events: none;
 
-  circle,
-  polyline {
+  circle {
     fill: rgba(239, 125, 136, 0.3);
+    stroke: rgba(239, 125, 136, 0.5);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  // 多段笔画只显示轨迹描边，不填充闭合区域，与消除蒙版的实际覆盖一致。
+  polyline {
+    fill: none;
     stroke: rgba(239, 125, 136, 0.5);
     stroke-linecap: round;
     stroke-linejoin: round;
@@ -682,6 +689,10 @@ function handleWheel(event: WheelEvent) {
   .is-restore {
     fill: rgba(101, 207, 224, 0.26);
     stroke: rgba(101, 207, 224, 0.5);
+  }
+
+  polyline.is-restore {
+    fill: none;
   }
 
   .cutout-brush-cursor {
@@ -817,13 +828,21 @@ function handleWheel(event: WheelEvent) {
     background: rgba(120, 152, 245, 0.18);
   }
 
+  // 点选选区只展示多边形本身，隐藏外接矩形框及其激活/悬停高亮。
   &.is-polygon {
-    border: 1px dashed rgba(120, 152, 245, 0.4);
+    border: none;
     background: transparent;
-  }
+    box-shadow: none;
 
-  &.is-polygon.is-background {
-    border-color: rgba(228, 160, 107, 0.42);
+    &.is-background {
+      border-color: transparent;
+    }
+
+    &.is-erase-switch-target,
+    &.is-background.is-erase-switch-target {
+      background: transparent;
+      box-shadow: none;
+    }
   }
 }
 
