@@ -233,14 +233,19 @@ export function useCutoutSelection(
     });
   }
 
-  function startPan(clientX: number, clientY: number): boolean {
-    if (activeTool.value !== "pan" || !ready.value || busy.value) return false;
+  function startViewPan(clientX: number, clientY: number): boolean {
+    if (!ready.value || busy.value) return false;
     panning.value = true;
     panStartX = clientX;
     panStartY = clientY;
     panOriginX = panX.value;
     panOriginY = panY.value;
     return true;
+  }
+
+  function startPan(clientX: number, clientY: number): boolean {
+    if (activeTool.value !== "pan") return false;
+    return startViewPan(clientX, clientY);
   }
 
   function movePan(clientX: number, clientY: number) {
@@ -666,6 +671,7 @@ export function useCutoutSelection(
     zoomFromWheel,
     clientToImage,
     selectionAtClientPoint,
+    startViewPan,
     startPan,
     movePan,
     endPan,

@@ -8,6 +8,7 @@ import {
   highRecallChildMaskPadding,
   repairMaskRadius
 } from "@/services/cutoutRepairMask";
+import { shouldExtractBackgroundLocally } from "@/services/autoLayerBackgroundExtraction";
 import type { AutoLayerSelectionRecord, CutoutSelection, CutoutSelectionBox } from "@/types";
 
 export interface AutoLayerRegressionCase {
@@ -670,23 +671,29 @@ export async function evaluateLocalAutoLayerQuality(
     caseValue.repairLayerIds
   ), "父层修复区域与用例一致。", sorted(caseValue.repairLayerIds),
   sorted(diagnostics.repairRegions.map(region => region.layerId)));
-  const atlasMaterialIds = output.cloudAtlas.tiles
-    .filter(tile => tile.kind === "material" && tile.layerId)
-    .map(tile => tile.layerId!);
-  const sourceMaskMaterialIds = output.cloudAtlas.sourceMasks
-    .filter(mask => mask.kind === "material" && mask.layerId)
-    .map(mask => mask.layerId!);
-  addCheck(checks, "atlas-tiles", output.cloudAtlas.tiles.filter(tile => tile.kind === "background").length === 1 &&
-    sameMembers(atlasMaterialIds, caseValue.repairLayerIds),
-  "单张云图集包含整页背景与全部父素材修复区。",
-  ["background", ...sorted(caseValue.repairLayerIds)],
-  output.cloudAtlas.tiles.map(tile => tile.kind === "background" ? "background" : tile.layerId));
-  addCheck(checks, "atlas-source-masks",
-    output.cloudAtlas.sourceMasks.filter(mask => mask.kind === "background").length === 1 &&
-    sameMembers(sourceMaskMaterialIds, caseValue.repairLayerIds),
-  "云图集保留整页与全部父素材的原始分辨率蒙版。",
-  ["background", ...sorted(caseValue.repairLayerIds)],
-  output.cloudAtlas.sourceMasks.map(mask => mask.kind === "background" ? "background" : mask.layerId));
+  if (output.cloudAtlas) {
+    const atlasMaterialIds = output.cloudAtlas.tiles
+      .filter(tile => tile.kind === "material" && tile.layerId)
+      .map(tile => tile.layerId!);
+    const sourceMaskMaterialIds = output.cloudAtlas.sourceMasks
+      .filter(mask => mask.kind === "material" && mask.layerId)
+      .map(mask => mask.layerId!);
+    addCheck(checks, "atlas-tiles", output.cloudAtlas.tiles.filter(tile => tile.kind === "background").length === 1 &&
+      sameMembers(atlasMaterialIds, caseValue.repairLayerIds),
+    "单张云图集包含整页背景与全部父素材修复区。",
+    ["background", ...sorted(caseValue.repairLayerIds)],
+    output.cloudAtlas.tiles.map(tile => tile.kind === "background" ? "background" : tile.layerId));
+    addCheck(checks, "atlas-source-masks",
+      output.cloudAtlas.sourceMasks.filter(mask => mask.kind === "background").length === 1 &&
+      sameMembers(sourceMaskMaterialIds, caseValue.repairLayerIds),
+    "云图集保留整页与全部父素材的原始分辨率蒙版。",
+    ["background", ...sorted(caseValue.repairLayerIds)],
+    output.cloudAtlas.sourceMasks.map(mask => mask.kind === "background" ? "background" : mask.layerId));
+  } else {
+    const extracted = shouldExtractBackgroundLocally(diagnostics.backgroundExtraction ?? null);
+    addCheck(checks, "atlas-tiles", extracted, "纯色/渐变或低纹理背景本地提取，不创建云端图集。", "local-extraction", extracted);
+    addCheck(checks, "atlas-source-masks", extracted, "本地提取路径无云端蒙版，与判定一致。", "local-extraction", extracted);
+  }
 
   await validateRepairMasks(options, checks);
   await validateLocalParentRepairs(options, checks);

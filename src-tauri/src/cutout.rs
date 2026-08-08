@@ -79,6 +79,18 @@ struct RepairSpec {
     input_height: usize,
 }
 
+/// BiRefNet Swin-T 单模型粗分割（替代 /cutout 链路的 SAM encoder+decoder）。
+/// 输入 1x3x1024x1024 NCHW 归一化 float，输出 1x1x1024x1024 logits（sigmoid 转 alpha）。
+#[derive(Clone, Copy)]
+struct SegmenterSpec {
+    id: &'static str,
+    file: ModelFileSpec,
+    input_width: usize,
+    input_height: usize,
+    mask_width: usize,
+    mask_height: usize,
+}
+
 const CUTOUT_MODELS: [ModelSpec; 1] = [ModelSpec {
     id: "sam2.1-hiera-base-plus-quantized",
     encoder: ModelFileSpec {
@@ -125,6 +137,19 @@ const CUTOUT_REPAIRER: RepairSpec = RepairSpec {
     input_height: 512,
 };
 
+const CUTOUT_SEGMENTER: SegmenterSpec = SegmenterSpec {
+    id: "birefnet-swin-tiny-general",
+    file: ModelFileSpec {
+        file_name: "birefnet-swin-tiny-general.onnx",
+        size_bytes: 224_005_088,
+        sha256: "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+    },
+    input_width: 1024,
+    input_height: 1024,
+    mask_width: 1024,
+    mask_height: 1024,
+};
+
 struct ImageEmbeddingFeature {
     shape: Vec<i64>,
     data: Vec<f32>,
@@ -151,11 +176,17 @@ struct LoadedRepairer {
     session: Session,
 }
 
+struct LoadedSegmenter {
+    spec: SegmenterSpec,
+    session: Session,
+}
+
 #[derive(Default)]
 struct InferenceState {
     loaded: Option<LoadedModel>,
     refiner: Option<LoadedRefiner>,
     repairer: Option<LoadedRepairer>,
+    segmenter: Option<LoadedSegmenter>,
     next_embedding_id: u64,
 }
 
@@ -268,6 +299,14 @@ fn find_repairer(model_id: &str) -> Result<RepairSpec, String> {
     }
 }
 
+fn find_segmenter(model_id: &str) -> Result<SegmenterSpec, String> {
+    if model_id == CUTOUT_SEGMENTER.id {
+        Ok(CUTOUT_SEGMENTER)
+    } else {
+        Err("当前抠图分割模型不受支持。".to_string())
+    }
+}
+
 fn raw_request_bytes(request: &Request<'_>) -> Result<Vec<u8>, String> {
     match request.body() {
         InvokeBody::Raw(bytes) => Ok(bytes.clone()),
@@ -317,6 +356,17 @@ fn parse_repair_request(request: Request<'_>) -> Result<(String, Vec<u8>), Strin
     Ok((model_id, raw_request_bytes(&request)?))
 }
 
+fn parse_segment_request(request: Request<'_>) -> Result<(String, Vec<u8>), String> {
+    let model_id = request
+        .headers()
+        .get("x-cutout-segmenter-id")
+        .ok_or_else(|| "抠图分割请求缺少模型标识。".to_string())?
+        .to_str()
+        .map_err(|_| "抠图分割模型标识无效。".to_string())?
+        .to_string();
+    Ok((model_id, raw_request_bytes(&request)?))
+}
+
 fn models_directory(app: &AppHandle) -> Result<PathBuf, String> {
     let models_dir = app
         .path()
@@ -346,6 +396,10 @@ fn refiner_path(app: &AppHandle, spec: RefinerSpec) -> Result<PathBuf, String> {
 }
 
 fn repairer_path(app: &AppHandle, spec: RepairSpec) -> Result<PathBuf, String> {
+    Ok(models_directory(app)?.join(spec.file.file_name))
+}
+
+fn segmenter_path(app: &AppHandle, spec: SegmenterSpec) -> Result<PathBuf, String> {
     Ok(models_directory(app)?.join(spec.file.file_name))
 }
 
@@ -503,6 +557,22 @@ fn validate_repairer_contract(session: &Session) -> Result<(), String> {
         Ok(())
     } else {
         Err("背景修复模型输入输出与当前协议不兼容。".to_string())
+    }
+}
+
+fn validate_segmenter_contract(session: &Session) -> Result<(), String> {
+    let has_input = session
+        .inputs
+        .iter()
+        .any(|input| input.name == "input_image");
+    let has_output = session
+        .outputs
+        .iter()
+        .any(|output| output.name == "output_image");
+    if has_input && has_output {
+        Ok(())
+    } else {
+        Err("抠图分割模型输入输出与当前协议不兼容。".to_string())
     }
 }
 
@@ -1178,6 +1248,101 @@ fn repair_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Res
     Ok(Response::new(repairer_output_rgb(shape, values, spec)?))
 }
 
+/// BiRefNet 输出为 1x1x1024x1024 的 logits，经 sigmoid 转为 0-255 alpha。
+fn segmenter_output_alpha(
+    shape: &[i64],
+    values: &[f32],
+    spec: SegmenterSpec,
+) -> Result<Vec<u8>, String> {
+    let expected_shape = [1_i64, 1, spec.mask_height as i64, spec.mask_width as i64];
+    let plane_size = spec.mask_width
+        .checked_mul(spec.mask_height)
+        .ok_or_else(|| "抠图分割输出尺寸无效。".to_string())?;
+    if shape != expected_shape || values.len() != plane_size {
+        return Err(format!("抠图分割模型返回了不兼容的遮罩尺寸：{shape:?}。"));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("抠图分割模型返回了无效的遮罩数据。".to_string());
+    }
+    Ok(values
+        .iter()
+        .map(|logit| {
+            let probability = 1.0 / (1.0 + (-logit).exp());
+            (probability * u8::MAX as f32).round() as u8
+        })
+        .collect())
+}
+
+/// BiRefNet Swin-T 单次前向：输入裁剪区域 1024x1024 NCHW 归一化 float，
+/// 输出 1024x1024 alpha。用于 /cutout 链路替代 SAM encoder+decoder。
+fn segment_image(
+    app: &AppHandle,
+    model_id: String,
+    bytes: Vec<u8>,
+) -> Result<Response, String> {
+    let state = app.state::<CutoutState>();
+    let epoch = state.cancel_epoch.load(Ordering::SeqCst);
+    let spec = find_segmenter(&model_id)?;
+    let input_values = spec
+        .input_width
+        .checked_mul(spec.input_height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "抠图分割输入尺寸无效。".to_string())?;
+    let input = decode_float_bytes(bytes, input_values)?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+
+    let mut inference = state.inference()?;
+    if inference
+        .segmenter
+        .as_ref()
+        .is_none_or(|loaded| loaded.spec.id != spec.id)
+    {
+        inference.segmenter = None;
+        let path = segmenter_path(app, spec)?;
+        validate_sam_model_file(&path, spec.file, "抠图分割模型", &state, epoch)?;
+        let session = create_session(&path, "抠图分割模型")?;
+        validate_segmenter_contract(&session)?;
+        inference.segmenter = Some(LoadedSegmenter { spec, session });
+    }
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+
+    let segmenter = inference
+        .segmenter
+        .as_mut()
+        .ok_or_else(|| "抠图分割模型会话创建失败。".to_string())?;
+    let input_tensor =
+        Tensor::from_array(([1_usize, 3, spec.input_height, spec.input_width], input))
+            .map_err(|error| format!("无法创建抠图分割输入：{error}"))?;
+    let run_options = state.begin_run(epoch)?;
+    let outputs = segmenter.session.run_with_options(
+        ort::inputs! { "input_image" => input_tensor },
+        run_options.as_ref(),
+    );
+    state.finish_run(&run_options);
+    let outputs = outputs.map_err(|error| {
+        if state.is_cancelled(epoch) {
+            cancelled_error()
+        } else {
+            format!("抠图分割模型推理失败：{error}")
+        }
+    })?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+
+    let masks = outputs
+        .get("output_image")
+        .ok_or_else(|| "抠图分割模型未返回遮罩。".to_string())?;
+    let (shape, values) = masks
+        .try_extract_tensor::<f32>()
+        .map_err(|error| format!("抠图分割模型遮罩无效：{error}"))?;
+    Ok(Response::new(segmenter_output_alpha(shape, values, spec)?))
+}
+
 #[tauri::command]
 pub async fn cutout_encode(app: AppHandle, request: Request<'_>) -> Result<EncodeResponse, String> {
     let (model_id, bytes) = parse_encode_request(request)?;
@@ -1216,6 +1381,18 @@ pub async fn cutout_repair(app: AppHandle, request: Request<'_>) -> Result<Respo
 }
 
 #[tauri::command]
+pub async fn cutout_birefnet_segment(
+    app: AppHandle,
+    request: Request<'_>,
+) -> Result<Response, String> {
+    let (model_id, bytes) = parse_segment_request(request)?;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || segment_image(&task_app, model_id, bytes))
+        .await
+        .map_err(|error| format!("原生抠图分割任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub fn cutout_cancel(state: State<'_, CutoutState>) {
     state.cancel();
 }
@@ -1241,6 +1418,7 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
         }
         inference.refiner = None;
         inference.repairer = None;
+        inference.segmenter = None;
         Ok(())
     })
     .await
@@ -1250,10 +1428,10 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_repair_float_bytes, encode_candidate_response, find_repairer, mask_logit_to_alpha,
-        refiner_output_alpha, repairer_output_rgb, select_best_mask_alpha, validate_prompts,
-        validate_sam_model_file, CutoutState, DecodeRequest, ModelFileSpec, CUTOUT_MODELS,
-        CUTOUT_REPAIRER,
+        decode_repair_float_bytes, encode_candidate_response, find_repairer, find_segmenter,
+        mask_logit_to_alpha, refiner_output_alpha, repairer_output_rgb, segmenter_output_alpha,
+        select_best_mask_alpha, validate_prompts, validate_sam_model_file, CutoutState,
+        DecodeRequest, ModelFileSpec, CUTOUT_MODELS, CUTOUT_REPAIRER, CUTOUT_SEGMENTER,
     };
 
     fn decode_request(
@@ -1647,5 +1825,31 @@ mod tests {
         assert!(!state.is_cancelled(0));
         state.cancel();
         assert!(state.is_cancelled(0));
+    }
+
+    #[test]
+    fn segmenter_resolves_only_the_pinned_model() {
+        assert_eq!(find_segmenter(CUTOUT_SEGMENTER.id).unwrap().id, CUTOUT_SEGMENTER.id);
+        assert!(find_segmenter("unknown").is_err());
+    }
+
+    #[test]
+    fn segmenter_output_converts_logits_to_alpha_via_sigmoid() {
+        let spec = CUTOUT_SEGMENTER;
+        let plane_size = spec.mask_width * spec.mask_height;
+        let mut values = vec![0.0_f32; plane_size];
+        values[0] = 10.0; // sigmoid ≈ 1 → 255
+        values[1] = -10.0; // sigmoid ≈ 0 → 0
+        values[2] = 0.0; // sigmoid = 0.5 → 128
+        let output = segmenter_output_alpha(
+            &[1, 1, spec.mask_height as i64, spec.mask_width as i64],
+            &values,
+            spec,
+        )
+        .expect("segmenter output should be accepted");
+        assert_eq!(output[0], 255);
+        assert_eq!(output[1], 0);
+        assert_eq!(output[2], 128);
+        assert!(segmenter_output_alpha(&[1, 1, 2, 2], &values, spec).is_err());
     }
 }

@@ -3,11 +3,25 @@ import { cutoutSelectionBounds } from "@/services/cutoutGeometry";
 import type { CutoutSelectionBox } from "@/types";
 
 const ATLAS_GUTTER = 24;
-const DEFAULT_MAX_EDGE = 3840;
+/**
+ * 图集单边硬上限。超大原图统一压缩到 2K（2048px）以内再上传云端：
+ * 只有原图超过该值才缩放，小图保持原分辨率不动，避免无谓的清晰度损失。
+ */
+const DEFAULT_MAX_EDGE = 2048;
 const DEFAULT_MAX_PIXELS = 16_777_216;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const UPLOAD_BYTE_HEADROOM = 0.94;
 const MIN_ATLAS_SCALE = 0.25;
+/** 单张图集缩放低于该值视为超载，拆分为整页背景与父素材两张图集、两个云端任务。 */
+export const AUTO_LAYER_ATLAS_SPLIT_SCALE = 0.9;
+
+/**
+ * 单图统一缩放是否已经明显损伤父素材裁片分辨率：
+ * 存在父素材且缩放低于阈值时拆分，让整页背景与父素材各自独立缩放。
+ */
+export function shouldSplitAutoLayerAtlas(scale: number, hasMaterials: boolean) {
+  return hasMaterials && scale < AUTO_LAYER_ATLAS_SPLIT_SCALE;
+}
 
 interface AtlasSourceTile {
   key: string;
@@ -221,7 +235,7 @@ function maskCropPlane(mask: Uint8Array, imageWidth: number, imageHeight: number
   return { width: bounds.width, height: bounds.height, values };
 }
 
-export async function createAutoLayerRepairAtlas(options: {
+export interface AutoLayerRepairAtlasOptions {
   source: CanvasImageSource;
   imageWidth: number;
   imageHeight: number;
@@ -229,7 +243,14 @@ export async function createAutoLayerRepairAtlas(options: {
   regions: readonly AutoLayerRepairRegion[];
   maxPixels?: number;
   maxBytes?: number;
-}): Promise<AutoLayerRepairAtlas> {
+  /** 拆分模式：false 时只打包父素材裁片，不含整页背景瓦片。 */
+  includeBackground?: boolean;
+}
+
+export async function createAutoLayerRepairAtlas(
+  options: AutoLayerRepairAtlasOptions
+): Promise<AutoLayerRepairAtlas> {
+  const includeBackground = options.includeBackground ?? true;
   const backgroundBox: CutoutSelectionBox = {
     id: "auto-layer-background",
     x: 0,
@@ -237,8 +258,10 @@ export async function createAutoLayerRepairAtlas(options: {
     width: options.imageWidth,
     height: options.imageHeight
   };
-  const sources = [
-    { key: "background", width: options.imageWidth, height: options.imageHeight },
+  const sources: AtlasSourceTile[] = [
+    ...(includeBackground
+      ? [{ key: "background", width: options.imageWidth, height: options.imageHeight }]
+      : []),
     ...options.regions.map(region => ({
       key: `material:${region.layerId}`,
       width: region.contextBox.width,
@@ -246,7 +269,9 @@ export async function createAutoLayerRepairAtlas(options: {
     }))
   ];
   const entries = [
-    { kind: "background" as const, sourceBox: backgroundBox, mask: options.backgroundMask },
+    ...(includeBackground
+      ? [{ kind: "background" as const, sourceBox: backgroundBox, mask: options.backgroundMask }]
+      : []),
     ...options.regions.map(region => ({
       kind: "material" as const,
       layerId: region.layerId,
@@ -255,6 +280,7 @@ export async function createAutoLayerRepairAtlas(options: {
       mask: region.mask
     }))
   ];
+  if (!sources.length) throw new Error("云端背景图集没有可修复区域。");
   const sourceMasks: AutoLayerRepairSourceMask[] = entries.map(entry => {
     const contentBox = entry.kind === "background" ? entry.sourceBox : entry.contentBox;
     return {
@@ -352,6 +378,41 @@ export async function createAutoLayerRepairAtlas(options: {
   throw new Error("自动分层图集编码后仍超过云端大小限制，请缩小原图后重试。");
 }
 
+export interface AutoLayerRepairAtlasSet {
+  /** 整页背景图集；未拆分时包含整页背景与全部父素材裁片。 */
+  atlas: AutoLayerRepairAtlas;
+  /** 拆分时仅父素材的图集，与 atlas 各走一个独立云端任务。 */
+  splitAtlas: AutoLayerRepairAtlas | null;
+}
+
+/**
+ * 先尝试单张图集；整页背景与父素材裁片统一缩放低于阈值（或单图编码失败）
+ * 时拆分为「整页背景」与「父素材」两张图集，各走一个独立云端任务，
+ * 让每张在承载内保持尽量高的分辨率。
+ */
+export async function createAutoLayerRepairAtlasSet(
+  options: AutoLayerRepairAtlasOptions
+): Promise<AutoLayerRepairAtlasSet> {
+  let single: AutoLayerRepairAtlas | null = null;
+  try {
+    single = await createAutoLayerRepairAtlas(options);
+  } catch {
+    single = null;
+  }
+  if (single && !shouldSplitAutoLayerAtlas(single.scale, options.regions.length > 0)) {
+    return { atlas: single, splitAtlas: null };
+  }
+  if (!options.regions.length) {
+    if (single) return { atlas: single, splitAtlas: null };
+    throw new Error("云端背景图集超出单次修复容量，请缩小原图后重试。");
+  }
+  const [backgroundAtlas, materialsAtlas] = await Promise.all([
+    createAutoLayerRepairAtlas({ ...options, regions: [], includeBackground: true }),
+    createAutoLayerRepairAtlas({ ...options, includeBackground: false })
+  ]);
+  return { atlas: backgroundAtlas, splitAtlas: materialsAtlas };
+}
+
 async function drawAtlasTile(
   bitmap: ImageBitmap,
   tile: AutoLayerRepairAtlasTile,
@@ -433,16 +494,19 @@ export async function applyAutoLayerRepairAtlas(
   try {
     const backgroundTile = atlas.tiles.find(tile => tile.kind === "background");
     const backgroundMask = atlas.sourceMasks.find(mask => mask.kind === "background");
-    if (!backgroundTile) throw new Error("云端背景图集缺少整页背景。");
-    if (!backgroundMask) throw new Error("云端背景图集缺少整页原始蒙版。");
-    validateSourceMask(backgroundMask, backgroundTile.sourceBox.width, backgroundTile.sourceBox.height);
-    const backgroundBlob = await applyAtlasTileRgb(
-      bitmap,
-      backgroundTile,
-      source.backgroundBlob,
-      backgroundTile.sourceBox.width,
-      backgroundTile.sourceBox.height
-    );
+    // 拆分模式下父素材图集不含整页背景瓦片，原样保留背景。
+    let backgroundBlob = source.backgroundBlob;
+    if (backgroundTile || backgroundMask) {
+      if (!backgroundTile || !backgroundMask) throw new Error("云端背景图集缺少整页背景。");
+      validateSourceMask(backgroundMask, backgroundTile.sourceBox.width, backgroundTile.sourceBox.height);
+      backgroundBlob = await applyAtlasTileRgb(
+        bitmap,
+        backgroundTile,
+        source.backgroundBlob,
+        backgroundTile.sourceBox.width,
+        backgroundTile.sourceBox.height
+      );
+    }
     const materialTiles = new Map(atlas.tiles
       .filter(tile => tile.kind === "material" && tile.layerId)
       .map(tile => [tile.layerId!, tile]));

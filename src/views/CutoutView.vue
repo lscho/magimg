@@ -29,7 +29,7 @@ import type {
 } from "@/types";
 
 const app = useAppStore();
-const inference = useCutoutInference();
+const inference = useCutoutInference({ segmentationModel: "birefnet" });
 
 const selectedFile = shallowRef<SelectedImageFile | null>(null);
 const sessionKey = shallowRef(0);

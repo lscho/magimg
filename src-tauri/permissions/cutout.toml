@@ -6,6 +6,7 @@ commands.allow = [
   "cutout_decode",
   "cutout_refine",
   "cutout_repair",
+  "cutout_birefnet_segment",
   "cutout_cancel",
   "cutout_release",
 ]

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   autoLayerAtlasFileName,
+  AUTO_LAYER_ATLAS_SPLIT_SCALE,
   layoutAutoLayerRepairTiles,
   nextAutoLayerAtlasPixelBudget,
-  replaceAutoLayerTileRgb
+  replaceAutoLayerTileRgb,
+  shouldSplitAutoLayerAtlas
 } from "@/services/autoLayerRepairAtlas";
 
 describe("automatic-layer cloud repair atlas", () => {
@@ -59,6 +61,34 @@ describe("automatic-layer cloud repair atlas", () => {
       200, 210, 220, 96,
       80, 90, 100, 0
     ]);
+  });
+
+  it("splits the atlas only when parent crops are present and scaling drops below the threshold", () => {
+    expect(shouldSplitAutoLayerAtlas(0.99, true)).toBe(false);
+    expect(shouldSplitAutoLayerAtlas(0.89, true)).toBe(true);
+    expect(shouldSplitAutoLayerAtlas(0.5, true)).toBe(true);
+    // 没有父素材时整页背景单独打包，不需要拆分。
+    expect(shouldSplitAutoLayerAtlas(0.5, false)).toBe(false);
+    expect(shouldSplitAutoLayerAtlas(AUTO_LAYER_ATLAS_SPLIT_SCALE, true)).toBe(false);
+  });
+
+  it("keeps the full page at native scale when split alone, while the combined atlas shrinks", () => {
+    const combined = layoutAutoLayerRepairTiles([
+      { key: "background", width: 3600, height: 2700 },
+      { key: "material:panel", width: 2000, height: 1500 }
+    ], 16_777_216, 3840);
+    const backgroundOnly = layoutAutoLayerRepairTiles([
+      { key: "background", width: 3600, height: 2700 }
+    ], 16_777_216, 3840);
+    const materialsOnly = layoutAutoLayerRepairTiles([
+      { key: "material:panel", width: 2000, height: 1500 }
+    ], 16_777_216, 3840);
+
+    expect(combined.scale).toBeLessThan(0.9);
+    expect(backgroundOnly.scale).toBeCloseTo(1, 6);
+    expect(materialsOnly.scale).toBeCloseTo(1, 6);
+    expect(backgroundOnly.width * backgroundOnly.height).toBeLessThanOrEqual(16_777_216);
+    expect(materialsOnly.width * materialsOnly.height).toBeLessThanOrEqual(16_777_216);
   });
 
 });

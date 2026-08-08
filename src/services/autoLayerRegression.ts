@@ -321,17 +321,24 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
       await upload("local/background-original.png", output.backgroundBlob);
       await upload("local/layers-only.png", await renderLayersOnly(documentValue));
       await upload("local/preview-with-original-background.png", await renderAutoLayerPreview(documentValue));
-      await upload("atlas/input-image", output.cloudAtlas.imageBlob);
-      await upload("atlas/input-mask.png", output.cloudAtlas.maskBlob);
-      await upload("atlas/layout.json", jsonBlob({
-        width: output.cloudAtlas.width,
-        height: output.cloudAtlas.height,
-        scale: output.cloudAtlas.scale,
-        imageType: output.cloudAtlas.imageBlob.type,
-        imageBytes: output.cloudAtlas.imageBlob.size,
-        maskBytes: output.cloudAtlas.maskBlob.size,
-        tiles: output.cloudAtlas.tiles
-      }));
+      if (output.cloudAtlas) {
+        await upload("atlas/input-image", output.cloudAtlas.imageBlob);
+        await upload("atlas/input-mask.png", output.cloudAtlas.maskBlob);
+        await upload("atlas/layout.json", jsonBlob({
+          width: output.cloudAtlas.width,
+          height: output.cloudAtlas.height,
+          scale: output.cloudAtlas.scale,
+          imageType: output.cloudAtlas.imageBlob.type,
+          imageBytes: output.cloudAtlas.imageBlob.size,
+          maskBytes: output.cloudAtlas.maskBlob.size,
+          tiles: output.cloudAtlas.tiles
+        }));
+      } else {
+        await upload("atlas/layout.json", jsonBlob({
+          localExtraction: true,
+          backgroundAnalysis: output.diagnostics.backgroundExtraction ?? null
+        }));
+      }
 
       for (let index = 0; index < output.materials.length; index += 1) {
         const material = output.materials[index];
@@ -415,35 +422,39 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         const failed = localQuality.checks.filter(check => !check.passed).map(check => check.id);
         throw new Error(`本地素材质量门禁未通过：${failed.join("、")}`);
       }
-      options.onStatus?.("执行原分辨率蒙版合成自检");
-      const syntheticAtlas = await syntheticRepairedAtlas(output.cloudAtlas);
-      const syntheticRepair = await applyAutoLayerRepairAtlas(syntheticAtlas, output.cloudAtlas, {
-        backgroundBlob: documentValue.backgroundBlob,
-        layers: documentValue.layers
-      });
-      const syntheticDocument: AutoLayerDocument = {
-        ...documentValue,
-        backgroundBlob: syntheticRepair.backgroundBlob,
-        layers: syntheticRepair.layers,
-        status: "complete"
-      };
-      const compositingQuality = await evaluateCloudAutoLayerQuality({
-        caseValue: options.qualityCase,
-        localDocument: documentValue,
-        completeDocument: syntheticDocument,
-        diagnostics: output.diagnostics,
-        imageWidth: bitmap.width,
-        imageHeight: bitmap.height
-      });
-      await upload("quality/compositing.json", jsonBlob(compositingQuality));
-      if (!compositingQuality.passed) {
-        const failed = compositingQuality.checks.filter(check => !check.passed).map(check => check.id);
-        throw new Error(`原分辨率蒙版合成自检未通过：${failed.join("、")}`);
+      if (output.cloudAtlas) {
+        options.onStatus?.("执行原分辨率蒙版合成自检");
+        const syntheticAtlas = await syntheticRepairedAtlas(output.cloudAtlas);
+        const syntheticRepair = await applyAutoLayerRepairAtlas(syntheticAtlas, output.cloudAtlas, {
+          backgroundBlob: documentValue.backgroundBlob,
+          layers: documentValue.layers
+        });
+        const syntheticDocument: AutoLayerDocument = {
+          ...documentValue,
+          backgroundBlob: syntheticRepair.backgroundBlob,
+          layers: syntheticRepair.layers,
+          status: "complete"
+        };
+        const compositingQuality = await evaluateCloudAutoLayerQuality({
+          caseValue: options.qualityCase,
+          localDocument: documentValue,
+          completeDocument: syntheticDocument,
+          diagnostics: output.diagnostics,
+          imageWidth: bitmap.width,
+          imageHeight: bitmap.height
+        });
+        await upload("quality/compositing.json", jsonBlob(compositingQuality));
+        if (!compositingQuality.passed) {
+          const failed = compositingQuality.checks.filter(check => !check.passed).map(check => check.id);
+          throw new Error(`原分辨率蒙版合成自检未通过：${failed.join("、")}`);
+        }
+      } else {
+        options.onStatus?.("纯色/渐变背景本地提取，跳过云端合成自检");
       }
 
       let cloudTaskId: string | undefined;
       let cloudQuality: AutoLayerCloudQualityReport | undefined;
-      if (options.cloud) {
+      if (options.cloud && output.cloudAtlas) {
         options.onStatus?.("提交一次云端图集修复（20 积分）");
         const charge = await options.app.chargeMatting("autoLayer");
         let accepted = false;

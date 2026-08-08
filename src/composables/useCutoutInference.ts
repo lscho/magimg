@@ -8,6 +8,7 @@ import type {
 } from "@/types";
 import {
   CUTOUT_MODEL,
+  BIRENET_MODEL,
   downloadModel,
   getModelStatus,
   supportsLocalCutoutModels,
@@ -25,22 +26,19 @@ import {
 } from "@/services/cutoutRepairModelManager";
 import {
   cancelInferenceRun,
-  decodeCutoutBox,
   decodeCutoutCandidates,
   encodeCutoutImage,
   refineCutoutMask,
-  releaseInferenceSession
+  releaseInferenceSession,
+  segmentBirefnetBox
 } from "@/services/cutoutInference";
 import { maskToTransparentPng } from "@/services/cutoutExport";
 import {
   buildHighRecallChildMask,
   buildRemovalMask,
-  chooseSmartRemovalCandidate,
-  clipMaskToBox,
   expandTextRepairMask,
   maskContainment,
-  prepareRepairMask,
-  sampleStrokePoints
+  prepareRepairMask
 } from "@/services/cutoutRepairMask";
 import { shouldForceManualDiffusion } from "@/services/cutoutRepairContext";
 import {
@@ -50,14 +48,11 @@ import {
 import { maskArea, unionMasks } from "@/services/cutoutLayering";
 import {
   chooseAutoLayerElementMaskCandidate,
-  chooseSingleElementMaskCandidate,
   createCandidateConsensusAlpha,
-  expandAutoLayerMaterialBox,
   expandAutoLayerSegmentationBox,
   restoreRefinedAlphaFromCandidateSupport
 } from "@/services/cutoutMaskCandidate";
 import {
-  applyAutomaticNesting,
   cloneCutoutSelections,
   selectionChildren
 } from "@/services/cutoutSelectionModel";
@@ -69,10 +64,15 @@ import {
 } from "@/services/autoLayerRecognition";
 import { assignAutoLayerNames } from "@/services/autoLayerNaming";
 import {
-  createAutoLayerRepairAtlas,
+  createAutoLayerRepairAtlasSet,
   type AutoLayerRepairAtlas,
   type AutoLayerRepairRegion
 } from "@/services/autoLayerRepairAtlas";
+import {
+  sampleBackgroundAnalysis,
+  shouldExtractBackgroundLocally,
+  type AutoLayerBackgroundAnalysis
+} from "@/services/autoLayerBackgroundExtraction";
 import type { AutoLayerTextItem } from "@/components/auto-layer/types";
 
 export type CutoutPhase = "idle" | "downloading" | "verifying" | "installing" | "processing";
@@ -141,7 +141,10 @@ export interface AutoLayerInferenceResult {
   backgroundBlob: Blob;
   materials: AutoLayerMaterial[];
   texts: AutoLayerTextItem[];
-  cloudAtlas: AutoLayerRepairAtlas;
+  /** 纯色/渐变背景在本地直接提取背景时为 undefined，此时不创建任何云端任务。 */
+  cloudAtlas?: AutoLayerRepairAtlas;
+  /** 超载拆分时仅父素材的第二张图集，与 cloudAtlas 各走一个云端任务。 */
+  splitCloudAtlas?: AutoLayerRepairAtlas;
   diagnostics?: AutoLayerDiagnostics;
 }
 
@@ -167,6 +170,8 @@ export interface AutoLayerDiagnostics {
   elements: AutoLayerElementDiagnostic[];
   repairRegions: AutoLayerRepairRegion[];
   backgroundMask: Uint8Array;
+  /** 背景复杂度分析结果；本地提取表示纯色/渐变或低纹理背景不创建云端任务。 */
+  backgroundExtraction?: AutoLayerBackgroundAnalysis;
 }
 
 function abortError() {
@@ -245,7 +250,10 @@ function expandedRepairBox(
  * 管理 SAM、ViTMatte 与按需下载的 Big-LaMa。所有选区复用一次 encoder；
  * 矩形与点选轮廓都沿用 SAM -> ViTMatte，背景只在合并移除蒙版后进入修复模型。
  */
-export function useCutoutInference() {
+export function useCutoutInference(options?: { segmentationModel?: "sam" | "birefnet" }) {
+  const segmentationModel = options?.segmentationModel ?? "sam";
+  /** /cutout 使用的分割模型描述符（BiRefNet 或 SAM），/auto-layer 固定 SAM。 */
+  const activeSegmenterModel = segmentationModel === "birefnet" ? BIRENET_MODEL : CUTOUT_MODEL;
   const phase = shallowRef<CutoutPhase>("idle");
   const segmenterStatus = shallowRef<CutoutModelStatus>("missing");
   const refinerStatus = shallowRef<CutoutModelStatus>("missing");
@@ -282,7 +290,7 @@ export function useCutoutInference() {
   async function refreshResourceStatus() {
     try {
       const [nextSegmenterStatus, nextRefinerStatus] = await Promise.all([
-        getModelStatus(CUTOUT_MODEL),
+        getModelStatus(activeSegmenterModel),
         getRefinerStatus(CUTOUT_REFINER)
       ]);
       segmenterStatus.value = nextSegmenterStatus;
@@ -336,8 +344,8 @@ export function useCutoutInference() {
     if (segmenterStatus.value !== "ready") {
       pendingParts.push({
         id: "segmenter",
-        sizeBytes: CUTOUT_MODEL.sizeBytes,
-        install: (onProgress, signal) => downloadModel(CUTOUT_MODEL, onProgress, signal)
+        sizeBytes: activeSegmenterModel.sizeBytes,
+        install: (onProgress, signal) => downloadModel(activeSegmenterModel, onProgress, signal)
       });
     }
     if (refinerStatus.value !== "ready") {
@@ -481,7 +489,7 @@ export function useCutoutInference() {
 
     try {
       const [nextSegmenterStatus, nextRefinerStatus] = await Promise.all([
-        getModelStatus(CUTOUT_MODEL),
+        getModelStatus(activeSegmenterModel),
         getRefinerStatus(CUTOUT_REFINER)
       ]);
       segmenterStatus.value = nextSegmenterStatus;
@@ -492,69 +500,22 @@ export function useCutoutInference() {
       }
 
       const selections = cloneCutoutSelections(inputSelections);
-      const embedding = await encodeCutoutImage(
-        CUTOUT_MODEL,
-        image,
-        imageWidth,
-        imageHeight,
-        controller.signal
-      );
       const coarseMasks = new Map<string, Uint8Array>();
       const refinedMasks = new Map<string, Uint8Array>();
-      const optimizeSingleElement = selections.length === 1 &&
-        selections[0].behavior === "extract" &&
-        !selections[0].parentId;
       for (let index = 0; index < selections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = selections[index];
         progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
-        let mask: Uint8Array;
-        let polygonSupport: Uint8Array | null = null;
-        let polygonConsensusSupport: Uint8Array | null = null;
-        if (selection.polygon?.length) {
-          const candidates = (await decodeCutoutCandidates(
-            CUTOUT_MODEL,
-            embedding,
-            { box: selection },
-            controller.signal
-          )).map((candidate) => ({
-            ...candidate,
-            alpha: constrainAlphaToSelection(
-              candidate.alpha,
-              imageWidth,
-              imageHeight,
-              selection
-            )
-          }));
-          polygonSupport = unionMasks(candidates.map((candidate) => candidate.alpha));
-          polygonConsensusSupport = createCandidateConsensusAlpha(
-            candidates.map((candidate) => candidate.alpha)
-          );
-          const candidate = chooseAutoLayerElementMaskCandidate(
-            candidates,
-            imageWidth,
-            selection
-          );
-          if (!candidate) throw new Error("SAM 2.1 未返回可用的主体遮罩。");
-          mask = candidate.alpha;
-        } else if (optimizeSingleElement) {
-          const candidates = await decodeCutoutCandidates(
-            CUTOUT_MODEL,
-            embedding,
-            { box: selection },
-            controller.signal
-          );
-          const candidate = chooseSingleElementMaskCandidate(candidates);
-          if (!candidate) throw new Error("SAM 2.1 未返回可用的主体遮罩。");
-          mask = candidate.alpha;
-        } else {
-          mask = await decodeCutoutBox(
-            CUTOUT_MODEL,
-            embedding,
-            selection,
-            controller.signal
-          );
-        }
+        // BiRefNet 单次前向分割：选区 bbox 外扩上下文后推理，返回全分辨率 alpha。
+        // 多边形只提供更贴合物体的外接框提示，不做硬裁剪，最终 Alpha 由 ViTMatte 决定。
+        const mask = await segmentBirefnetBox(
+          activeSegmenterModel,
+          image,
+          imageWidth,
+          imageHeight,
+          selection,
+          controller.signal
+        );
         coarseMasks.set(selection.id, mask);
         progress.value = { current: index + 1, total: selections.length, stage: "refining" };
         const refinedAlpha = constrainAlphaToSelection(await refineCutoutMask(
@@ -566,19 +527,7 @@ export function useCutoutInference() {
           selection,
           controller.signal
         ), imageWidth, imageHeight, selection);
-        refinedMasks.set(
-          selection.id,
-          polygonSupport && polygonConsensusSupport
-            ? restoreRefinedAlphaFromCandidateSupport(
-                refinedAlpha,
-                polygonSupport,
-                polygonConsensusSupport,
-                imageWidth,
-                imageHeight,
-                selection
-              )
-            : refinedAlpha
-        );
+        refinedMasks.set(selection.id, refinedAlpha);
       }
 
       const resolvedSelections = validateAutomaticRelations(selections, refinedMasks);
@@ -619,27 +568,8 @@ export function useCutoutInference() {
         const parentAlpha = refinedMasks.get(parent.id);
         if (!parentAlpha) continue;
         const smartMasks = new Map<string, Uint8Array>();
-        for (const stroke of parent.removalStrokes) {
-          if (!stroke.smart || stroke.operation !== "add") continue;
-          const points = sampleStrokePoints(stroke);
-          const candidates = await decodeCutoutCandidates(
-            CUTOUT_MODEL,
-            embedding,
-            {
-              box: parent,
-              points: points.map((point) => ({ ...point, label: 1 as const }))
-            },
-            controller.signal
-          );
-          const candidate = chooseSmartRemovalCandidate(
-            candidates,
-            points,
-            imageWidth,
-            imageHeight,
-            parent
-          );
-          if (candidate) smartMasks.set(stroke.id, candidate);
-        }
+        // BiRefNet 无点提示能力：智能笔画降级为纯几何 add/restore 笔画，
+        // smartMasks 保持为空，由 buildRemovalMask 中的 rasterizeStroke 处理。
         const childAlphas = selectionChildren(resolvedSelections, parent.id)
           .map((child) => {
             const refinedAlpha = refinedMasks.get(child.id);
@@ -680,7 +610,7 @@ export function useCutoutInference() {
         .map((selection) => repairMasks.get(selection.id))
         .filter((mask): mask is Uint8Array => Boolean(mask));
       if (nonEmptyRepairMasks.length) {
-        await releaseInferenceSession(CUTOUT_MODEL.id);
+        await releaseInferenceSession(activeSegmenterModel.id);
       }
       let cloudRepairedSource: CanvasImageSource | null = null;
       if (options.repairMode === "cloud" && nonEmptyRepairMasks.length) {
@@ -819,9 +749,14 @@ export function useCutoutInference() {
         throw new Error("请先下载完整的 AI 抠图资源包。");
       }
 
-      const selections = applyAutomaticNesting(cloneCutoutSelections(inputSelections), {
-        edgeToleranceRatio: 0.08
-      });
+      // 每个框独立提取：不建立自动嵌套，避免父层修复污染素材与背景。
+      const selections = cloneCutoutSelections(inputSelections).map((selection) => ({
+        ...selection,
+        behavior: "extract" as const,
+        parentId: null,
+        relationSource: "manual" as const,
+        removalStrokes: []
+      }));
       const elementSelections = selections.filter(selection => selection.layerKind !== "text");
       const textSelections = selections.filter(selection => selection.layerKind === "text");
       const refinedMasks = new Map<string, Uint8Array>();
@@ -831,30 +766,47 @@ export function useCutoutInference() {
       const embedding = elementSelections.length
         ? await encodeCutoutImage(CUTOUT_MODEL, image, imageWidth, imageHeight, controller.signal)
         : null;
+      let repairModelReady = false;
+      try {
+        repairModelReady = (await getRepairModelStatus()) === "ready";
+      } catch {
+        repairModelReady = false;
+      }
 
       for (let index = 0; index < elementSelections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = elementSelections[index];
-        const segmentationBox = expandAutoLayerSegmentationBox(selection, imageWidth, imageHeight);
         progress.value = { current: index + 1, total: elementSelections.length, stage: "segmenting" };
+        // 提示框在选框基础上小幅外扩补充上下文，改善贴边元素的分割；
+        // 素材导出与选区覆盖仍按选框边界，不受提示范围影响。
+        const promptBox = expandAutoLayerSegmentationBox(selection, imageWidth, imageHeight);
         const candidates = await decodeCutoutCandidates(
           CUTOUT_MODEL,
           embedding!,
-          { box: segmentationBox },
+          { box: promptBox },
           controller.signal
         );
         const candidate = chooseAutoLayerElementMaskCandidate(candidates, imageWidth, selection);
         if (!candidate) throw new Error("SAM 2.1 未返回可用的分层遮罩。");
+        const candidateSupport = unionMasks(candidates.map(item => item.alpha));
+        const candidateConsensus = createCandidateConsensusAlpha(candidates.map(item => item.alpha));
 
         progress.value = { current: index + 1, total: elementSelections.length, stage: "refining" };
-        const refinedAlpha = await refineCutoutMask(
-          CUTOUT_REFINER,
-          image,
+        const refinedAlpha = restoreRefinedAlphaFromCandidateSupport(
+          await refineCutoutMask(
+            CUTOUT_REFINER,
+            image,
+            imageWidth,
+            imageHeight,
+            candidate.alpha,
+            selection,
+            controller.signal
+          ),
+          candidateSupport,
+          candidateConsensus,
           imageWidth,
           imageHeight,
-          candidate.alpha,
-          selection,
-          controller.signal
+          selection
         );
         refinedMasks.set(selection.id, refinedAlpha);
         coarseMasks.set(selection.id, candidate.alpha);
@@ -915,86 +867,20 @@ export function useCutoutInference() {
       }
 
       const repairRegions: AutoLayerRepairRegion[] = [];
+      const removalMasks: Array<{ selection: CutoutSelection; alpha: Uint8Array }> = [];
       for (let index = 0; index < elementSelections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = elementSelections[index];
         const alpha = refinedMasks.get(selection.id);
         const coarse = coarseMasks.get(selection.id);
         if (!alpha || !coarse) continue;
-        const materialBox = expandAutoLayerMaterialBox(
-          alpha,
-          imageWidth,
-          imageHeight,
-          selection
-        );
-        const directChildren = selectionChildren(selections, selection.id);
-        const childMasks: Uint8Array[] = [];
-        for (const child of directChildren) {
-          if (child.layerKind === "text") {
-            const recognizedLines = textLines.filter(line => line.sourceSelectionId === child.id);
-            if (recognizedLines.length) {
-              childMasks.push(...await Promise.all(recognizedLines.map(line =>
-                textLayerMask(
-                  line,
-                  textGlyphMasks.get(line.id) ?? new Uint8Array(),
-                  imageWidth,
-                  imageHeight
-                )
-              )));
-            } else {
-              childMasks.push(rectangleMask(child, imageWidth, imageHeight));
-            }
-            continue;
-          }
-          const childAlpha = refinedMasks.get(child.id);
-          const childCoarse = coarseMasks.get(child.id);
-          if (childAlpha && childCoarse) childMasks.push(prepareRepairMask(
-            buildHighRecallChildMask({
-              refinedAlpha: childAlpha,
-              coarseAlpha: childCoarse,
-              width: imageWidth,
-              height: imageHeight,
-              child
-            }),
-            imageWidth,
-            imageHeight
-          ));
-        }
-        let materialSource: CanvasImageSource = image;
-        if (childMasks.length) {
-          progress.value = { current: index + 1, total: elementSelections.length, stage: "repairing" };
-          const repairMask = clipMaskToBox(
-            unionMasks(childMasks),
-            imageWidth,
-            imageHeight,
-            selection
-          );
-          repairRegions.push({
-            layerId: selection.id,
-            contextBox: expandedRepairBox(selection, imageWidth, imageHeight),
-            contentBox: materialBox,
-            mask: repairMask
-          });
-          materialSource = await repairBackgroundLocally(
-            image,
-            imageWidth,
-            imageHeight,
-            repairMask,
-            alpha,
-            selection,
-            {
-              signal: controller.signal,
-              // UI parent surfaces need deterministic fill; generative inpainting can redraw removed text.
-              forceDiffusion: true
-            }
-          );
-        }
+        // 素材按选框边界直接导出，不按 Alpha 内容扩张。
         const exported = await maskToTransparentPng(
-          materialSource,
+          image,
           imageWidth,
           imageHeight,
           alpha,
-          materialBox
+          selection
         );
         const classification = classifications.get(selection.id) ?? { type: "element", confidence: 0 };
         materials.push({
@@ -1002,14 +888,64 @@ export function useCutoutInference() {
           blob: exported.blob,
           width: exported.width,
           height: exported.height,
-          sourceBox: materialBox,
+          sourceBox: { ...selection },
           sourceSelectionId: selection.id,
-          parentId: selection.parentId,
+          parentId: null,
           elementType: classification.type,
           classificationConfidence: classification.confidence,
-          cleanedChildren: childMasks.length > 0,
+          cleanedChildren: false,
           name: classification.type
         });
+        removalMasks.push({
+          selection: { ...selection },
+          alpha: prepareRepairMask(buildHighRecallChildMask({
+            refinedAlpha: alpha,
+            coarseAlpha: coarse,
+            width: imageWidth,
+            height: imageHeight,
+            child: selection
+          }), imageWidth, imageHeight)
+        });
+      }
+      // 文字框按识别字形蒙版从背景中移除；未识别出的框按整框矩形移除。
+      for (const selection of textSelections) {
+        const recognizedLines = textLines.filter(line => line.sourceSelectionId === selection.id);
+        if (recognizedLines.length) {
+          for (const line of recognizedLines) {
+            removalMasks.push({
+              selection: { ...line.sourceBox } as CutoutSelection,
+              alpha: textLayerMask(
+                line,
+                textGlyphMasks.get(line.id) ?? new Uint8Array(),
+                imageWidth,
+                imageHeight
+              )
+            });
+          }
+        } else {
+          removalMasks.push({
+            selection: { ...selection },
+            alpha: rectangleMask(selection, imageWidth, imageHeight)
+          });
+        }
+      }
+      // 每个素材框区域从整图背景中链式修复（初版语义），云图集成功后再覆盖整页背景。
+      const fullAlpha = new Uint8Array(imageWidth * imageHeight);
+      fullAlpha.fill(255);
+      let repairedSource: CanvasImageSource = image;
+      for (let index = 0; index < removalMasks.length; index += 1) {
+        if (controller.signal.aborted) throw abortError();
+        const current = removalMasks[index];
+        progress.value = { current: index + 1, total: removalMasks.length, stage: "repairing" };
+        repairedSource = await repairBackgroundLocally(
+          repairedSource,
+          imageWidth,
+          imageHeight,
+          current.alpha,
+          fullAlpha,
+          expandedRepairBox(current.selection, imageWidth, imageHeight),
+          { signal: controller.signal, forceDiffusion: !repairModelReady }
+        );
       }
 
       const backgroundCanvas = document.createElement("canvas");
@@ -1017,7 +953,7 @@ export function useCutoutInference() {
       backgroundCanvas.height = imageHeight;
       const context = backgroundCanvas.getContext("2d");
       if (!context) throw new Error("当前设备无法合成分层背景。");
-      context.drawImage(image, 0, 0, imageWidth, imageHeight);
+      context.drawImage(repairedSource, 0, 0, imageWidth, imageHeight);
       const nameCandidates = [
         ...materials.map(material => ({
           id: material.id, kind: "material" as const, box: material.sourceBox,
@@ -1063,26 +999,41 @@ export function useCutoutInference() {
       const backgroundMask = topLevelMasks.length
         ? unionMasks(topLevelMasks)
         : new Uint8Array(imageWidth * imageHeight);
-      const cloudAtlas = await createAutoLayerRepairAtlas({
-        source: image,
+      // 纯色/缓渐变背景：本地扩散直接提取背景，不创建云端 inpainting 任务，
+      // 蒙版区域不会出现生成模型臆造的内容，且不消耗云端积分。
+      const backgroundAnalysis = await sampleBackgroundAnalysis(
+        image,
         imageWidth,
         imageHeight,
-        backgroundMask,
-        regions: repairRegions,
-        maxPixels: options.cloudMaxPixels,
-        maxBytes: options.cloudMaxBytes
-      });
+        backgroundMask
+      );
+      const extractLocally = shouldExtractBackgroundLocally(backgroundAnalysis);
+      const cloudSet = extractLocally
+        ? null
+        : await createAutoLayerRepairAtlasSet({
+          source: image,
+          imageWidth,
+          imageHeight,
+          backgroundMask,
+          regions: repairRegions,
+          maxPixels: options.cloudMaxPixels,
+          maxBytes: options.cloudMaxBytes
+        });
       return {
         backgroundBlob: await canvasToPngBlob(backgroundCanvas),
         materials,
         texts: textLines,
-        cloudAtlas,
+        ...(cloudSet ? {
+          cloudAtlas: cloudSet.atlas,
+          ...(cloudSet.splitAtlas ? { splitCloudAtlas: cloudSet.splitAtlas } : {})
+        } : {}),
         ...(options.collectDiagnostics ? {
           diagnostics: {
             selections: cloneCutoutSelections(selections),
             elements: elementDiagnostics,
             repairRegions,
-            backgroundMask
+            backgroundMask,
+            ...(backgroundAnalysis ? { backgroundExtraction: backgroundAnalysis } : {})
           }
         } : {})
       };

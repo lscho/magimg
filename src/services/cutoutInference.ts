@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { cutoutSelectionBounds } from "@/services/cutoutGeometry";
+import { cutoutSelectionBounds, type CutoutPixelBounds } from "@/services/cutoutGeometry";
 import {
   createInterpolationAxis,
   guidedUpsampleAlpha,
@@ -334,6 +334,91 @@ export async function decodeCutoutBox(
   return restoreAlphaMask(responseBytes(response), context);
 }
 
+/**
+ * BiRefNet Swin-T 单次前向分割：把选区 bbox（带上下文外扩）裁剪并缩放到
+ * 1024x1024，推理后把 1024x1024 alpha 缩回 bbox 尺寸并映射回原图坐标。
+ * 返回全分辨率（imageWidth x imageHeight）alpha。替代 SAM encoder+decoder。
+ */
+export async function segmentBirefnetBox(
+  descriptor: CutoutModelDescriptor,
+  image: CanvasImageSource,
+  imageWidth: number,
+  imageHeight: number,
+  box: CutoutSelectionBox,
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  ensureNativeRuntime();
+  if (signal?.aborted) throw abortError();
+  const bounds = expandRefinerBounds(
+    cutoutSelectionBounds(imageWidth, imageHeight, box),
+    imageWidth,
+    imageHeight
+  );
+
+  const canvas = document.createElement("canvas");
+  canvas.width = descriptor.inputWidth;
+  canvas.height = descriptor.inputHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("当前设备无法准备抠图分割输入。");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(
+    image,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    descriptor.inputWidth,
+    descriptor.inputHeight
+  );
+  const rgba = context.getImageData(0, 0, descriptor.inputWidth, descriptor.inputHeight).data;
+  const planeSize = descriptor.inputWidth * descriptor.inputHeight;
+  const input = new Float32Array(planeSize * 3);
+  for (let pixel = 0; pixel < planeSize; pixel += 1) {
+    const sourceOffset = pixel * 4;
+    input[pixel] = (rgba[sourceOffset] / 255 - SAM2_IMAGE_MEAN[0]) / SAM2_IMAGE_STD[0];
+    input[planeSize + pixel] =
+      (rgba[sourceOffset + 1] / 255 - SAM2_IMAGE_MEAN[1]) / SAM2_IMAGE_STD[1];
+    input[planeSize * 2 + pixel] =
+      (rgba[sourceOffset + 2] / 255 - SAM2_IMAGE_MEAN[2]) / SAM2_IMAGE_STD[2];
+  }
+  const bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+
+  let response: unknown;
+  try {
+    response = await invokeWithCancellation(
+      () =>
+        invoke<ArrayBuffer>("cutout_birefnet_segment", bytes, {
+          headers: { "x-cutout-segmenter-id": descriptor.id }
+        }),
+      signal
+    );
+  } catch (exception) {
+    if (signal?.aborted) throw abortError();
+    throw normalizeNativeError(exception, "原生抠图分割推理失败。");
+  }
+  const mask1024 = responseBytes(response);
+  if (mask1024.byteLength !== descriptor.maskWidth * descriptor.maskHeight) {
+    throw new Error("原生抠图分割模型返回的遮罩尺寸无效。");
+  }
+  const scaled = resampleAlphaPlane(
+    mask1024,
+    descriptor.maskWidth,
+    bounds.width,
+    bounds.height,
+    createInterpolationAxis(bounds.width, descriptor.maskWidth),
+    createInterpolationAxis(bounds.height, descriptor.maskHeight)
+  );
+  const fullMask = new Uint8Array(imageWidth * imageHeight);
+  for (let y = 0; y < bounds.height; y += 1) {
+    const targetRow = (bounds.y + y) * imageWidth + bounds.x;
+    fullMask.set(scaled.subarray(y * bounds.width, (y + 1) * bounds.width), targetRow);
+  }
+  return fullMask;
+}
+
 function morphBinaryMask(
   source: Uint8Array,
   width: number,
@@ -566,6 +651,24 @@ function readImageRegion(
   return context.getImageData(0, 0, bounds.width, bounds.height).data;
 }
 
+/**
+ * 精修阶段的输入快照，仅供开发模式的调试页面观察 trimap 与实际输入尺寸。
+ * 生产链路不传 onDebug，不会产生任何额外拷贝。
+ */
+export interface CutoutRefineDebugSnapshot {
+  /** ViTMatte 输入的 trimap（trimapWidth x trimapHeight）：0 背景、128 未知带、255 前景。 */
+  trimap: Uint8Array;
+  trimapWidth: number;
+  trimapHeight: number;
+  /** 对齐到 32 倍数后的模型输入尺寸。 */
+  inputWidth: number;
+  inputHeight: number;
+  /** 精修裁剪区域（原图坐标系）。 */
+  bounds: CutoutPixelBounds;
+  /** 是否需要导向上采样回原分辨率。 */
+  guidedUpsample: boolean;
+}
+
 export async function refineCutoutMask(
   descriptor: CutoutRefinerDescriptor,
   image: CanvasImageSource,
@@ -573,7 +676,8 @@ export async function refineCutoutMask(
   imageHeight: number,
   alpha: Uint8Array,
   box: CutoutSelectionBox,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onDebug?: (snapshot: CutoutRefineDebugSnapshot) => void
 ): Promise<Uint8Array> {
   ensureNativeRuntime();
   if (signal?.aborted) throw abortError();
@@ -584,6 +688,18 @@ export async function refineCutoutMask(
     alpha,
     box
   );
+  const needsGuidedUpsample =
+    prepared.bounds.width > prepared.drawWidth ||
+    prepared.bounds.height > prepared.drawHeight;
+  onDebug?.({
+    trimap: prepared.trimap.slice(),
+    trimapWidth: prepared.drawWidth,
+    trimapHeight: prepared.drawHeight,
+    inputWidth: prepared.inputWidth,
+    inputHeight: prepared.inputHeight,
+    bounds: prepared.bounds,
+    guidedUpsample: needsGuidedUpsample
+  });
   if (signal?.aborted) throw abortError();
   const bytes = new Uint8Array(
     prepared.input.buffer,
@@ -623,9 +739,6 @@ export async function refineCutoutMask(
     }
   }
 
-  const needsGuidedUpsample =
-    prepared.bounds.width > prepared.drawWidth ||
-    prepared.bounds.height > prepared.drawHeight;
   let refinedCrop: Uint8Array;
   if (needsGuidedUpsample) {
     const packedAlpha = new Uint8Array(prepared.drawWidth * prepared.drawHeight);

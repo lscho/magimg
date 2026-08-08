@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, shallowRef } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import {
+  Bug,
   Coins,
   CircleArrowUp,
   History,
@@ -56,6 +57,7 @@ const showSettings = shallowRef(false);
 const showQrcode = shallowRef(false);
 const sidebarOpen = shallowRef(false);
 const desktopAvailable = isDesktopRuntime();
+const isDev = import.meta.env.DEV;
 const formattedBalance = computed(() => new Intl.NumberFormat("zh-CN").format(app.balance.balance));
 
 onMounted(() => {
@@ -193,6 +195,16 @@ function openRechargeFromCreditLog() {
               <span class="rail-tooltip" aria-hidden="true">图片编辑</span>
             </RouterLink>
           </div>
+
+          <template v-if="isDev">
+            <span class="nav-separator" aria-hidden="true" />
+            <div class="nav-group" role="group" aria-label="开发调试">
+              <RouterLink class="nav-item" to="/debug/cutout" aria-label="抠图调试" @click="closeSidebar">
+                <Bug :size="17" />
+                <span class="rail-tooltip" aria-hidden="true">抠图调试</span>
+              </RouterLink>
+            </div>
+          </template>
         </nav>
 
         <div class="sidebar-footer">

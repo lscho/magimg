@@ -3,6 +3,7 @@ import { CUTOUT_REPAIR_MODEL } from "@/services/cutoutRepairModelManager";
 import { compositeMaskedRgba } from "@/services/cutoutRepairCompositing";
 import {
   buildCutoutRepairLayoutFromBounds,
+  type CutoutRepairInputRect,
   type CutoutRepairLayout
 } from "@/services/cutoutRepairLayout";
 import {
@@ -12,6 +13,12 @@ import {
   diffuseRepairRgba,
   fillRgbaOutsideAlpha
 } from "@/services/cutoutRepairContext";
+import {
+  buildRepairTileAxis,
+  MAX_REPAIR_TILES,
+  repairTileAxisWeight,
+  repairTileHasMask
+} from "@/services/cutoutRepairTiling";
 import type { CutoutSelectionBox } from "@/types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -131,12 +138,17 @@ function prepareRepairContext(
   };
 }
 
-function prepareLocalInput(
+/**
+ * 用修复上下文中的 rect 区域构建 512×512 模型输入并调用 Big-LaMa，
+ * 返回模型输出画布。rect 为修复上下文坐标，用于单次整框与分块两种路径。
+ */
+async function runRepairModel(
   repairContext: LocalRepairContext,
-  layout: CutoutRepairLayout
-) {
+  bounds: CutoutRepairLayout["bounds"],
+  rect: CutoutRepairInputRect,
+  signal?: AbortSignal
+): Promise<HTMLCanvasElement> {
   const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
-  const { bounds, inputRect } = layout;
   const imageCanvas = document.createElement("canvas");
   imageCanvas.width = inputWidth;
   imageCanvas.height = inputHeight;
@@ -148,14 +160,14 @@ function prepareLocalInput(
   imageContext.fillRect(0, 0, inputWidth, inputHeight);
   imageContext.drawImage(
     repairContext.canvas,
+    rect.x,
+    rect.y,
+    rect.width,
+    rect.height,
     0,
     0,
-    bounds.width,
-    bounds.height,
-    inputRect.x,
-    inputRect.y,
-    inputRect.width,
-    inputRect.height
+    inputWidth,
+    inputHeight
   );
 
   const scaledMaskCanvas = document.createElement("canvas");
@@ -165,16 +177,9 @@ function prepareLocalInput(
   if (!maskContext) throw new Error("当前设备无法准备背景修复蒙版。");
   maskContext.imageSmoothingEnabled = false;
   maskContext.drawImage(
-    maskCropCanvas(repairContext.repairMask, bounds.width, bounds.height, {
-      x: 0,
-      y: 0,
-      width: bounds.width,
-      height: bounds.height
-    }),
-    inputRect.x,
-    inputRect.y,
-    inputRect.width,
-    inputRect.height
+    maskCropCanvas(repairContext.repairMask, bounds.width, bounds.height, rect),
+    0,
+    0
   );
 
   const rgba = imageContext.getImageData(0, 0, inputWidth, inputHeight).data;
@@ -188,7 +193,152 @@ function prepareLocalInput(
     input[planeSize * 2 + pixel] = rgba[offset + 2] / 255;
     input[planeSize * 3 + pixel] = maskRgba[offset] >= 32 ? 1 : 0;
   }
-  return input;
+  const bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  const handleAbort = () => { void invoke("cutout_cancel").catch(() => undefined); };
+  signal?.addEventListener("abort", handleAbort, { once: true });
+  let response: unknown;
+  try {
+    response = await invoke<ArrayBuffer>("cutout_repair", bytes, {
+      headers: { "x-cutout-repair-id": CUTOUT_REPAIR_MODEL.id }
+    });
+  } catch (exception) {
+    if (signal?.aborted) throw abortError();
+    throw normalizeNativeError(exception);
+  } finally {
+    signal?.removeEventListener("abort", handleAbort);
+  }
+  if (signal?.aborted) throw abortError();
+  return repairedModelCanvas(responseBytes(response));
+}
+
+function clampByte(value: number) {
+  return Math.min(255, Math.max(0, value));
+}
+
+/** 单次整框修复：区域等比放入 512×512 输入，结果回放大到原尺寸。 */
+async function repairBackgroundSingle(
+  repairContext: LocalRepairContext,
+  layout: CutoutRepairLayout,
+  signal?: AbortSignal
+): Promise<Uint8ClampedArray> {
+  const { bounds, inputRect } = layout;
+  const repaired = await runRepairModel(repairContext, bounds, inputRect, signal);
+  const repairedCrop = document.createElement("canvas");
+  repairedCrop.width = bounds.width;
+  repairedCrop.height = bounds.height;
+  const repairedContext = repairedCrop.getContext("2d", { willReadFrequently: true });
+  if (!repairedContext) throw new Error("当前设备无法合成背景修复结果。");
+  repairedContext.imageSmoothingEnabled = true;
+  repairedContext.imageSmoothingQuality = "high";
+  repairedContext.drawImage(
+    repaired,
+    inputRect.x,
+    inputRect.y,
+    inputRect.width,
+    inputRect.height,
+    0,
+    0,
+    bounds.width,
+    bounds.height
+  );
+  return repairedContext.getImageData(0, 0, bounds.width, bounds.height).data;
+}
+
+/**
+ * 分块修复：区域按 512×512 瓦片覆盖，只运行包含修复蒙版的瓦片，
+ * 输出按轴分离的线性羽化权重合成。无蒙版瓦片沿用原图；
+ * 超出模型调用预算时返回 null，由调用方回退为整框单次修复。
+ */
+async function repairBackgroundTiled(
+  repairContext: LocalRepairContext,
+  bounds: CutoutRepairLayout["bounds"],
+  signal?: AbortSignal
+): Promise<Uint8ClampedArray | null> {
+  const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
+  const width = bounds.width;
+  const height = bounds.height;
+  const xAxis = buildRepairTileAxis(width, inputWidth);
+  const yAxis = buildRepairTileAxis(height, inputHeight);
+
+  const activeTiles: Array<{ col: number; row: number; x: number; y: number }> = [];
+  for (let row = 0; row < yAxis.count; row += 1) {
+    for (let col = 0; col < xAxis.count; col += 1) {
+      const x = xAxis.starts[col];
+      const y = yAxis.starts[row];
+      if (!repairTileHasMask(
+        repairContext.repairMask,
+        width,
+        height,
+        x,
+        y,
+        inputWidth,
+        inputHeight
+      )) continue;
+      activeTiles.push({ col, row, x, y });
+    }
+  }
+  if (!activeTiles.length) return repairContext.sourceRgba.slice();
+  if (activeTiles.length > MAX_REPAIR_TILES) return null;
+
+  const diff = new Float32Array(width * height * 3);
+  for (let index = 0; index < activeTiles.length; index += 1) {
+    if (signal?.aborted) throw abortError();
+    const tile = activeTiles[index];
+    const repaired = await runRepairModel(
+      repairContext,
+      bounds,
+      { x: tile.x, y: tile.y, width: inputWidth, height: inputHeight },
+      signal
+    );
+    const repairedContext = repaired.getContext("2d", { willReadFrequently: true });
+    if (!repairedContext) throw new Error("当前设备无法读取背景修复结果。");
+    const repairedPixels = repairedContext.getImageData(0, 0, inputWidth, inputHeight).data;
+    const weightX = new Float32Array(inputWidth);
+    const weightY = new Float32Array(inputHeight);
+    for (let dx = 0; dx < inputWidth; dx += 1) {
+      weightX[dx] = repairTileAxisWeight(tile.col, xAxis.starts, inputWidth, tile.x + dx);
+    }
+    for (let dy = 0; dy < inputHeight; dy += 1) {
+      weightY[dy] = repairTileAxisWeight(tile.row, yAxis.starts, inputHeight, tile.y + dy);
+    }
+    for (let dy = 0; dy < inputHeight; dy += 1) {
+      const weightYValue = weightY[dy];
+      if (weightYValue <= 0) continue;
+      const sourceRow = (tile.y + dy) * width + tile.x;
+      const modelRow = dy * inputWidth;
+      for (let dx = 0; dx < inputWidth; dx += 1) {
+        const weight = weightX[dx] * weightYValue;
+        if (weight <= 0) continue;
+        const sourceIndex = sourceRow + dx;
+        const sourceOffset = sourceIndex * 4;
+        const modelOffset = (modelRow + dx) * 4;
+        const targetOffset = sourceIndex * 3;
+        diff[targetOffset] +=
+          (repairedPixels[modelOffset] - repairContext.sourceRgba[sourceOffset]) * weight;
+        diff[targetOffset + 1] +=
+          (repairedPixels[modelOffset + 1] - repairContext.sourceRgba[sourceOffset + 1]) * weight;
+        diff[targetOffset + 2] +=
+          (repairedPixels[modelOffset + 2] - repairContext.sourceRgba[sourceOffset + 2]) * weight;
+      }
+    }
+  }
+
+  const output = new Uint8ClampedArray(width * height * 4);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const sourceOffset = pixel * 4;
+    const targetOffset = pixel * 3;
+    output[sourceOffset] = clampByte(Math.round(
+      repairContext.sourceRgba[sourceOffset] + diff[targetOffset]
+    ));
+    output[sourceOffset + 1] = clampByte(Math.round(
+      repairContext.sourceRgba[sourceOffset + 1] + diff[targetOffset + 1]
+    ));
+    output[sourceOffset + 2] = clampByte(Math.round(
+      repairContext.sourceRgba[sourceOffset + 2] + diff[targetOffset + 2]
+    ));
+    output[sourceOffset + 3] = 255;
+  }
+  return output;
 }
 
 function repairedModelCanvas(bytes: Uint8Array) {
@@ -234,7 +384,7 @@ export async function repairBackgroundLocally(
     CUTOUT_REPAIR_MODEL.inputWidth,
     CUTOUT_REPAIR_MODEL.inputHeight
   );
-  const { bounds, inputRect } = layout;
+  const { bounds } = layout;
   const repairContext = prepareRepairContext(
     image,
     imageWidth,
@@ -244,7 +394,17 @@ export async function repairBackgroundLocally(
     bounds
   );
   let repairedPixels: Uint8ClampedArray;
-  if (forceDiffusion || repairContext.useDiffusion) {
+  const needsModel = !(forceDiffusion || repairContext.useDiffusion);
+  const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
+  const needsTiling = bounds.width > inputWidth || bounds.height > inputHeight;
+  // 只在下采样超过约 10% 时分块；轻微超尺寸仍走单次整框，避免无谓的多次调用。
+  const downscaleSignificant = Math.min(inputWidth / bounds.width, inputHeight / bounds.height) < 0.9;
+  if (needsModel && needsTiling && downscaleSignificant) {
+    repairedPixels = (await repairBackgroundTiled(repairContext, bounds, signal))
+      ?? await repairBackgroundSingle(repairContext, layout, signal);
+  } else if (needsModel) {
+    repairedPixels = await repairBackgroundSingle(repairContext, layout, signal);
+  } else {
     repairedPixels = diffuseRepairRgba(
       repairContext.sourceRgba,
       repairContext.parentAlpha,
@@ -253,49 +413,6 @@ export async function repairBackgroundLocally(
       bounds.height,
       repairContext.fillColor
     );
-  } else {
-    const input = prepareLocalInput(repairContext, layout);
-    const bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    const handleAbort = () => { void invoke("cutout_cancel").catch(() => undefined); };
-    signal?.addEventListener("abort", handleAbort, { once: true });
-    let response: unknown;
-    try {
-      response = await invoke<ArrayBuffer>("cutout_repair", bytes, {
-        headers: { "x-cutout-repair-id": CUTOUT_REPAIR_MODEL.id }
-      });
-    } catch (exception) {
-      if (signal?.aborted) throw abortError();
-      throw normalizeNativeError(exception);
-    } finally {
-      signal?.removeEventListener("abort", handleAbort);
-    }
-    if (signal?.aborted) throw abortError();
-
-    const repaired = repairedModelCanvas(responseBytes(response));
-    const repairedCrop = document.createElement("canvas");
-    repairedCrop.width = bounds.width;
-    repairedCrop.height = bounds.height;
-    const repairedContext = repairedCrop.getContext("2d", { willReadFrequently: true });
-    if (!repairedContext) throw new Error("当前设备无法合成背景修复结果。");
-    repairedContext.imageSmoothingEnabled = true;
-    repairedContext.imageSmoothingQuality = "high";
-    repairedContext.drawImage(
-      repaired,
-      inputRect.x,
-      inputRect.y,
-      inputRect.width,
-      inputRect.height,
-      0,
-      0,
-      bounds.width,
-      bounds.height
-    );
-    repairedPixels = repairedContext.getImageData(
-      0,
-      0,
-      bounds.width,
-      bounds.height
-    ).data;
   }
   if (signal?.aborted) throw abortError();
 

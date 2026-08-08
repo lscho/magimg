@@ -5,6 +5,7 @@ import AutoLayerActionBar from "@/components/auto-layer/AutoLayerActionBar.vue";
 import AutoLayerResourceDownloadModal from "@/components/auto-layer/AutoLayerResourceDownloadModal.vue";
 import AutoLayerResultWorkspace from "@/components/auto-layer/AutoLayerResultWorkspace.vue";
 import AutoLayerSelectionHistoryModal from "@/components/auto-layer/AutoLayerSelectionHistoryModal.vue";
+import AutoLayerSplitConfirmModal from "@/components/auto-layer/AutoLayerSplitConfirmModal.vue";
 import AutoLayerSplitHandle from "@/components/auto-layer/AutoLayerSplitHandle.vue";
 import CutoutWorkspace from "@/components/cutout/CutoutWorkspace.vue";
 import LoginModal from "@/components/LoginModal.vue";
@@ -29,7 +30,7 @@ const canRun = computed(() => Boolean(
 ));
 
 function handleKeydown(event: KeyboardEvent) {
-  if (showResourceDownload.value || workflow.selectionHistoryOpen.value) return;
+  if (showResourceDownload.value || workflow.selectionHistoryOpen.value || workflow.splitConfirmOpen.value) return;
   if (event.key === "Escape" && drawerVisible.value) workflow.drawerOpen.value = false;
 }
 
@@ -142,6 +143,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       @close="workflow.selectionHistoryOpen.value = false"
       @restore="workflow.restoreSelections"
       @remove="workflow.removeSelectionRecord"
+    />
+    <AutoLayerSplitConfirmModal
+      v-if="workflow.splitConfirmOpen.value"
+      :cost="workflow.cost.value"
+      @cancel="workflow.cancelSplitCloud"
+      @confirm="workflow.confirmSplitCloud"
     />
     <LoginModal
       v-if="workflow.showLogin.value"

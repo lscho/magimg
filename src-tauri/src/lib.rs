@@ -34,6 +34,7 @@ pub fn run() {
             cutout::cutout_decode,
             cutout::cutout_refine,
             cutout::cutout_repair,
+            cutout::cutout_birefnet_segment,
             cutout::cutout_cancel,
             cutout::cutout_release,
             auto_layer::auto_layer_ocr,

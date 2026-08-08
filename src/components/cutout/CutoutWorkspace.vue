@@ -17,12 +17,14 @@ const props = withDefaults(defineProps<{
   clearing?: boolean;
   locked?: boolean;
   mode?: "cutout" | "auto-layer";
+  plainSelections?: boolean;
 }>(), {
   initialSelections: () => [],
   importing: false,
   clearing: false,
   locked: false,
-  mode: "cutout"
+  mode: "cutout",
+  plainSelections: false
 });
 
 const emit = defineEmits<{
@@ -185,8 +187,18 @@ function updatePointerState(event: PointerEvent) {
 }
 
 function handleCanvasPointerDown(event: PointerEvent) {
-  if (props.locked || event.button !== 0) return;
+  if (props.locked) return;
+  const rightButtonPan = event.button === 2 &&
+    ["box", "text-box"].includes(canvas.activeTool.value);
+  if (event.button !== 0 && !rightButtonPan) return;
   viewport.value?.focus({ preventScroll: true });
+  if (rightButtonPan) {
+    event.preventDefault();
+    if (canvas.startViewPan(event.clientX, event.clientY)) {
+      viewport.value?.setPointerCapture(event.pointerId);
+    }
+    return;
+  }
   const target = event.target as HTMLElement | null;
   const selectionAction = target?.closest("[data-selection-action]");
   const moveHandle = target?.closest<HTMLElement>("[data-selection-move-id]");
@@ -359,6 +371,12 @@ function handleDrop(event: DragEvent) {
 function handleWheel(event: WheelEvent) {
   if (!props.locked) canvas.zoomFromWheel(event);
 }
+
+function handleContextMenu(event: MouseEvent) {
+  if (!props.locked && ["box", "text-box"].includes(canvas.activeTool.value)) {
+    event.preventDefault();
+  }
+}
 </script>
 
 <template>
@@ -367,6 +385,7 @@ function handleWheel(event: WheelEvent) {
     role="region"
     aria-label="AI 抠图画布"
     :aria-busy="canvas.busy.value || locked"
+    :class="{ 'is-plain-selections': plainSelections }"
   >
     <div class="cutout-workspace">
       <CutoutToolbar
@@ -424,6 +443,7 @@ function handleWheel(event: WheelEvent) {
         @pointercancel="handleCanvasPointerCancel"
         @lostpointercapture="handleLostPointerCapture"
         @wheel.prevent="handleWheel"
+        @contextmenu="handleContextMenu"
         @keydown="handleKeydown"
         @dragenter.prevent="handleDragEnter"
         @dragover.prevent
@@ -937,6 +957,37 @@ function handleWheel(event: WheelEvent) {
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
   font-size: 11px;
   font-weight: 600;
+}
+
+// 调试模式：去掉选中/悬停的强调边框，仅保留中性细轮廓，便于专注观察图像与中间结果。
+.cutout-shell.is-plain-selections {
+  .cutout-selection-box {
+    border-color: rgba(255, 255, 255, 0.42);
+    background: transparent;
+    box-shadow: none;
+    transition: none;
+
+    &.is-active {
+      border-color: rgba(255, 255, 255, 0.72);
+      box-shadow: none;
+    }
+
+    &.is-hovered,
+    &.is-erase-switch-target,
+    &.is-background.is-erase-switch-target {
+      background: transparent;
+      box-shadow: none;
+    }
+
+    &.is-background {
+      border-color: rgba(228, 160, 107, 0.6);
+    }
+  }
+
+  .cutout-selection-edge,
+  .cutout-selection-remove {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

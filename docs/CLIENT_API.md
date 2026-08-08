@@ -786,7 +786,7 @@ curl -i "https://api.example.com/api/client/v1/config"
 
 ### 4.11 `POST /matting`
 
-AI 抠图、自动分层和背景修复预扣积分。`mode=local` 扣 `mattingCost`；`mode=cloud` 扣 `backgroundRepairCost`；`mode=autoLayer` 扣 `autoLayerCost`（默认 20）。自动分层的本地元素、OCR、父子关系和修复蒙版完成后，同一个 `mattingId` 只绑定一张修复图集任务；图集同时包含整页背景和需要清除直接子层的父素材。
+AI 抠图、自动分层和背景修复预扣积分。`mode=local` 扣 `mattingCost`；`mode=cloud` 扣 `backgroundRepairCost`；`mode=autoLayer` 扣 `autoLayerCost`（默认 20）。自动分层的本地元素、OCR、父子关系和修复蒙版完成后，同一个 `mattingId` 只绑定一张修复图集任务；图集同时包含整页背景和需要清除直接子层的父素材。单张图集超容量时客户端拆分为整页背景与父素材两张图集，为每张分别预扣（各一个 `mattingId`），服务端按任务独立校验绑定与退款。
 
 **两阶段计费流程**：
 
@@ -951,7 +951,7 @@ AI 抠图失败退款。客户端本地抠图失败后，用预扣返回的 `mat
 
 ### 4.16 `POST /auto-layer-tasks`
 
-创建自动分层的单图集云修复任务。客户端把一张连续整页原图和所有需要清除直接子层的父素材上下文裁片打包为一张由暗色留白分隔的图集，并提交同尺寸联合蒙版。服务端对整个图集最多调用一次图片编辑；客户端在提交前同时按 `backgroundRepairMaxPixels` 和 `backgroundRepairMaxBytes` 收缩图集，无损 PNG 超限时可改用高质量 WebP，并为 multipart 边界保留字节余量。请求为 `multipart/form-data`，并携带 8–100 字符的 `Idempotency-Key`。同一键重复提交返回原任务，不会再次绑定预扣或调用上游。
+创建自动分层的单图集云修复任务。客户端把一张连续整页原图和所有需要清除直接子层的父素材上下文裁片打包为一张由暗色留白分隔的图集，并提交同尺寸联合蒙版。服务端对整个图集最多调用一次图片编辑；客户端在提交前同时按 `backgroundRepairMaxPixels` 和 `backgroundRepairMaxBytes` 收缩图集，无损 PNG 超限时可改用高质量 WebP，并为 multipart 边界保留字节余量。单张图集统一缩放低于 0.9 时，客户端拆分为「整页背景」与「父素材」两张图集，分别创建两个任务、各绑定一个 `mattingId`、各调用一次图片编辑；父素材图集不包含整页背景瓦片，且不能复用整页 `inputAssetId`，每次随图集上传原图。请求为 `multipart/form-data`，并携带 8–100 字符的 `Idempotency-Key`。同一键重复提交返回原任务，不会再次绑定预扣或调用上游。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |

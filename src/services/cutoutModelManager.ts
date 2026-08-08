@@ -56,6 +56,18 @@ const MODEL_FILES = [
 ] as const satisfies readonly CutoutModelFileDescriptor[];
 
 /**
+ * BiRefNet Swin-T 通用抠图模型（rembg 官方导出，MIT）。
+ * 输入 1x3x1024x1024 NCHW 归一化 float，输出 1x1x1024x1024 logits。
+ * 下载源为 rembg 官方 GitHub Release（固定 URL + SHA-256 校验）。
+ */
+const BIRENET_MODEL_FILE = {
+  fileName: "birefnet-swin-tiny-general.onnx",
+  url: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+  sizeBytes: 224_005_088,
+  sha256: "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+} as const satisfies CutoutModelFileDescriptor;
+
+/**
  * 当前资源包固定使用 SAM 2.1 Hiera Base+：encoder 用动态量化版控制体积，
  * decoder 用全精度版保证掩码边缘质量（仅多约 12MB）。SAM 3.1 官方权重仍
  * 不兼容本客户端的原生 ONNX 契约，因此不作为可运行档位。
@@ -73,7 +85,28 @@ export const CUTOUT_MODEL: CutoutModelDescriptor = {
   description: "提升复杂主体、遮挡区域与内部结构的分割完整性。"
 };
 
-export const CUTOUT_MODELS: readonly CutoutModelDescriptor[] = [CUTOUT_MODEL];
+/**
+ * BiRefNet Swin-T 通用分割模型（/cutout 链路的分割档位，替代 SAM encoder+decoder）。
+ * 输入 1x3x1024x1024 NCHW 归一化 float，输出 1x1x1024x1024 logits。
+ * 保留 /auto-layer 使用的 SAM 模型（CUTOUT_MODEL）不变。
+ */
+export const BIRENET_MODEL: CutoutModelDescriptor = {
+  id: "birefnet-swin-tiny-general",
+  name: "BiRefNet Swin-T",
+  files: [BIRENET_MODEL_FILE],
+  sizeBytes: BIRENET_MODEL_FILE.sizeBytes,
+  inputWidth: 1024,
+  inputHeight: 1024,
+  maskWidth: 1024,
+  maskHeight: 1024,
+  recommended: true,
+  description: "高分辨率前景/背景分割，保留边缘细节。"
+};
+
+export const CUTOUT_MODELS: readonly CutoutModelDescriptor[] = [
+  CUTOUT_MODEL,
+  BIRENET_MODEL
+];
 
 export type ModelInstallStage = "downloading" | "verifying" | "installing";
 
