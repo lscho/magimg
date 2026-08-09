@@ -3,8 +3,12 @@ import { computed, onBeforeUnmount, onMounted, shallowRef } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import CompressionSettingsDialog from "./CompressionSettingsDialog.vue";
 import CompressionSettingsPanel from "./CompressionSettingsPanel.vue";
+import CompressionSaveToast from "./CompressionSaveToast.vue";
 import CompressionSourceList from "./CompressionSourceList.vue";
-import { useImageCompression } from "@/composables/useImageCompression";
+import {
+  compressionSaveToastMessage,
+  useImageCompression
+} from "@/composables/useImageCompression";
 import {
   chooseCompressionFiles,
   chooseCompressionFolder,
@@ -15,7 +19,9 @@ import {
 const compression = useImageCompression();
 const selecting = shallowRef(false);
 const showSettings = shallowRef(false);
+const saveToastMessage = shallowRef("");
 let unlistenDrop: UnlistenFn | undefined;
+let saveToastTimer: number | undefined;
 
 const failedIds = computed(() =>
   compression.items.value.filter((item) => item.status === "failed").map((item) => item.id)
@@ -23,14 +29,30 @@ const failedIds = computed(() =>
 
 onMounted(async () => {
   unlistenDrop = await onCompressionFileDrop((paths) => {
-    if (!compression.isRunning.value && paths.length) void compression.prepare("files", paths);
+    if (!compression.isBusy.value && paths.length) void compression.prepare("files", paths);
   });
 });
 
-onBeforeUnmount(() => unlistenDrop?.());
+onBeforeUnmount(() => {
+  unlistenDrop?.();
+  if (saveToastTimer) window.clearTimeout(saveToastTimer);
+});
+
+function dismissSaveToast() {
+  saveToastMessage.value = "";
+  if (saveToastTimer) window.clearTimeout(saveToastTimer);
+  saveToastTimer = undefined;
+}
+
+function showSaveToast(message: string) {
+  dismissSaveToast();
+  if (!message) return;
+  saveToastMessage.value = message;
+  saveToastTimer = window.setTimeout(dismissSaveToast, 2600);
+}
 
 async function addImages() {
-  if (selecting.value || compression.isRunning.value) return;
+  if (selecting.value || compression.isBusy.value) return;
   selecting.value = true;
   try {
     const paths = await chooseCompressionFiles();
@@ -41,7 +63,7 @@ async function addImages() {
 }
 
 async function selectFolder() {
-  if (selecting.value || compression.isRunning.value) return;
+  if (selecting.value || compression.isBusy.value) return;
   selecting.value = true;
   try {
     const path = await chooseCompressionFolder();
@@ -51,9 +73,11 @@ async function selectFolder() {
   }
 }
 
-async function selectOutput() {
+async function saveResults() {
   const path = await chooseCompressionOutputFolder();
-  if (path) compression.outputDirectory.value = path;
+  if (!path) return;
+  const result = await compression.save(path);
+  if (result) showSaveToast(compressionSaveToastMessage(result));
 }
 
 async function retryFailed() {
@@ -70,7 +94,7 @@ async function retryFailed() {
       :items="compression.items.value"
       :session-id="compression.session.value?.sessionId"
       :preparing="compression.phase.value === 'preparing' || selecting"
-      :locked="compression.isRunning.value"
+      :locked="compression.isBusy.value"
       @add="addImages"
       @select-folder="selectFolder"
       @remove="compression.removeItem"
@@ -80,17 +104,19 @@ async function retryFailed() {
     <CompressionSettingsPanel
       :items="compression.items.value"
       :rejected-count="compression.session.value?.rejectedCount"
-      :output-directory="compression.outputDirectory.value"
       :can-start="compression.canStart.value"
+      :can-save="compression.canSave.value"
       :running="compression.isRunning.value"
       :cancelling="compression.phase.value === 'cancelling'"
+      :saving="compression.phase.value === 'saving'"
       :current-item="compression.currentItem.value"
       :progress-percent="compression.progressPercent.value"
       :completed-count="compression.completedCount.value"
       :progress-total="compression.progressTotal.value"
       :summary="compression.summary.value"
+      :has-saved="compression.hasSaved.value"
       @open-settings="showSettings = true"
-      @select-output="selectOutput"
+      @save="saveResults"
       @start="compression.start()"
       @cancel="compression.cancel"
     />
@@ -98,6 +124,11 @@ async function retryFailed() {
       v-if="showSettings"
       v-model="compression.settings.value"
       @close="showSettings = false"
+    />
+    <CompressionSaveToast
+      v-if="saveToastMessage"
+      :message="saveToastMessage"
+      @dismiss="dismissSaveToast"
     />
     <p v-if="compression.errorMessage.value" class="workspace-error" role="alert">
       {{ compression.errorMessage.value }}

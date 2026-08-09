@@ -25,6 +25,10 @@ import {
 } from "@/services/cutoutMaskCandidate";
 import { constrainAlphaToSelection } from "@/services/cutoutSelectionShape";
 import {
+  applyOpaquePanelPrior,
+  createCompoundPanelPrior
+} from "@/services/cutoutCompoundPanel";
+import {
   buildHighRecallChildMask,
   buildRemovalMask,
   prepareRepairMask
@@ -344,9 +348,10 @@ export function useCutoutDebugPipeline() {
         let coarseAlpha: Uint8Array;
         let candidateSupport: Uint8Array | null = null;
         let candidateConsensus: Uint8Array | null = null;
+        let panelPrior: Uint8Array | null = null;
         try {
           if (selSeg === "birefnet") {
-            coarseAlpha = await segmentBirefnetBox(
+            const segmentedAlpha = await segmentBirefnetBox(
               BIRENET_MODEL,
               image,
               imageWidth,
@@ -354,8 +359,12 @@ export function useCutoutDebugPipeline() {
               selection,
               controller.signal
             );
+            panelPrior = createCompoundPanelPrior(image, imageWidth, imageHeight, selection);
+            coarseAlpha = applyOpaquePanelPrior(segmentedAlpha, panelPrior);
             finishStage(segmentStage, {
-              summary: "选区外扩上下文后单次前向，输出全分辨率软 Alpha",
+              summary: panelPrior
+                ? "BiRefNet 软 Alpha 已合并闭合面板内部先验"
+                : "选区外扩上下文后单次前向，输出全分辨率软 Alpha",
               metrics: [
                 { label: "选区", value: boxMetric(selection) },
                 ...maskMetrics(coarseAlpha)
@@ -443,6 +452,7 @@ export function useCutoutDebugPipeline() {
               snapshot = next;
             }
           );
+          refinedAlpha = applyOpaquePanelPrior(refinedAlpha, panelPrior);
           const captured = snapshot as CutoutRefineDebugSnapshot | null;
           if (captured) {
             finishStage(trimapStage, {

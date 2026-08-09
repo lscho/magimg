@@ -26,6 +26,11 @@ const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PIXELS: u64 = 64_000_000;
 const MAX_DECODED_BYTES: u64 = MAX_PIXELS * 4;
 const THUMBNAIL_MAX_EDGE: u32 = 320;
+const LOSSY_QUALITY: u8 = 88;
+const PNG_MAX_COLORS: u32 = 256;
+const PNG_QUANTIZATION_SPEED: i32 = 6;
+const PNG_DITHERING: f32 = 0.5;
+const CANCELLED_ERROR: &str = "压缩已取消。";
 
 #[derive(Default)]
 pub struct CompressionState {
@@ -37,9 +42,23 @@ struct CompressionSession {
     source_root: Option<PathBuf>,
     items: Vec<NativeSourceItem>,
     source_paths: HashSet<PathBuf>,
+    temp_root: PathBuf,
+    results: Mutex<HashMap<String, CachedOutput>>,
     work_lock: Mutex<()>,
     cancelled: AtomicBool,
     running: AtomicBool,
+}
+
+impl Drop for CompressionSession {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.temp_root);
+    }
+}
+
+#[derive(Clone)]
+struct CachedOutput {
+    path: PathBuf,
+    size: u64,
 }
 
 #[derive(Clone)]
@@ -76,29 +95,9 @@ pub enum CompressionConflictPolicy {
     Rename,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PngCompressionLevel {
-    Fast,
-    Balanced,
-    Maximum,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum WebpCompressionMode {
-    Lossy,
-    Lossless,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompressionSettings {
-    png_level: PngCompressionLevel,
-    jpeg_quality: u8,
-    jpeg_progressive: bool,
-    webp_mode: WebpCompressionMode,
-    webp_quality: u8,
     conflict_policy: CompressionConflictPolicy,
     skip_no_benefit: bool,
 }
@@ -138,6 +137,24 @@ pub struct CompressionSummary {
     output_bytes: u64,
     saved_bytes: u64,
     was_cancelled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionSaveItem {
+    item_id: String,
+    status: String,
+    output_relative_path: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionSaveSummary {
+    saved: usize,
+    skipped: usize,
+    failed: usize,
+    items: Vec<CompressionSaveItem>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,6 +283,7 @@ pub async fn compression_prepare(
         .map(|item| item.source_path.clone())
         .collect::<HashSet<_>>();
     let session_id = new_session_id(&state);
+    let temp_root = create_session_temp_root(&session_id)?;
     let response_items = items
         .iter()
         .map(|item| CompressionSourceItem {
@@ -282,6 +300,8 @@ pub async fn compression_prepare(
         source_root,
         items,
         source_paths,
+        temp_root,
+        results: Mutex::new(HashMap::new()),
         work_lock: Mutex::new(()),
         cancelled: AtomicBool::new(false),
         running: AtomicBool::new(false),
@@ -307,11 +327,9 @@ pub async fn compression_run(
     state: State<'_, CompressionState>,
     session_id: String,
     item_ids: Vec<String>,
-    output_root: String,
     settings: CompressionSettings,
     on_progress: Channel<CompressionProgressEvent>,
 ) -> Result<CompressionSummary, String> {
-    validate_settings(&settings)?;
     let session = state
         .sessions
         .lock()
@@ -325,14 +343,6 @@ pub async fn compression_run(
     }
     session.cancelled.store(false, Ordering::SeqCst);
 
-    let output_root = match validate_output_root(&session, Path::new(&output_root)) {
-        Ok(path) => path,
-        Err(error) => {
-            session.running.store(false, Ordering::SeqCst);
-            return Err(error);
-        }
-    };
-
     let task_session = session.clone();
     let selected_ids = item_ids.into_iter().collect::<HashSet<_>>();
     if selected_ids.is_empty() {
@@ -344,7 +354,6 @@ pub async fn compression_run(
             &session_id,
             &task_session,
             &selected_ids,
-            &output_root,
             &settings,
             &on_progress,
         )
@@ -352,6 +361,53 @@ pub async fn compression_run(
     .await;
     session.running.store(false, Ordering::SeqCst);
     result.map_err(|error| format!("压缩任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub async fn compression_save(
+    state: State<'_, CompressionState>,
+    session_id: String,
+    item_ids: Vec<String>,
+    output_root: String,
+    settings: CompressionSettings,
+) -> Result<CompressionSaveSummary, String> {
+    let session = state
+        .sessions
+        .lock()
+        .map_err(|_| "压缩会话状态不可用。".to_string())?
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "压缩会话已失效，请重新添加图片。".to_string())?;
+    if session.running.swap(true, Ordering::SeqCst) {
+        return Err("当前压缩任务仍在运行。".into());
+    }
+
+    let output_root = match validate_output_root(&session, Path::new(&output_root)) {
+        Ok(path) => path,
+        Err(error) => {
+            session.running.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+    };
+    let selected_ids = item_ids.into_iter().collect::<HashSet<_>>();
+    if selected_ids.is_empty() {
+        session.running.store(false, Ordering::SeqCst);
+        return Err("没有可保存的压缩结果。".into());
+    }
+
+    let task_session = session.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        save_session(
+            &session_id,
+            &task_session,
+            &selected_ids,
+            &output_root,
+            settings.conflict_policy,
+        )
+    })
+    .await;
+    session.running.store(false, Ordering::SeqCst);
+    result.map_err(|error| format!("保存任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -422,7 +478,6 @@ fn run_session(
     session_id: &str,
     session: &CompressionSession,
     selected_ids: &HashSet<String>,
-    output_root: &Path,
     settings: &CompressionSettings,
     progress: &Channel<CompressionProgressEvent>,
 ) -> Result<CompressionSummary, String> {
@@ -456,9 +511,10 @@ fn run_session(
         });
 
         let outcome = match session.work_lock.lock() {
-            Ok(_guard) => process_item(session_id, session, item, output_root, settings),
+            Ok(_guard) => process_item(session_id, session, item, settings),
             Err(_) => Err("图片处理状态不可用。".into()),
         };
+        let mut stop_after_item = false;
         let (status, output_relative_path, output_size, saved_percent, message) = match outcome {
             Ok(ItemOutcome::Succeeded {
                 size,
@@ -475,19 +531,21 @@ fn run_session(
                     None,
                 )
             }
-            Ok(ItemOutcome::NoBenefit(size)) => {
+            Ok(ItemOutcome::NoBenefit { size, message }) => {
                 summary.no_benefit += 1;
                 (
                     "noBenefit",
                     None,
                     Some(size),
                     saved_percent(item.size, size),
-                    Some("候选文件不小于原文件".into()),
+                    Some(message),
                 )
             }
-            Ok(ItemOutcome::Skipped(message)) => {
-                summary.skipped += 1;
-                ("skipped", None, None, None, Some(message))
+            Ok(ItemOutcome::Cancelled) => {
+                summary.cancelled = total - index;
+                summary.was_cancelled = true;
+                stop_after_item = true;
+                ("cancelled", None, None, None, Some(CANCELLED_ERROR.into()))
             }
             Err(message) => {
                 summary.failed += 1;
@@ -503,6 +561,9 @@ fn run_session(
             saved_percent,
             message,
         });
+        if stop_after_item {
+            break;
+        }
     }
 
     summary.saved_bytes = summary.original_bytes.saturating_sub(summary.output_bytes);
@@ -512,91 +573,255 @@ fn run_session(
     Ok(summary)
 }
 
+fn save_session(
+    session_id: &str,
+    session: &CompressionSession,
+    selected_ids: &HashSet<String>,
+    output_root: &Path,
+    conflict_policy: CompressionConflictPolicy,
+) -> Result<CompressionSaveSummary, String> {
+    let selected_items = session
+        .items
+        .iter()
+        .filter(|item| selected_ids.contains(&item.id))
+        .collect::<Vec<_>>();
+    if selected_items.len() != selected_ids.len() {
+        return Err("部分图片已不在当前压缩会话中。".into());
+    }
+    let cached = session
+        .results
+        .lock()
+        .map_err(|_| "压缩结果状态不可用。".to_string())?
+        .clone();
+    let mut summary = CompressionSaveSummary::default();
+
+    for item in selected_items {
+        let outcome = (|| {
+            let result = cached
+                .get(&item.id)
+                .ok_or_else(|| "压缩结果不存在，请重新压缩。".to_string())?;
+            let cached_size = fs::metadata(&result.path)
+                .map_err(|error| format!("无法读取压缩结果：{error}"))?
+                .len();
+            if cached_size != result.size {
+                return Err("压缩结果已损坏，请重新压缩。".into());
+            }
+            validate_relative_path(&item.relative_path)?;
+            validate_output_ancestors(output_root, &item.relative_path)?;
+            let requested_path = output_root.join(&item.relative_path);
+            let output_path = resolve_safe_output_path(session, &requested_path, conflict_policy)?;
+            let Some(output_path) = output_path else {
+                return Ok(None);
+            };
+            atomic_copy(
+                &result.path,
+                &output_path,
+                session_id,
+                &item.id,
+                conflict_policy == CompressionConflictPolicy::Overwrite,
+            )?;
+            let relative_path = output_path
+                .strip_prefix(output_root)
+                .map(relative_path_string)
+                .map_err(|_| "输出路径越过了所选输出文件夹。".to_string())?;
+            Ok(Some(relative_path))
+        })();
+
+        match outcome {
+            Ok(Some(output_relative_path)) => {
+                summary.saved += 1;
+                summary.items.push(CompressionSaveItem {
+                    item_id: item.id.clone(),
+                    status: "saved".into(),
+                    output_relative_path: Some(output_relative_path),
+                    message: None,
+                });
+            }
+            Ok(None) => {
+                summary.skipped += 1;
+                summary.items.push(CompressionSaveItem {
+                    item_id: item.id.clone(),
+                    status: "skipped".into(),
+                    output_relative_path: None,
+                    message: Some("同名文件已存在".into()),
+                });
+            }
+            Err(message) => {
+                summary.failed += 1;
+                summary.items.push(CompressionSaveItem {
+                    item_id: item.id.clone(),
+                    status: "failed".into(),
+                    output_relative_path: None,
+                    message: Some(message),
+                });
+            }
+        }
+    }
+    Ok(summary)
+}
+
 enum ItemOutcome {
     Succeeded {
         size: u64,
         output_relative_path: String,
     },
-    NoBenefit(u64),
-    Skipped(String),
+    NoBenefit {
+        size: u64,
+        message: String,
+    },
+    Cancelled,
 }
 
 fn process_item(
     session_id: &str,
     session: &CompressionSession,
     item: &NativeSourceItem,
-    output_root: &Path,
     settings: &CompressionSettings,
 ) -> Result<ItemOutcome, String> {
     validate_relative_path(&item.relative_path)?;
-    validate_output_ancestors(output_root, &item.relative_path)?;
-    let requested_path = output_root.join(&item.relative_path);
-    let output_path = resolve_safe_output_path(session, &requested_path, settings.conflict_policy)?;
-    let Some(output_path) = output_path else {
-        return Ok(ItemOutcome::Skipped("同名文件已存在".into()));
-    };
-
     let input = fs::read(&item.source_path).map_err(|error| format!("无法读取原文件：{error}"))?;
     if input.len() as u64 > MAX_FILE_BYTES {
         return Err("文件超过 256 MiB 限制。".into());
     }
-    let output = match item.format {
-        CompressionFormat::Png => encode_png(&input, settings.png_level)?,
-        CompressionFormat::Jpeg => encode_jpeg(&input, settings)?,
-        CompressionFormat::Webp => encode_webp(&input, settings)?,
+    let output = match encode_lossy(&input, item.format, &session.cancelled) {
+        Ok(output) => output,
+        Err(error) if error == CANCELLED_ERROR => return Ok(ItemOutcome::Cancelled),
+        Err(error) => return Err(error),
     };
 
     if settings.skip_no_benefit && output.len() as u64 >= item.size {
-        return Ok(ItemOutcome::NoBenefit(output.len() as u64));
+        return Ok(ItemOutcome::NoBenefit {
+            size: output.len() as u64,
+            message: "压缩后文件不小于原文件".into(),
+        });
+    }
+    if session.cancelled.load(Ordering::SeqCst) {
+        return Ok(ItemOutcome::Cancelled);
     }
 
-    atomic_write(
-        &output_path,
-        &output,
-        session_id,
-        &item.id,
-        settings.conflict_policy == CompressionConflictPolicy::Overwrite,
-    )?;
-    let output_relative_path = output_path
-        .strip_prefix(output_root)
-        .map(relative_path_string)
-        .map_err(|_| "输出路径越过了所选输出文件夹。".to_string())?;
+    let output_path = session.temp_root.join(format!("{}.compressed", item.id));
+    atomic_write(&output_path, &output, session_id, &item.id, true)?;
+    session
+        .results
+        .lock()
+        .map_err(|_| "压缩结果状态不可用。".to_string())?
+        .insert(
+            item.id.clone(),
+            CachedOutput {
+                path: output_path,
+                size: output.len() as u64,
+            },
+        );
     Ok(ItemOutcome::Succeeded {
         size: output.len() as u64,
-        output_relative_path,
+        output_relative_path: relative_path_string(&item.relative_path),
     })
 }
 
-fn encode_png(input: &[u8], level: PngCompressionLevel) -> Result<Vec<u8>, String> {
+fn encode_lossy(
+    input: &[u8],
+    format: CompressionFormat,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
+    ensure_not_cancelled(cancelled)?;
+    let image = decode_oriented(input, format)?;
+    match format {
+        CompressionFormat::Png => encode_png_lossy(input, &image, cancelled),
+        CompressionFormat::Jpeg => encode_jpeg_lossy(input, &image, cancelled),
+        CompressionFormat::Webp => encode_webp_lossy(input, &image, cancelled),
+    }
+}
+
+fn ensure_not_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::SeqCst) {
+        Err(CANCELLED_ERROR.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn encode_png_lossy(
+    input: &[u8],
+    image: &DynamicImage,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
     if contains_png_chunk(input, b"acTL") {
         return Err("暂不支持动画 PNG。".into());
     }
-    let mut prepared = input.to_vec();
-    let mut decoder = image::codecs::png::PngDecoder::new(Cursor::new(input))
-        .map_err(|error| format!("PNG 解码失败：{error}"))?;
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-    if orientation != Orientation::NoTransforms {
-        let image = decode_oriented(input, CompressionFormat::Png)?;
-        let mut encoded = Cursor::new(Vec::new());
-        image
-            .write_to(&mut encoded, ImageFormat::Png)
-            .map_err(|error| format!("PNG 方向转换失败：{error}"))?;
-        prepared = restore_png_display_chunks(input, encoded.into_inner())?;
+    let rgba = image.to_rgba8();
+    let colors = rgba
+        .pixels()
+        .map(|pixel| {
+            let [r, g, b, a] = pixel.0;
+            if a == 0 {
+                imagequant::RGBA::new(0, 0, 0, 0)
+            } else {
+                imagequant::RGBA::new(r, g, b, a)
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut attributes = imagequant::new();
+    attributes
+        .set_speed(PNG_QUANTIZATION_SPEED)
+        .map_err(|error| format!("PNG 量化参数无效：{error}"))?;
+    attributes
+        .set_quality(0, 100)
+        .map_err(|error| format!("PNG 量化参数无效：{error}"))?;
+    attributes
+        .set_max_colors(PNG_MAX_COLORS)
+        .map_err(|error| format!("PNG 量化参数无效：{error}"))?;
+    let mut quantization_image = attributes
+        .new_image_borrowed(&colors, rgba.width() as usize, rgba.height() as usize, 0.0)
+        .map_err(|error| format!("PNG 量化输入无效：{error}"))?;
+    let mut result = attributes
+        .quantize(&mut quantization_image)
+        .map_err(|error| format!("PNG 量化失败：{error}"))?;
+    result
+        .set_dithering_level(PNG_DITHERING)
+        .map_err(|error| format!("PNG 抖动设置失败：{error}"))?;
+    let (palette, indices) = result
+        .remapped(&mut quantization_image)
+        .map_err(|error| format!("PNG 调色板映射失败：{error}"))?;
+    ensure_not_cancelled(cancelled)?;
+    let indexed = encode_indexed_png(rgba.width(), rgba.height(), &palette, &indices)?;
+    let indexed = restore_png_display_chunks(input, indexed)?;
+    Ok(indexed)
+}
+
+fn encode_indexed_png(
+    width: u32,
+    height: u32,
+    palette: &[imagequant::RGBA],
+    indices: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut palette_rgb = Vec::with_capacity(palette.len() * 3);
+    let mut alpha = Vec::with_capacity(palette.len());
+    for color in palette {
+        palette_rgb.extend_from_slice(&[color.r, color.g, color.b]);
+        alpha.push(color.a);
+    }
+    while alpha.last() == Some(&255) {
+        alpha.pop();
     }
 
-    let preset = match level {
-        PngCompressionLevel::Fast => 1,
-        PngCompressionLevel::Balanced => 3,
-        PngCompressionLevel::Maximum => 6,
-    };
-    let mut options = oxipng::Options::from_preset(preset);
-    options.interlace = None;
-    options.max_decompressed_size = Some(MAX_DECODED_BYTES as usize);
-    options.strip = oxipng::StripChunks::Keep(oxipng::indexset! {
-        *b"cICP", *b"iCCP", *b"sRGB", *b"gAMA", *b"cHRM", *b"pHYs"
-    });
-    oxipng::optimize_from_memory(&prepared, &options)
-        .map_err(|error| format!("PNG 优化失败：{error}"))
+    let mut output = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut output, width, height);
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_palette(palette_rgb);
+        if !alpha.is_empty() {
+            encoder.set_trns(alpha);
+        }
+        encoder.set_compression(png::Compression::Balanced);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("PNG 调色板写入失败：{error}"))?;
+        writer
+            .write_image_data(indices)
+            .map_err(|error| format!("PNG 调色板写入失败：{error}"))?;
+    }
+    Ok(output)
 }
 
 fn restore_png_display_chunks(source: &[u8], encoded: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -626,27 +851,32 @@ fn restore_png_display_chunks(source: &[u8], encoded: Vec<u8>) -> Result<Vec<u8>
     Ok(bytes)
 }
 
-fn encode_jpeg(input: &[u8], settings: &CompressionSettings) -> Result<Vec<u8>, String> {
+fn encode_jpeg_lossy(
+    input: &[u8],
+    image: &DynamicImage,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
     let icc = Jpeg::from_bytes(Bytes::copy_from_slice(input))
         .ok()
         .and_then(|jpeg| jpeg.icc_profile())
         .map(|profile| profile.to_vec());
-    let image = decode_oriented(input, CompressionFormat::Jpeg)?;
-    let preset = if settings.jpeg_progressive {
-        JpegPreset::ProgressiveBalanced
-    } else {
-        JpegPreset::BaselineBalanced
-    };
-    let mut encoder = JpegEncoder::new(preset)
-        .quality(settings.jpeg_quality)
-        .progressive(settings.jpeg_progressive)
-        .subsampling(if settings.jpeg_quality < 90 {
-            Subsampling::S420
-        } else {
-            Subsampling::S444
-        });
+    ensure_not_cancelled(cancelled)?;
+    let output = encode_jpeg_candidate(image, LOSSY_QUALITY, icc.as_deref())?;
+    ensure_not_cancelled(cancelled)?;
+    Ok(output)
+}
+
+fn encode_jpeg_candidate(
+    image: &DynamicImage,
+    quality: u8,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let mut encoder = JpegEncoder::new(JpegPreset::ProgressiveBalanced)
+        .quality(quality)
+        .progressive(true)
+        .subsampling(Subsampling::S444);
     if let Some(icc) = icc {
-        encoder = encoder.icc_profile(icc);
+        encoder = encoder.icc_profile(icc.to_vec());
     }
     if matches!(image.color(), image::ColorType::L8 | image::ColorType::La8) {
         let gray = image.to_luma8();
@@ -661,7 +891,11 @@ fn encode_jpeg(input: &[u8], settings: &CompressionSettings) -> Result<Vec<u8>, 
     }
 }
 
-fn encode_webp(input: &[u8], settings: &CompressionSettings) -> Result<Vec<u8>, String> {
+fn encode_webp_lossy(
+    input: &[u8],
+    image: &DynamicImage,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
     let source = WebP::from_bytes(Bytes::copy_from_slice(input))
         .map_err(|error| format!("WebP 文件无效：{error}"))?;
     if source.has_chunk(img_parts::webp::CHUNK_ANIM)
@@ -669,25 +903,42 @@ fn encode_webp(input: &[u8], settings: &CompressionSettings) -> Result<Vec<u8>, 
     {
         return Err("暂不支持动画 WebP。".into());
     }
-    let icc = source.icc_profile();
-    let image = decode_oriented(input, CompressionFormat::Webp)?;
-    let has_alpha = image.color().has_alpha();
+    let icc = source.icc_profile().map(|profile| profile.to_vec());
+    let mut rgba = image.to_rgba8();
+    for pixel in rgba.pixels_mut() {
+        if pixel.0[3] == 0 {
+            pixel.0[0] = 0;
+            pixel.0[1] = 0;
+            pixel.0[2] = 0;
+        }
+    }
+    ensure_not_cancelled(cancelled)?;
+    let output = encode_webp_candidate(&rgba, LOSSY_QUALITY, icc.as_deref())?;
+    ensure_not_cancelled(cancelled)?;
+    Ok(output)
+}
+
+fn encode_webp_candidate(
+    rgba: &image::RgbaImage,
+    quality: u8,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let has_alpha = rgba.pixels().any(|pixel| pixel.0[3] < 255);
     let mut config = webp::WebPConfig::new().map_err(|_| "无法初始化 WebP 编码器。".to_string())?;
-    config.lossless = i32::from(settings.webp_mode == WebpCompressionMode::Lossless);
-    config.quality = settings.webp_quality as f32;
+    config.lossless = 0;
+    config.quality = quality as f32;
     config.method = 4;
     config.alpha_quality = 100;
     config.alpha_compression = 1;
-    config.exact = i32::from(has_alpha);
+    config.exact = 0;
     config.use_sharp_yuv = 1;
     config.thread_level = 1;
 
     let encoded = if has_alpha {
-        let rgba = image.to_rgba8();
         webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
             .encode_advanced(&config)
     } else {
-        let rgb = image.to_rgb8();
+        let rgb = DynamicImage::ImageRgba8(rgba.clone()).to_rgb8();
         webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height()).encode_advanced(&config)
     }
     .map_err(|error| format!("WebP 编码失败：{error:?}"))?;
@@ -696,7 +947,7 @@ fn encode_webp(input: &[u8], settings: &CompressionSettings) -> Result<Vec<u8>, 
     if let Some(icc) = icc {
         let mut webp = WebP::from_bytes(Bytes::from(output))
             .map_err(|error| format!("WebP 色彩信息写入失败：{error}"))?;
-        webp.set_icc_profile(Some(icc));
+        webp.set_icc_profile(Some(Bytes::copy_from_slice(icc)));
         if has_alpha {
             set_webp_alpha_flag(&mut webp)?;
         }
@@ -1065,6 +1316,39 @@ fn atomic_write(
     })
 }
 
+fn atomic_copy(
+    source_path: &Path,
+    output_path: &Path,
+    session_id: &str,
+    item_id: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    let parent = output_path
+        .parent()
+        .ok_or_else(|| "输出路径无效。".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("无法创建输出目录：{error}"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = parent.join(format!(".huanhua-{session_id}-{item_id}-{nonce}.tmp"));
+    fs::copy(source_path, &temp_path).map_err(|error| format!("无法复制压缩结果：{error}"))?;
+    let sync_result = fs::File::open(&temp_path).and_then(|file| file.sync_all());
+    if let Err(error) = sync_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("无法同步输出文件：{error}"));
+    }
+    let commit_result = if overwrite {
+        atomic_replace(&temp_path, output_path)
+    } else {
+        fs::hard_link(&temp_path, output_path).and_then(|_| fs::remove_file(&temp_path))
+    };
+    commit_result.map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!("无法完成输出文件写入：{error}")
+    })
+}
+
 #[cfg(unix)]
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     fs::rename(source, destination)
@@ -1099,13 +1383,6 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-fn validate_settings(settings: &CompressionSettings) -> Result<(), String> {
-    if !(1..=100).contains(&settings.jpeg_quality) || !(1..=100).contains(&settings.webp_quality) {
-        return Err("图片质量必须在 1 到 100 之间。".into());
-    }
-    Ok(())
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
@@ -1211,6 +1488,12 @@ fn new_session_id(state: &CompressionState) -> String {
     format!("compress-{timestamp}-{sequence}")
 }
 
+fn create_session_temp_root(session_id: &str) -> Result<PathBuf, String> {
+    let path = std::env::temp_dir().join(format!("huanhua-{session_id}"));
+    fs::create_dir(&path).map_err(|error| format!("无法创建压缩临时目录：{error}"))?;
+    Ok(path)
+}
+
 fn saved_percent(original: u64, output: u64) -> Option<f64> {
     if original == 0 {
         None
@@ -1231,6 +1514,18 @@ mod tests {
         }))
     }
 
+    fn sample_webp_rgba() -> DynamicImage {
+        DynamicImage::ImageRgba8(ImageBuffer::from_fn(192, 128, |x, y| {
+            if !(16..176).contains(&x) || !(16..112).contains(&y) {
+                Rgba([180, 90, 30, 0])
+            } else if x < 96 {
+                Rgba([36, 112, 184, 255])
+            } else {
+                Rgba([224, 168, 48, 255])
+            }
+        }))
+    }
+
     fn noisy_rgb(width: u32, height: u32) -> Vec<u8> {
         (0..width * height)
             .flat_map(|index| {
@@ -1242,11 +1537,6 @@ mod tests {
 
     fn settings() -> CompressionSettings {
         CompressionSettings {
-            png_level: PngCompressionLevel::Balanced,
-            jpeg_quality: 82,
-            jpeg_progressive: true,
-            webp_mode: WebpCompressionMode::Lossy,
-            webp_quality: 82,
             conflict_policy: CompressionConflictPolicy::Skip,
             skip_no_benefit: true,
         }
@@ -1266,6 +1556,24 @@ mod tests {
         let path = std::env::temp_dir().join(format!("huanhua-compression-{label}-{nonce}"));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn test_session(
+        label: &str,
+        source_root: Option<PathBuf>,
+        items: Vec<NativeSourceItem>,
+        source_paths: HashSet<PathBuf>,
+    ) -> CompressionSession {
+        CompressionSession {
+            source_root,
+            items,
+            source_paths,
+            temp_root: test_directory(&format!("{label}-cache")),
+            results: Mutex::new(HashMap::new()),
+            work_lock: Mutex::new(()),
+            cancelled: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+        }
     }
 
     #[test]
@@ -1298,6 +1606,12 @@ mod tests {
     }
 
     #[test]
+    fn save_command_is_allowed_by_the_desktop_capability() {
+        let permissions = include_str!("../permissions/compression.toml");
+        assert!(permissions.contains("\"compression_save\""));
+    }
+
+    #[test]
     fn jpeg_and_webp_outputs_are_decodable() {
         let image = sample_rgba();
         let mut jpeg_input = Vec::new();
@@ -1308,15 +1622,15 @@ mod tests {
                 90,
             ))
             .unwrap();
-        let settings = settings();
-        let jpeg = encode_jpeg(&jpeg_input, &settings).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let jpeg = encode_lossy(&jpeg_input, CompressionFormat::Jpeg, &cancelled).unwrap();
         assert!(image::load_from_memory_with_format(&jpeg, ImageFormat::Jpeg).is_ok());
 
-        let rgba = image.to_rgba8();
+        let rgba = sample_webp_rgba().to_rgba8();
         let webp_input = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
             .encode_lossless()
             .to_vec();
-        let webp = encode_webp(&webp_input, &settings).unwrap();
+        let webp = encode_lossy(&webp_input, CompressionFormat::Webp, &cancelled).unwrap();
         assert!(image::load_from_memory_with_format(&webp, ImageFormat::WebP).is_ok());
     }
 
@@ -1341,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn png_optimization_is_pixel_lossless_and_strips_text() {
+    fn png_lossy_compression_preserves_dimensions_and_strips_text() {
         let original = sample_rgba();
         let mut png = img_parts::png::Png::from_bytes(Bytes::from(png_bytes(&original))).unwrap();
         let text = img_parts::png::PngChunk::new(*b"tEXt", Bytes::from_static(b"author\0private"));
@@ -1350,11 +1664,87 @@ mod tests {
         let mut input = Vec::new();
         png.encoder().write_to(&mut input).unwrap();
 
-        let output = encode_png(&input, PngCompressionLevel::Balanced).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let output = encode_lossy(&input, CompressionFormat::Png, &cancelled).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
-        assert_eq!(decoded.to_rgba8(), original.to_rgba8());
+        assert_eq!(decoded.dimensions(), original.dimensions());
+        assert!(output.starts_with(b"\x89PNG\r\n\x1a\n"));
         let parsed = img_parts::png::Png::from_bytes(Bytes::from(output)).unwrap();
         assert!(parsed.chunk_by_type(*b"tEXt").is_none());
+    }
+
+    #[test]
+    fn png_lossy_compression_uses_an_indexed_palette() {
+        let original = DynamicImage::ImageRgba8(ImageBuffer::from_fn(384, 256, |x, y| {
+            let index = y * 384 + x;
+            let mut hash = index;
+            hash ^= hash >> 16;
+            hash = hash.wrapping_mul(0x7feb_352d);
+            hash ^= hash >> 15;
+            hash = hash.wrapping_mul(0x846c_a68b);
+            hash ^= hash >> 16;
+            let value = (hash % 200) as u8;
+            Rgba([value, value.wrapping_mul(3), value.wrapping_mul(7), 255])
+        }));
+        let input = png_bytes(&original);
+        let output = encode_lossy(&input, CompressionFormat::Png, &AtomicBool::new(false)).unwrap();
+
+        assert!(output.len() < input.len());
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
+        assert_eq!(decoded.dimensions(), original.dimensions());
+        let parsed = img_parts::png::Png::from_bytes(Bytes::from(output)).unwrap();
+        let ihdr = parsed.chunk_by_type(*b"IHDR").unwrap();
+        assert_eq!(ihdr.contents()[9], 3);
+    }
+
+    #[test]
+    #[ignore = "repository benchmark fixture"]
+    fn repository_png_fixture_uses_fast_lossy_compression() {
+        use std::time::Instant;
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/test.png");
+        let input = fs::read(path).unwrap();
+        let reference = decode_oriented(&input, CompressionFormat::Png).unwrap();
+        let started = Instant::now();
+        let output = encode_lossy(&input, CompressionFormat::Png, &AtomicBool::new(false)).unwrap();
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
+
+        assert!(output.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(decoded.dimensions(), reference.dimensions());
+        assert!(output.len() < input.len());
+        eprintln!(
+            "{} -> {} bytes in {:?}",
+            input.len(),
+            output.len(),
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    #[ignore = "set HUANHUA_COMPRESSION_FIXTURE to benchmark an external PNG"]
+    fn external_png_fixture_uses_production_lossy_compression() {
+        use std::time::Instant;
+
+        let path = std::env::var_os("HUANHUA_COMPRESSION_FIXTURE")
+            .map(PathBuf::from)
+            .expect("HUANHUA_COMPRESSION_FIXTURE is required");
+        let input = fs::read(&path).unwrap();
+        let reference = decode_oriented(&input, CompressionFormat::Png).unwrap();
+        let started = Instant::now();
+        let output = encode_lossy(&input, CompressionFormat::Png, &AtomicBool::new(false)).unwrap();
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
+
+        assert!(output.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(decoded.dimensions(), reference.dimensions());
+        assert!(output.len() < input.len());
+        eprintln!(
+            "{}: {} -> {} bytes ({:.1}% smaller) in {:?}",
+            path.display(),
+            input.len(),
+            output.len(),
+            (1.0 - output.len() as f64 / input.len() as f64) * 100.0,
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -1395,7 +1785,8 @@ mod tests {
         );
         let mut apng = Vec::new();
         png.encoder().write_to(&mut apng).unwrap();
-        assert!(encode_png(&apng, PngCompressionLevel::Fast).is_err());
+        let cancelled = AtomicBool::new(false);
+        assert!(encode_lossy(&apng, CompressionFormat::Png, &cancelled).is_err());
 
         let rgba = sample_rgba().to_rgba8();
         let still = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
@@ -1408,7 +1799,7 @@ mod tests {
         ));
         let mut bytes = Vec::new();
         animated.encoder().write_to(&mut bytes).unwrap();
-        assert!(encode_webp(&bytes, &settings()).is_err());
+        assert!(encode_lossy(&bytes, CompressionFormat::Webp, &cancelled).is_err());
     }
 
     #[test]
@@ -1425,7 +1816,8 @@ mod tests {
             .icc_profile(icc.clone())
             .encode_rgb(&pixels, 2, 1)
             .unwrap();
-        let output = encode_jpeg(&input, &settings()).unwrap();
+        let image = decode_oriented(&input, CompressionFormat::Jpeg).unwrap();
+        let output = encode_jpeg_candidate(&image, LOSSY_QUALITY, Some(&icc)).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
         assert_eq!(decoded.dimensions(), (1, 2));
         let parsed = Jpeg::from_bytes(Bytes::from(output)).unwrap();
@@ -1434,33 +1826,30 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_and_webp_quality_settings_affect_size() {
+    fn jpeg_and_webp_quality_candidates_affect_size() {
         let pixels = noisy_rgb(128, 128);
         let input_jpeg = JpegEncoder::new(JpegPreset::BaselineBalanced)
             .quality(95)
             .encode_rgb(&pixels, 128, 128)
             .unwrap();
-        let mut low = settings();
-        low.jpeg_quality = 20;
-        let mut high = settings();
-        high.jpeg_quality = 95;
-        let low_jpeg = encode_jpeg(&input_jpeg, &low).unwrap();
-        let high_jpeg = encode_jpeg(&input_jpeg, &high).unwrap();
+        let decoded_jpeg = decode_oriented(&input_jpeg, CompressionFormat::Jpeg).unwrap();
+        let low_jpeg = encode_jpeg_candidate(&decoded_jpeg, 20, None).unwrap();
+        let high_jpeg = encode_jpeg_candidate(&decoded_jpeg, 95, None).unwrap();
         assert!(low_jpeg.len() < high_jpeg.len());
 
         let input_webp = webp::Encoder::from_rgb(&pixels, 128, 128)
             .encode_lossless()
             .to_vec();
-        low.webp_quality = 20;
-        high.webp_quality = 95;
-        let low_webp = encode_webp(&input_webp, &low).unwrap();
-        let high_webp = encode_webp(&input_webp, &high).unwrap();
+        let decoded_webp = decode_oriented(&input_webp, CompressionFormat::Webp).unwrap();
+        let rgba = decoded_webp.to_rgba8();
+        let low_webp = encode_webp_candidate(&rgba, 20, None).unwrap();
+        let high_webp = encode_webp_candidate(&rgba, 95, None).unwrap();
         assert!(low_webp.len() < high_webp.len());
     }
 
     #[test]
-    fn webp_lossless_preserves_alpha_and_icc_while_stripping_private_metadata() {
-        let original = sample_rgba();
+    fn webp_lossy_compression_preserves_dimensions_alpha_and_icc() {
+        let original = sample_webp_rgba();
         let rgba = original.to_rgba8();
         let still = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
             .encode_lossless()
@@ -1476,15 +1865,14 @@ mod tests {
         set_webp_alpha_flag(&mut source).unwrap();
         let mut input = Vec::new();
         source.encoder().write_to(&mut input).unwrap();
-        let expected = image::load_from_memory_with_format(&input, ImageFormat::WebP)
+        let cancelled = AtomicBool::new(false);
+        let output = encode_lossy(&input, CompressionFormat::Webp, &cancelled).unwrap();
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP)
             .unwrap()
             .to_rgba8();
-
-        let mut config = settings();
-        config.webp_mode = WebpCompressionMode::Lossless;
-        let output = encode_webp(&input, &config).unwrap();
-        let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP).unwrap();
-        assert_eq!(decoded.to_rgba8(), expected);
+        assert_eq!(decoded.dimensions(), rgba.dimensions());
+        assert_eq!(decoded.get_pixel(0, 0).0[3], 0);
+        assert_eq!(decoded.get_pixel(96, 64).0[3], 255);
         let parsed = WebP::from_bytes(Bytes::from(output)).unwrap();
         assert_eq!(parsed.icc_profile(), Some(icc));
         assert!(parsed.exif().is_none());
@@ -1528,14 +1916,12 @@ mod tests {
         let source = root.join("image.png");
         fs::write(&source, b"source").unwrap();
         let canonical_source = source.canonicalize().unwrap();
-        let session = CompressionSession {
-            source_root: None,
-            items: Vec::new(),
-            source_paths: HashSet::from([canonical_source]),
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        };
+        let session = test_session(
+            "source-output-rename",
+            None,
+            Vec::new(),
+            HashSet::from([canonical_source]),
+        );
 
         let renamed =
             resolve_safe_output_path(&session, &source, CompressionConflictPolicy::Rename)
@@ -1555,7 +1941,7 @@ mod tests {
     }
 
     #[test]
-    fn process_item_renames_output_beside_source_without_overwriting() {
+    fn process_item_caches_then_save_renames_without_overwriting_source() {
         let root = test_directory("process-source-output-rename");
         let source = root.join("image.png");
         let input = png_bytes(&sample_rgba());
@@ -1570,28 +1956,41 @@ mod tests {
             height: 24,
             size: input.len() as u64,
         };
-        let session = CompressionSession {
-            source_root: None,
-            items: vec![item.clone()],
-            source_paths: HashSet::from([canonical_source]),
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        };
+        let session = test_session(
+            "process-source-output-rename",
+            None,
+            vec![item.clone()],
+            HashSet::from([canonical_source]),
+        );
         let mut config = settings();
         config.conflict_policy = CompressionConflictPolicy::Rename;
         config.skip_no_benefit = false;
 
-        let outcome = process_item("session", &session, &item, &root, &config).unwrap();
+        let outcome = process_item("session", &session, &item, &config).unwrap();
         let ItemOutcome::Succeeded {
             output_relative_path,
             ..
         } = outcome
         else {
-            panic!("expected renamed output");
+            panic!("expected cached output");
         };
-        assert_eq!(output_relative_path, "image (1).png");
+        assert_eq!(output_relative_path, "image.png");
         assert_eq!(fs::read(&source).unwrap(), input);
+        assert!(!root.join("image (1).png").exists());
+
+        let summary = save_session(
+            "session",
+            &session,
+            &HashSet::from([item.id.clone()]),
+            &root,
+            CompressionConflictPolicy::Rename,
+        )
+        .unwrap();
+        assert_eq!(summary.saved, 1);
+        assert_eq!(
+            summary.items[0].output_relative_path.as_deref(),
+            Some("image (1).png")
+        );
         assert!(root.join("image (1).png").is_file());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1601,14 +2000,12 @@ mod tests {
         let root = test_directory("root-safety");
         let output = root.join("output");
         fs::create_dir_all(&output).unwrap();
-        let session = CompressionSession {
-            source_root: Some(root.canonicalize().unwrap()),
-            items: Vec::new(),
-            source_paths: HashSet::new(),
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-        };
+        let session = test_session(
+            "root-safety",
+            Some(root.canonicalize().unwrap()),
+            Vec::new(),
+            HashSet::new(),
+        );
         assert!(validate_output_root(&session, &root).is_err());
         assert!(validate_output_root(&session, &output).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -1644,9 +2041,10 @@ mod tests {
 
     #[test]
     fn cancelled_batch_does_not_start_an_item() {
-        let session = CompressionSession {
-            source_root: None,
-            items: vec![NativeSourceItem {
+        let session = test_session(
+            "cancelled",
+            None,
+            vec![NativeSourceItem {
                 id: "item".into(),
                 source_path: PathBuf::from("missing.png"),
                 relative_path: PathBuf::from("missing.png"),
@@ -1655,17 +2053,14 @@ mod tests {
                 height: 1,
                 size: 1,
             }],
-            source_paths: HashSet::new(),
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(true),
-            running: AtomicBool::new(true),
-        };
+            HashSet::new(),
+        );
+        session.cancelled.store(true, Ordering::SeqCst);
         let channel = Channel::new(|_| Ok(()));
         let summary = run_session(
             "session",
             &session,
             &HashSet::from(["item".to_string()]),
-            Path::new("."),
             &settings(),
             &channel,
         )
@@ -1699,39 +2094,21 @@ mod tests {
     #[test]
     fn no_benefit_candidate_is_not_written() {
         let source_root = test_directory("no-benefit-source");
-        let output_root = test_directory("no-benefit-output");
         let source_path = source_root.join("image.png");
-        let optimized =
-            encode_png(&png_bytes(&sample_rgba()), PngCompressionLevel::Maximum).unwrap();
-        fs::write(&source_path, &optimized).unwrap();
+        fs::write(&source_path, png_bytes(&sample_rgba())).unwrap();
         let source_path = source_path.canonicalize().unwrap();
-        let item = inspect_source(&source_path, Path::new("image.png"), "item".into()).unwrap();
-        let session = CompressionSession {
-            source_root: None,
-            source_paths: HashSet::from([source_path]),
-            items: vec![item],
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(false),
-            running: AtomicBool::new(true),
-        };
-        let outcome = process_item(
-            "session",
-            &session,
-            &session.items[0],
-            &output_root,
-            &settings(),
-        )
-        .unwrap();
-        assert!(matches!(outcome, ItemOutcome::NoBenefit(_)));
-        assert!(!output_root.join("image.png").exists());
+        let mut item = inspect_source(&source_path, Path::new("image.png"), "item".into()).unwrap();
+        item.size = 0;
+        let session = test_session("no-benefit", None, vec![item], HashSet::from([source_path]));
+        let outcome = process_item("session", &session, &session.items[0], &settings()).unwrap();
+        assert!(matches!(outcome, ItemOutcome::NoBenefit { .. }));
+        assert!(session.results.lock().unwrap().is_empty());
         fs::remove_dir_all(source_root).unwrap();
-        fs::remove_dir_all(output_root).unwrap();
     }
 
     #[test]
     fn batch_continues_after_an_item_failure() {
         let source_root = test_directory("partial-source");
-        let output_root = test_directory("partial-output");
         let source_path = source_root.join("ok.png");
         fs::write(&source_path, png_bytes(&sample_rgba())).unwrap();
         let source_path = source_path.canonicalize().unwrap();
@@ -1746,14 +2123,12 @@ mod tests {
             height: 1,
             size: 1,
         };
-        let session = CompressionSession {
-            source_root: None,
-            source_paths: HashSet::from([source_path]),
-            items: vec![invalid, valid],
-            work_lock: Mutex::new(()),
-            cancelled: AtomicBool::new(false),
-            running: AtomicBool::new(true),
-        };
+        let session = test_session(
+            "partial",
+            None,
+            vec![invalid, valid],
+            HashSet::from([source_path]),
+        );
         let mut config = settings();
         config.skip_no_benefit = false;
         let channel = Channel::new(|_| Ok(()));
@@ -1761,15 +2136,13 @@ mod tests {
             "session",
             &session,
             &HashSet::from(["invalid".to_string(), "valid".to_string()]),
-            &output_root,
             &config,
             &channel,
         )
         .unwrap();
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.succeeded, 1);
-        assert!(output_root.join("nested/ok.png").exists());
+        assert!(session.results.lock().unwrap().contains_key("valid"));
         fs::remove_dir_all(source_root).unwrap();
-        fs::remove_dir_all(output_root).unwrap();
     }
 }

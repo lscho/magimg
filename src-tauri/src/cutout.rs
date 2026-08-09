@@ -307,6 +307,14 @@ fn find_segmenter(model_id: &str) -> Result<SegmenterSpec, String> {
     }
 }
 
+fn validate_release_target(model_id: &str) -> Result<(), String> {
+    if CUTOUT_MODELS.iter().any(|model| model.id == model_id) || CUTOUT_SEGMENTER.id == model_id {
+        Ok(())
+    } else {
+        Err("当前抠图模型不受支持。".to_string())
+    }
+}
+
 fn raw_request_bytes(request: &Request<'_>) -> Result<Vec<u8>, String> {
     match request.body() {
         InvokeBody::Raw(bytes) => Ok(bytes.clone()),
@@ -1255,7 +1263,8 @@ fn segmenter_output_alpha(
     spec: SegmenterSpec,
 ) -> Result<Vec<u8>, String> {
     let expected_shape = [1_i64, 1, spec.mask_height as i64, spec.mask_width as i64];
-    let plane_size = spec.mask_width
+    let plane_size = spec
+        .mask_width
         .checked_mul(spec.mask_height)
         .ok_or_else(|| "抠图分割输出尺寸无效。".to_string())?;
     if shape != expected_shape || values.len() != plane_size {
@@ -1275,11 +1284,7 @@ fn segmenter_output_alpha(
 
 /// BiRefNet Swin-T 单次前向：输入裁剪区域 1024x1024 NCHW 归一化 float，
 /// 输出 1024x1024 alpha。用于 /cutout 链路替代 SAM encoder+decoder。
-fn segment_image(
-    app: &AppHandle,
-    model_id: String,
-    bytes: Vec<u8>,
-) -> Result<Response, String> {
+fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Response, String> {
     let state = app.state::<CutoutState>();
     let epoch = state.cancel_epoch.load(Ordering::SeqCst);
     let spec = find_segmenter(&model_id)?;
@@ -1400,25 +1405,33 @@ pub fn cutout_cancel(state: State<'_, CutoutState>) {
 #[tauri::command]
 pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<(), String> {
     if let Some(model_id) = model_id.as_deref() {
-        find_model(model_id)?;
+        validate_release_target(model_id)?;
     }
     app.state::<CutoutState>().cancel();
     let task_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = task_app.state::<CutoutState>();
         let mut inference = state.inference()?;
-        let should_release = model_id.as_deref().is_none_or(|model_id| {
+        let should_release_model = model_id.as_deref().is_none_or(|model_id| {
             inference
                 .loaded
                 .as_ref()
                 .is_some_and(|loaded| loaded.spec.id == model_id)
         });
-        if should_release {
+        if should_release_model {
             inference.loaded = None;
+        }
+        let should_release_segmenter = model_id.as_deref().is_none_or(|model_id| {
+            inference
+                .segmenter
+                .as_ref()
+                .is_some_and(|loaded| loaded.spec.id == model_id)
+        });
+        if should_release_segmenter {
+            inference.segmenter = None;
         }
         inference.refiner = None;
         inference.repairer = None;
-        inference.segmenter = None;
         Ok(())
     })
     .await
@@ -1430,8 +1443,9 @@ mod tests {
     use super::{
         decode_repair_float_bytes, encode_candidate_response, find_repairer, find_segmenter,
         mask_logit_to_alpha, refiner_output_alpha, repairer_output_rgb, segmenter_output_alpha,
-        select_best_mask_alpha, validate_prompts, validate_sam_model_file, CutoutState,
-        DecodeRequest, ModelFileSpec, CUTOUT_MODELS, CUTOUT_REPAIRER, CUTOUT_SEGMENTER,
+        select_best_mask_alpha, validate_prompts, validate_release_target, validate_sam_model_file,
+        CutoutState, DecodeRequest, ModelFileSpec, CUTOUT_MODELS, CUTOUT_REPAIRER,
+        CUTOUT_SEGMENTER,
     };
 
     fn decode_request(
@@ -1707,6 +1721,18 @@ mod tests {
     }
 
     #[test]
+    fn release_target_accepts_sam_and_birefnet_sessions() {
+        assert!(validate_release_target(CUTOUT_MODELS[0].id).is_ok());
+        assert!(validate_release_target(CUTOUT_SEGMENTER.id).is_ok());
+        assert_eq!(
+            validate_release_target("untrusted-cutout-model")
+                .err()
+                .as_deref(),
+            Some("当前抠图模型不受支持。")
+        );
+    }
+
+    #[test]
     fn repair_command_is_allowed_by_the_desktop_capability() {
         let permissions = include_str!("../permissions/cutout.toml");
         assert!(permissions.contains("\"cutout_repair\""));
@@ -1829,7 +1855,10 @@ mod tests {
 
     #[test]
     fn segmenter_resolves_only_the_pinned_model() {
-        assert_eq!(find_segmenter(CUTOUT_SEGMENTER.id).unwrap().id, CUTOUT_SEGMENTER.id);
+        assert_eq!(
+            find_segmenter(CUTOUT_SEGMENTER.id).unwrap().id,
+            CUTOUT_SEGMENTER.id
+        );
         assert!(find_segmenter("unknown").is_err());
     }
 

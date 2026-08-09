@@ -18,9 +18,9 @@ describe("image compression desktop boundary", () => {
     expect(isDesktopRuntime()).toBe(true);
   });
 
-  it("recognizes a Tauri desktop build before runtime globals are available", () => {
+  it("does not treat a build-time platform variable as a desktop runtime", () => {
     vi.stubEnv("TAURI_ENV_PLATFORM", "macos");
     vi.stubGlobal("window", {});
-    expect(isDesktopRuntime()).toBe(true);
+    expect(isDesktopRuntime()).toBe(false);
   });
 });

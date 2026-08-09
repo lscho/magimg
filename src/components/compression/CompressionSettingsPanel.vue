@@ -6,9 +6,9 @@ import {
   CircleCheck,
   CircleX,
   FileCheck2,
-  FolderOpen,
   LoaderCircle,
   Play,
+  Save,
   Settings2,
   Square
 } from "lucide-vue-next";
@@ -18,32 +18,36 @@ import type { CompressionSummary } from "@/types";
 const props = withDefaults(defineProps<{
   items?: CompressionWorkspaceItem[];
   rejectedCount?: number;
-  outputDirectory?: string;
   canStart?: boolean;
+  canSave?: boolean;
   running?: boolean;
   cancelling?: boolean;
+  saving?: boolean;
   currentItem?: string;
   progressPercent?: number;
   completedCount?: number;
   progressTotal?: number;
   summary?: CompressionSummary | null;
+  hasSaved?: boolean;
 }>(), {
   items: () => [],
   rejectedCount: 0,
-  outputDirectory: "",
   canStart: false,
+  canSave: false,
   running: false,
   cancelling: false,
+  saving: false,
   currentItem: "",
   progressPercent: 0,
   completedCount: 0,
   progressTotal: 0,
-  summary: null
+  summary: null,
+  hasSaved: false
 });
 
 const emit = defineEmits<{
   openSettings: [];
-  selectOutput: [];
+  save: [];
   start: [];
   cancel: [];
 }>();
@@ -77,36 +81,34 @@ function formatSaved(value: number | null) {
 function resultPath(item: CompressionWorkspaceItem) {
   return item.outputRelativePath || item.relativePath;
 }
+
+function resultStatus(item: CompressionWorkspaceItem) {
+  if (item.saveStatus === "saved") return "已保存";
+  if (item.saveStatus === "skipped") return "未保存";
+  if (item.saveStatus === "failed") return "保存失败";
+  return statusLabels[item.status];
+}
 </script>
 
 <template>
   <aside class="compression-results" aria-label="压缩结果">
     <div class="results-scroll">
-      <section class="output-section">
-        <div class="section-heading">
-          <h2>输出</h2>
-          <button
-            class="settings-button"
-            type="button"
-            :disabled="running"
-            aria-label="打开压缩设置"
-            @click="emit('openSettings')"
-          >
-            <Settings2 :size="15" aria-hidden="true" />
-            设置
-          </button>
-        </div>
-        <label class="field-label">输出文件夹</label>
-        <button class="directory-button" type="button" :disabled="running" @click="emit('selectOutput')">
-          <FolderOpen :size="15" aria-hidden="true" />
-          <span :title="outputDirectory">{{ outputDirectory || "选择输出文件夹" }}</span>
-        </button>
-      </section>
-
       <section class="result-section" aria-labelledby="compression-results-title">
         <div class="section-heading result-heading">
           <h2 id="compression-results-title">压缩结果</h2>
-          <span v-if="summary">{{ summary.succeeded }}/{{ summary.total }}</span>
+          <div class="result-heading-actions">
+            <span v-if="summary">{{ summary.succeeded }}/{{ summary.total }}</span>
+            <button
+              class="settings-button"
+              type="button"
+              :disabled="running || saving"
+              aria-label="打开压缩设置"
+              @click="emit('openSettings')"
+            >
+              <Settings2 :size="15" aria-hidden="true" />
+              设置
+            </button>
+          </div>
         </div>
 
         <div v-if="resultItems.length" class="result-list">
@@ -115,6 +117,7 @@ function resultPath(item: CompressionWorkspaceItem) {
             :key="item.id"
             class="result-item"
             :data-status="item.status"
+            :data-save-status="item.saveStatus || undefined"
           >
             <CircleCheck v-if="item.status === 'succeeded'" :size="16" aria-hidden="true" />
             <CircleX v-else-if="item.status === 'failed'" :size="16" aria-hidden="true" />
@@ -123,12 +126,15 @@ function resultPath(item: CompressionWorkspaceItem) {
             <div class="result-copy">
               <div class="result-title">
                 <strong :title="resultPath(item)">{{ resultPath(item).split('/').pop() }}</strong>
-                <span>{{ statusLabels[item.status] }}</span>
+                <span>{{ resultStatus(item) }}</span>
               </div>
               <small v-if="item.status === 'succeeded'">
                 {{ formatBytes(item.outputSize) }}<template v-if="item.savedPercent !== null"> · {{ formatSaved(item.savedPercent) }}</template>
               </small>
               <small v-else>{{ item.message || resultPath(item) }}</small>
+              <small v-if="item.saveStatus && item.saveStatus !== 'saved'" class="save-message">
+                {{ item.saveMessage || "结果未写入目标文件夹" }}
+              </small>
             </div>
           </article>
         </div>
@@ -164,6 +170,14 @@ function resultPath(item: CompressionWorkspaceItem) {
         <Square v-else :size="15" aria-hidden="true" />
         {{ cancelling ? "正在停止" : "停止压缩" }}
       </button>
+      <button v-else-if="saving" class="primary-button" type="button" disabled>
+        <LoaderCircle class="spin" :size="16" aria-hidden="true" />
+        正在保存
+      </button>
+      <button v-else-if="canSave" class="primary-button" type="button" @click="emit('save')">
+        <Save :size="16" aria-hidden="true" />
+        {{ hasSaved ? "再次保存" : "保存结果" }}
+      </button>
       <button v-else class="primary-button" type="button" :disabled="!canStart" @click="emit('start')">
         <Play :size="16" aria-hidden="true" />
         开始压缩
@@ -186,11 +200,10 @@ function resultPath(item: CompressionWorkspaceItem) {
 .results-scroll {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto;
+  grid-template-rows: minmax(220px, 1fr) auto;
   overflow: hidden;
 }
 
-.output-section,
 .result-section,
 .summary-section {
   padding: 16px 18px;
@@ -228,32 +241,6 @@ function resultPath(item: CompressionWorkspaceItem) {
   &:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-strong); }
 }
 
-.field-label {
-  display: block;
-  margin-bottom: 7px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.directory-button {
-  width: 100%;
-  min-width: 0;
-  height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  color: var(--soft);
-  background: var(--field);
-
-  &:hover:not(:disabled) { border-color: var(--line-strong); }
-  svg { flex: 0 0 auto; }
-  span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-}
-
 .result-section {
   min-height: 0;
   display: grid;
@@ -264,9 +251,10 @@ function resultPath(item: CompressionWorkspaceItem) {
 
 .result-heading {
   padding: 0 18px;
-
-  > span { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 }
+
+.result-heading-actions { display: flex; align-items: center; gap: 10px; }
+.result-heading-actions > span { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 
 .result-list {
   min-height: 0;
@@ -288,6 +276,8 @@ function resultPath(item: CompressionWorkspaceItem) {
   &[data-status="succeeded"] > svg { color: var(--success); }
   &[data-status="failed"] > svg { color: var(--danger); }
   &[data-status="noBenefit"] > svg { color: var(--warm); }
+  &[data-save-status="failed"] > svg { color: var(--danger); }
+  &[data-save-status="skipped"] > svg { color: var(--warm); }
 
   > svg { margin-top: 1px; }
 }
@@ -314,6 +304,7 @@ function resultPath(item: CompressionWorkspaceItem) {
 }
 
 .result-item[data-status="failed"] .result-copy small { color: var(--danger); white-space: normal; }
+.result-copy .save-message { color: var(--warm); white-space: normal; }
 
 .result-empty {
   min-height: 180px;

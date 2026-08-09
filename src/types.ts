@@ -407,8 +407,6 @@ export interface LocalDatabase {
 export type CompressionFormat = "png" | "jpeg" | "webp";
 export type CompressionInputMode = "files" | "folder";
 export type CompressionConflictPolicy = "skip" | "overwrite" | "rename";
-export type PngCompressionLevel = "fast" | "balanced" | "maximum";
-export type WebpCompressionMode = "lossy" | "lossless";
 export type CompressionItemStatus =
   | "pending"
   | "processing"
@@ -419,11 +417,6 @@ export type CompressionItemStatus =
   | "cancelled";
 
 export interface CompressionSettings {
-  pngLevel: PngCompressionLevel;
-  jpegQuality: number;
-  jpegProgressive: boolean;
-  webpMode: WebpCompressionMode;
-  webpQuality: number;
   conflictPolicy: CompressionConflictPolicy;
   skipNoBenefit: boolean;
 }
@@ -459,6 +452,20 @@ export interface CompressionSummary {
   wasCancelled: boolean;
 }
 
+export interface CompressionSaveItem {
+  itemId: string;
+  status: "saved" | "skipped" | "failed";
+  outputRelativePath: string | null;
+  message: string | null;
+}
+
+export interface CompressionSaveSummary {
+  saved: number;
+  skipped: number;
+  failed: number;
+  items: CompressionSaveItem[];
+}
+
 export type CompressionProgressEvent =
   | { type: "started"; total: number }
   | {
@@ -472,7 +479,7 @@ export type CompressionProgressEvent =
       type: "itemFinished";
       itemId: string;
       index: number;
-      status: Exclude<CompressionItemStatus, "pending" | "processing" | "cancelled">;
+      status: Exclude<CompressionItemStatus, "pending" | "processing">;
       outputRelativePath: string | null;
       outputSize: number | null;
       savedPercent: number | null;

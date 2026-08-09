@@ -7,7 +7,6 @@ const emit = defineEmits<{ close: [] }>();
 const settings = defineModel<CompressionSettings>({ required: true });
 const dialog = useTemplateRef<HTMLElement>("dialog");
 const draft = shallowRef<CompressionSettings>({ ...settings.value });
-const activeFormat = shallowRef<"png" | "jpeg" | "webp">("png");
 
 function setting<K extends keyof CompressionSettings>(key: K) {
   return computed({
@@ -18,11 +17,6 @@ function setting<K extends keyof CompressionSettings>(key: K) {
   });
 }
 
-const pngLevel = setting("pngLevel");
-const jpegQuality = setting("jpegQuality");
-const jpegProgressive = setting("jpegProgressive");
-const webpMode = setting("webpMode");
-const webpQuality = setting("webpQuality");
 const conflictPolicy = setting("conflictPolicy");
 const skipNoBenefit = setting("skipNoBenefit");
 
@@ -49,7 +43,7 @@ function save() {
         <header class="dialog-header">
           <div>
             <h2 id="compression-dialog-title">压缩设置</h2>
-            <p>配置文件冲突处理和各格式编码参数。</p>
+            <p>配置输出文件的处理方式。</p>
           </div>
           <button class="icon-button" type="button" aria-label="关闭压缩设置" @click="emit('close')">
             <X :size="18" aria-hidden="true" />
@@ -71,7 +65,7 @@ function save() {
               <label class="switch-row" for="compression-no-benefit">
                 <span>
                   <strong>无压缩收益时不写出</strong>
-                  <small>候选文件不小于原文件时保留原图。</small>
+                  <small>压缩后文件不小于原文件时保留原图。</small>
                 </span>
                 <input
                   id="compression-no-benefit"
@@ -82,91 +76,6 @@ function save() {
                   :aria-checked="skipNoBenefit"
                 />
               </label>
-            </section>
-
-            <section class="dialog-section format-section" aria-labelledby="format-settings-title">
-              <h3 id="format-settings-title">格式设置</h3>
-              <div class="format-tabs" role="tablist" aria-label="图片格式设置">
-                <button
-                  v-for="format in ['png', 'jpeg', 'webp'] as const"
-                  :id="`compression-${format}-tab`"
-                  :key="format"
-                  type="button"
-                  role="tab"
-                  :aria-controls="`compression-${format}-panel`"
-                  :aria-selected="activeFormat === format"
-                  :class="{ active: activeFormat === format }"
-                  @click="activeFormat = format"
-                >
-                  {{ format.toUpperCase() }}
-                </button>
-              </div>
-
-              <div
-                v-if="activeFormat === 'png'"
-                id="compression-png-panel"
-                class="format-options"
-                role="tabpanel"
-                aria-labelledby="compression-png-tab"
-              >
-                <label class="field-group" for="png-level">
-                  <span>无损优化</span>
-                  <select id="png-level" v-model="pngLevel">
-                    <option value="fast">快速</option>
-                    <option value="balanced">均衡</option>
-                    <option value="maximum">最大</option>
-                  </select>
-                </label>
-              </div>
-
-              <div
-                v-else-if="activeFormat === 'jpeg'"
-                id="compression-jpeg-panel"
-                class="format-options"
-                role="tabpanel"
-                aria-labelledby="compression-jpeg-tab"
-              >
-                <div class="range-heading">
-                  <label for="jpeg-quality">质量</label>
-                  <output for="jpeg-quality">{{ jpegQuality }}</output>
-                </div>
-                <input id="jpeg-quality" v-model.number="jpegQuality" type="range" min="1" max="100" />
-                <label class="switch-row compact" for="jpeg-progressive">
-                  <span><strong>渐进式 JPEG</strong></span>
-                  <input
-                    id="jpeg-progressive"
-                    v-model="jpegProgressive"
-                    class="settings-switch"
-                    type="checkbox"
-                    role="switch"
-                    :aria-checked="jpegProgressive"
-                  />
-                </label>
-                <p class="setting-note">{{ jpegQuality < 90 ? "色度采样 4:2:0" : "色度采样 4:4:4" }}</p>
-              </div>
-
-              <div
-                v-else
-                id="compression-webp-panel"
-                class="format-options"
-                role="tabpanel"
-                aria-labelledby="compression-webp-tab"
-              >
-                <label class="field-group" for="webp-mode">
-                  <span>压缩模式</span>
-                  <select id="webp-mode" v-model="webpMode">
-                    <option value="lossy">有损</option>
-                    <option value="lossless">无损</option>
-                  </select>
-                </label>
-                <template v-if="webpMode === 'lossy'">
-                  <div class="range-heading">
-                    <label for="webp-quality">质量</label>
-                    <output for="webp-quality">{{ webpQuality }}</output>
-                  </div>
-                  <input id="webp-quality" v-model.number="webpQuality" type="range" min="1" max="100" />
-                </template>
-              </div>
             </section>
           </div>
 
@@ -260,10 +169,6 @@ function save() {
   strong { color: var(--soft); font-size: 11px; font-weight: 620; }
   small { color: var(--muted); font-size: 10px; font-weight: 500; }
 
-  &.compact {
-    min-height: 40px;
-    padding-top: 10px;
-  }
 }
 
 .settings-switch {
@@ -296,55 +201,6 @@ function save() {
     &::after { transform: translateX(18px); background: var(--accent-strong); }
   }
 }
-
-.format-tabs {
-  height: 36px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--field);
-
-  button {
-    border-radius: 5px;
-    color: var(--muted);
-    background: transparent;
-    font-size: 10px;
-    font-weight: 700;
-
-    &.active { color: var(--accent-strong); background: var(--surface-strong); }
-  }
-}
-
-.format-options {
-  min-height: 114px;
-  display: grid;
-  align-content: start;
-  gap: 11px;
-  padding-top: 2px;
-
-  input[type="range"] {
-    height: 20px;
-    padding: 0;
-    border: 0;
-    box-shadow: none;
-    accent-color: var(--accent);
-  }
-}
-
-.range-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-
-  output { color: var(--text); font-variant-numeric: tabular-nums; }
-}
-
-.setting-note { margin: 0; color: var(--muted); font-size: 10px; }
 
 .dialog-footer {
   display: flex;

@@ -46,6 +46,7 @@ pub fn run() {
             compression::compression_prepare,
             compression::compression_thumbnail,
             compression::compression_run,
+            compression::compression_save,
             compression::compression_cancel,
             compression::compression_release
         ])

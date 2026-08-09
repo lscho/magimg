@@ -58,6 +58,10 @@ import {
 } from "@/services/cutoutSelectionModel";
 import { constrainAlphaToSelection } from "@/services/cutoutSelectionShape";
 import {
+  applyOpaquePanelPrior,
+  createCompoundPanelPrior
+} from "@/services/cutoutCompoundPanel";
+import {
   classifyAutoLayerElements,
   recognizeAutoLayerText,
   releaseAutoLayerRecognition
@@ -508,7 +512,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
         progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
         // BiRefNet 单次前向分割：选区 bbox 外扩上下文后推理，返回全分辨率 alpha。
         // 多边形只提供更贴合物体的外接框提示，不做硬裁剪，最终 Alpha 由 ViTMatte 决定。
-        const mask = await segmentBirefnetBox(
+        const segmentedAlpha = await segmentBirefnetBox(
           activeSegmenterModel,
           image,
           imageWidth,
@@ -516,17 +520,29 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
           selection,
           controller.signal
         );
-        coarseMasks.set(selection.id, mask);
-        progress.value = { current: index + 1, total: selections.length, stage: "refining" };
-        const refinedAlpha = constrainAlphaToSelection(await refineCutoutMask(
-          CUTOUT_REFINER,
+        const panelPrior = createCompoundPanelPrior(
           image,
           imageWidth,
           imageHeight,
-          mask,
-          selection,
-          controller.signal
-        ), imageWidth, imageHeight, selection);
+          selection
+        );
+        const mask = applyOpaquePanelPrior(segmentedAlpha, panelPrior);
+        coarseMasks.set(selection.id, mask);
+        progress.value = { current: index + 1, total: selections.length, stage: "refining" };
+        const refinedAlpha = constrainAlphaToSelection(
+          applyOpaquePanelPrior(await refineCutoutMask(
+            CUTOUT_REFINER,
+            image,
+            imageWidth,
+            imageHeight,
+            mask,
+            selection,
+            controller.signal
+          ), panelPrior),
+          imageWidth,
+          imageHeight,
+          selection
+        );
         refinedMasks.set(selection.id, refinedAlpha);
       }
 

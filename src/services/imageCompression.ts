@@ -6,13 +6,13 @@ import type {
   CompressionInputMode,
   CompressionPreparedSession,
   CompressionProgressEvent,
+  CompressionSaveSummary,
   CompressionSettings,
   CompressionSummary
 } from "@/types";
 
 export function isDesktopRuntime(): boolean {
-  return Boolean(import.meta.env.TAURI_ENV_PLATFORM) ||
-    isTauriApi() ||
+  return isTauriApi() ||
     (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
 }
 
@@ -63,7 +63,6 @@ export async function loadCompressionThumbnail(
 export async function runCompression(
   sessionId: string,
   itemIds: string[],
-  outputRoot: string,
   settings: CompressionSettings,
   onProgress: (event: CompressionProgressEvent) => void
 ): Promise<CompressionSummary> {
@@ -72,9 +71,22 @@ export async function runCompression(
   return invoke<CompressionSummary>("compression_run", {
     sessionId,
     itemIds,
-    outputRoot,
     settings,
     onProgress: channel
+  });
+}
+
+export async function saveCompressionResults(
+  sessionId: string,
+  itemIds: string[],
+  outputRoot: string,
+  settings: CompressionSettings
+): Promise<CompressionSaveSummary> {
+  return invoke<CompressionSaveSummary>("compression_save", {
+    sessionId,
+    itemIds,
+    outputRoot,
+    settings
   });
 }
 
