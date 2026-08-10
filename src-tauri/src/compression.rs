@@ -17,7 +17,7 @@ use img_parts::{jpeg::Jpeg, webp::WebP, ImageICC};
 use mozjpeg_rs::{Encoder as JpegEncoder, Preset as JpegPreset, Subsampling};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    ipc::{Channel, Response},
+    ipc::{Channel, InvokeBody, Request, Response},
     State,
 };
 
@@ -411,6 +411,30 @@ pub async fn compression_save(
 }
 
 #[tauri::command]
+pub async fn compression_auto_layer_upload(request: Request<'_>) -> Result<Response, String> {
+    let format = request
+        .headers()
+        .get("x-image-mime-type")
+        .ok_or_else(|| "自动分层上传压缩缺少图片格式。".to_string())?
+        .to_str()
+        .map_err(|_| "自动分层上传图片格式无效。".to_string())
+        .and_then(compression_format_from_mime)?;
+    let bytes = match request.body() {
+        InvokeBody::Raw(bytes) if !bytes.is_empty() => bytes.clone(),
+        _ => return Err("自动分层上传压缩输入为空。".into()),
+    };
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err("自动分层上传图片超过 256 MiB 限制。".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        encode_auto_layer_upload(&bytes, format).map(Response::new)
+    })
+    .await
+    .map_err(|error| format!("自动分层上传压缩异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub async fn compression_thumbnail(
     state: State<'_, CompressionState>,
     session_id: String,
@@ -729,6 +753,37 @@ fn encode_lossy(
         CompressionFormat::Png => encode_png_lossy(input, &image, cancelled),
         CompressionFormat::Jpeg => encode_jpeg_lossy(input, &image, cancelled),
         CompressionFormat::Webp => encode_webp_lossy(input, &image, cancelled),
+    }
+}
+
+fn encode_auto_layer_upload(input: &[u8], format: CompressionFormat) -> Result<Vec<u8>, String> {
+    let image = decode_oriented(input, format)?;
+    let icc = source_icc_profile(input, format);
+    let mut rgba = image.to_rgba8();
+    for pixel in rgba.pixels_mut() {
+        if pixel.0[3] == 0 {
+            pixel.0[0] = 0;
+            pixel.0[1] = 0;
+            pixel.0[2] = 0;
+        }
+    }
+    encode_webp_candidate(&rgba, LOSSY_QUALITY, icc.as_deref())
+}
+
+fn source_icc_profile(input: &[u8], format: CompressionFormat) -> Option<Vec<u8>> {
+    match format {
+        CompressionFormat::Png => img_parts::png::Png::from_bytes(Bytes::copy_from_slice(input))
+            .ok()
+            .and_then(|image| image.icc_profile())
+            .map(|profile| profile.to_vec()),
+        CompressionFormat::Jpeg => Jpeg::from_bytes(Bytes::copy_from_slice(input))
+            .ok()
+            .and_then(|image| image.icc_profile())
+            .map(|profile| profile.to_vec()),
+        CompressionFormat::Webp => WebP::from_bytes(Bytes::copy_from_slice(input))
+            .ok()
+            .and_then(|image| image.icc_profile())
+            .map(|profile| profile.to_vec()),
     }
 }
 
@@ -1406,6 +1461,15 @@ fn format_from_extension(path: &Path) -> Option<CompressionFormat> {
     }
 }
 
+fn compression_format_from_mime(value: &str) -> Result<CompressionFormat, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Ok(CompressionFormat::Png),
+        "image/jpeg" => Ok(CompressionFormat::Jpeg),
+        "image/webp" => Ok(CompressionFormat::Webp),
+        _ => Err("自动分层上传仅支持 PNG、JPEG 和 WebP。".into()),
+    }
+}
+
 fn image_format(format: CompressionFormat) -> ImageFormat {
     match format {
         CompressionFormat::Png => ImageFormat::Png,
@@ -1609,6 +1673,28 @@ mod tests {
     fn save_command_is_allowed_by_the_desktop_capability() {
         let permissions = include_str!("../permissions/compression.toml");
         assert!(permissions.contains("\"compression_save\""));
+        assert!(permissions.contains("\"compression_auto_layer_upload\""));
+    }
+
+    #[test]
+    fn auto_layer_upload_uses_decodable_webp_without_resizing() {
+        let original =
+            DynamicImage::ImageRgb8(ImageBuffer::from_raw(512, 384, noisy_rgb(512, 384)).unwrap());
+        let input = png_bytes(&original);
+        let output = encode_auto_layer_upload(&input, CompressionFormat::Png).unwrap();
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP).unwrap();
+
+        assert_eq!(decoded.dimensions(), original.dimensions());
+        assert!(output.len() < input.len());
+    }
+
+    #[test]
+    fn auto_layer_upload_mime_contract_is_strict() {
+        assert_eq!(
+            compression_format_from_mime("image/jpeg").unwrap(),
+            CompressionFormat::Jpeg
+        );
+        assert!(compression_format_from_mime("image/gif").is_err());
     }
 
     #[test]

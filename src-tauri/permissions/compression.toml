@@ -1,11 +1,12 @@
 [[permission]]
 identifier = "allow-image-compression"
-description = "Allow the main window to prepare, preview, run, save, cancel, and release local image compression sessions."
+description = "Allow the main window to run local image compression sessions and encode auto-layer upload copies."
 commands.allow = [
   "compression_prepare",
   "compression_thumbnail",
   "compression_run",
   "compression_save",
+  "compression_auto_layer_upload",
   "compression_cancel",
   "compression_release",
 ]

@@ -308,7 +308,7 @@ export function prepareRepairMask(
     for (let y = 0; y < height; y += 1) {
       const count = Math.min(height - 1, y + radius) - Math.max(0, y - radius) + 1;
       const index = y * width + x;
-      output[index] = Math.max(mask[index], Math.round(sum / count));
+      output[index] = dilated[index] ? 255 : Math.round(sum / count);
       const leaving = y - radius;
       const entering = y + radius + 1;
       if (leaving >= 0) sum -= horizontal[leaving * width + x];

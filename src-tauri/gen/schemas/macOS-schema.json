@@ -2319,10 +2319,10 @@
           "markdownDescription": "Allow the main window to run cutout inference, background repair, and release native sessions."
         },
         {
-          "description": "Allow the main window to prepare, preview, run, save, cancel, and release local image compression sessions.",
+          "description": "Allow the main window to run local image compression sessions and encode auto-layer upload copies.",
           "type": "string",
           "const": "allow-image-compression",
-          "markdownDescription": "Allow the main window to prepare, preview, run, save, cancel, and release local image compression sessions."
+          "markdownDescription": "Allow the main window to run local image compression sessions and encode auto-layer upload copies."
         },
         {
           "description": "Allow the frontend to toggle the DevTools panel (debug builds only).",

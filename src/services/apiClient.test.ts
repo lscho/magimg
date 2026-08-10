@@ -40,12 +40,16 @@ describe("background repair API contract", () => {
     expect(JSON.parse(fetchHttp.mock.calls[0][1].body)).toEqual({ mode: "autoLayer" });
     await apiClient.createAutoLayerTask({
       image: new File([new Uint8Array([1])], "source.png", { type: "image/png" }),
-      mask: new Blob([new Uint8Array([2])], { type: "image/png" }),
+      selectionBoxes: [{ id: "panel", x: 10, y: 20, width: 80, height: 100 }],
       mattingId: "m-auto"
     });
     expect(fetchHttp.mock.calls[1][0]).toBe("/api/client/v1/auto-layer-tasks");
     expect(fetchHttp.mock.calls[1][1].body).toBeInstanceOf(FormData);
     expect(fetchHttp.mock.calls[1][1].body.get("mattingId")).toBe("m-auto");
+    expect(fetchHttp.mock.calls[1][1].body.get("mask")).toBeNull();
+    expect(JSON.parse(fetchHttp.mock.calls[1][1].body.get("selectionBoxes"))).toEqual([
+      { x: 10, y: 20, width: 80, height: 100 }
+    ]);
   });
 
   it("submits one multipart image and grayscale mask task", async () => {

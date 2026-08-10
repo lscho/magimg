@@ -1,14 +1,18 @@
 import { computed, onBeforeUnmount, shallowRef, watch } from "vue";
 import type { AutoLayerDocument, AutoLayerItem } from "@/components/auto-layer/types";
-import { useCutoutInference } from "@/composables/useCutoutInference";
+import {
+  useCutoutInference,
+  type AutoLayerInferenceResult
+} from "@/composables/useCutoutInference";
 import { ApiError } from "@/services/apiClient";
+import { compositeAutoLayerCloudOutput } from "@/services/autoLayerCloudComposite";
+import {
+  autoLayerUploadFileName,
+  prepareAutoLayerCloudUpload,
+  type PreparedAutoLayerCloudUpload
+} from "@/services/autoLayerCloudUpload";
 import { createAutoLayerItems, orderAutoLayersByHierarchy } from "@/services/autoLayerModel";
 import { saveAutoLayerPackage } from "@/services/autoLayerExport";
-import {
-  applyAutoLayerRepairAtlas,
-  autoLayerAtlasFileName,
-  type AutoLayerRepairAtlas
-} from "@/services/autoLayerRepairAtlas";
 import { chooseImageFile, isDesktopApp, selectedImageFileFromFile } from "@/services/desktop";
 import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
 import {
@@ -31,6 +35,10 @@ import type {
 } from "@/types";
 
 type WorkflowStage = "idle" | "local" | "uploading" | "waiting" | "complete" | "draft";
+type AutoLayerCloudBackground = NonNullable<AutoLayerInferenceResult["cloudBackground"]>;
+type CloudUploadPreparation =
+  | { result: PreparedAutoLayerCloudUpload; error?: never }
+  | { result?: never; error: Error };
 
 function isSucceededTask(task: AutoLayerTask | null): task is AutoLayerTask {
   return task?.status === "succeeded" && Boolean(task.outputUrl);
@@ -47,11 +55,8 @@ export function useAutoLayerWorkflow() {
   const imageSource = shallowRef<{ source: CanvasImageSource; width: number; height: number } | null>(null);
   const selections = shallowRef<CutoutSelection[]>([]);
   const document = shallowRef<AutoLayerDocument | null>(null);
-  const cloudAtlas = shallowRef<AutoLayerRepairAtlas | null>(null);
-  const cloudSplitAtlas = shallowRef<AutoLayerRepairAtlas | null>(null);
+  const cloudBackground = shallowRef<AutoLayerCloudBackground | null>(null);
   const cloudTask = shallowRef<AutoLayerTask | null>(null);
-  const cloudSplitTask = shallowRef<AutoLayerTask | null>(null);
-  const splitConfirmOpen = shallowRef(false);
   const sessionKey = shallowRef(0);
   const selecting = shallowRef(false);
   const clearing = shallowRef(false);
@@ -68,8 +73,8 @@ export function useAutoLayerWorkflow() {
   const recognitionResourceStatus = shallowRef<"checking" | "missing" | "downloading" | "ready" | "error">("checking");
   const recognitionResourceProgress = shallowRef(0);
   let messageTimer: number | undefined;
-  let splitBaseCharge: MattingChargeResult | null = null;
-  let pendingSubmission: Array<{ charge: MattingChargeResult; idempotencyKey: string }> | null = null;
+  let pendingSubmission: { charge: MattingChargeResult; idempotencyKey: string } | null = null;
+  let cloudUploadPreparation: Promise<CloudUploadPreparation> | null = null;
 
   const source = computed(() => selectedFile.value
     ? { blob: selectedFile.value.file, mimeType: selectedFile.value.file.type || "image/png" }
@@ -104,7 +109,6 @@ export function useAutoLayerWorkflow() {
       }, abortController.signal);
       recognitionResourceStatus.value = "ready";
       recognitionResourceProgress.value = 100;
-      showMessage("自动分层识别资源已就绪");
       return true;
     } catch (error) {
       recognitionResourceStatus.value = "error";
@@ -113,6 +117,25 @@ export function useAutoLayerWorkflow() {
     } finally {
       controller.value = null;
     }
+  }
+
+  async function installMissingResources(): Promise<boolean> {
+    if (busy.value || inference.resourceStatus.value === "downloading") return false;
+    actionError.value = "";
+    const installers: Promise<boolean>[] = [];
+    if (inference.resourceStatus.value !== "ready") {
+      installers.push(inference.installResourcePackage());
+    }
+    if (recognitionResourceStatus.value !== "ready") {
+      installers.push(installRecognitionResource());
+    }
+    if (!installers.length) return true;
+    const installed = await Promise.all(installers);
+    const ready = installed.every(Boolean)
+      && inference.resourceStatus.value === "ready"
+      && recognitionResourceStatus.value === "ready";
+    if (ready) showMessage("自动分层资源已就绪");
+    return ready;
   }
 
   watch(() => app.balance.balance, balance => {
@@ -130,12 +153,9 @@ export function useAutoLayerWorkflow() {
     imageSource.value = null;
     selections.value = cloneCutoutSelections(restoredSelections);
     document.value = null;
-    cloudAtlas.value = null;
-    cloudSplitAtlas.value = null;
+    cloudBackground.value = null;
     cloudTask.value = null;
-    cloudSplitTask.value = null;
-    splitConfirmOpen.value = false;
-    splitBaseCharge = null;
+    cloudUploadPreparation = null;
     drawerOpen.value = false;
     actionError.value = "";
     stage.value = "idle";
@@ -177,12 +197,8 @@ export function useAutoLayerWorkflow() {
     selections.value = normalized;
     if (changed && !busy.value) {
       document.value = null;
-      cloudAtlas.value = null;
-      cloudSplitAtlas.value = null;
+      cloudBackground.value = null;
       cloudTask.value = null;
-      cloudSplitTask.value = null;
-      splitConfirmOpen.value = false;
-      splitBaseCharge = null;
       drawerOpen.value = false;
     }
   }
@@ -203,111 +219,67 @@ export function useAutoLayerWorkflow() {
     }
   }
 
-  async function submitAtlasTask(
-    atlas: AutoLayerRepairAtlas,
-    isBackground: boolean,
+  async function submitCloudBackgroundTask(
+    input: AutoLayerCloudBackground,
     chargeResult: MattingChargeResult,
     idempotencyKey: string
   ) {
     const documentValue = document.value;
     if (!documentValue) throw new Error("分层文档不存在。");
+    const prepared = documentValue.cloudInputAssetId || !cloudUploadPreparation
+      ? null
+      : await cloudUploadPreparation;
+    if (prepared?.error) throw prepared.error;
+    const uploadBlob = prepared?.result.blob ?? input.imageBlob;
     return app.createAutoLayerTask({
-      image: isBackground && documentValue.cloudInputAssetId
+      image: documentValue.cloudInputAssetId
         ? undefined
-        : new File([atlas.imageBlob], autoLayerAtlasFileName(atlas.imageBlob), {
-          type: atlas.imageBlob.type || "image/png"
+        : new File([uploadBlob], autoLayerUploadFileName(uploadBlob), {
+          type: uploadBlob.type || "image/png"
         }),
-      inputAssetId: isBackground ? documentValue.cloudInputAssetId : undefined,
-      mask: atlas.maskBlob,
+      inputAssetId: documentValue.cloudInputAssetId,
+      selectionBoxes: input.selectionBoxes,
       mattingId: chargeResult.mattingId,
       idempotencyKey
     });
   }
 
-  async function applyCloudOutputs() {
-    const atlas = cloudAtlas.value;
-    const splitAtlas = cloudSplitAtlas.value;
-    if (!atlas || !document.value) return;
-    const outputs: Array<{ blob: Blob; itemAtlas: AutoLayerRepairAtlas }> = [];
-    if (isSucceededTask(cloudTask.value)) {
-      const task = cloudTask.value;
-      outputs.push({ blob: await app.downloadAutoLayerOutput(task), itemAtlas: atlas });
-    }
-    if (splitAtlas && isSucceededTask(cloudSplitTask.value)) {
-      const task = cloudSplitTask.value;
-      outputs.push({
-        blob: await app.downloadAutoLayerOutput(task),
-        itemAtlas: splitAtlas
-      });
-    }
-    let current = {
-      backgroundBlob: document.value.backgroundBlob,
-      layers: document.value.layers
-    };
-    for (const output of outputs) {
-      current = await applyAutoLayerRepairAtlas(output.blob, output.itemAtlas, current);
-    }
-    if (!outputs.length) return;
+  async function applyCloudOutput() {
+    if (!document.value || !isSucceededTask(cloudTask.value)) return;
+    const input = cloudBackground.value;
+    if (!input) throw new Error("云端背景输入不存在。");
+    const repairedBlob = await app.downloadAutoLayerOutput(cloudTask.value);
+    const backgroundBlob = await compositeAutoLayerCloudOutput(
+      input.imageBlob,
+      repairedBlob,
+      document.value.width,
+      document.value.height,
+      input.selectionBoxes
+    );
     document.value = {
       ...document.value,
-      backgroundBlob: current.backgroundBlob,
-      layers: current.layers
+      backgroundBlob
     };
   }
 
-  /**
-   * 提交 1–2 张图集对应的云端任务（整页背景 + 可选父素材），
-   * 全部创建成功后并行等待，成功输出按背景、素材顺序回填。
-   * 任一任务失败时服务端独立退款；未创建成功的预扣由客户端退回。
-   */
-  async function createCloudBackgrounds(charges: MattingChargeResult[]) {
-    const atlas = cloudAtlas.value;
-    const splitAtlas = cloudSplitAtlas.value;
-    if (!atlas || !document.value) return;
-    if (splitAtlas && charges.length < 2) {
-      throw new Error("父素材图集缺少预扣流水。");
-    }
+  async function createCloudBackground(chargeResult: MattingChargeResult) {
+    const input = cloudBackground.value;
+    if (!input || !document.value) return;
     const abortController = controller.value ?? new AbortController();
     controller.value = abortController;
-    const items = [
-      { atlas, isBackground: true, charge: charges[0], idempotencyKey: `huanhua:${crypto.randomUUID()}` },
-      ...(splitAtlas ? [{
-        atlas: splitAtlas,
-        isBackground: false,
-        charge: charges[1],
-        idempotencyKey: `huanhua:${crypto.randomUUID()}`
-      }] : [])
-    ];
+    const idempotencyKey = `huanhua:${crypto.randomUUID()}`;
     let accepted = false;
-    pendingSubmission = items.map(item => ({ charge: item.charge, idempotencyKey: item.idempotencyKey }));
+    pendingSubmission = { charge: chargeResult, idempotencyKey };
     drawerOpen.value = false;
     try {
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        stage.value = "uploading";
-        const task = await submitAtlasTask(item.atlas, item.isBackground, item.charge, item.idempotencyKey);
-        if (item.isBackground) cloudTask.value = task;
-        else cloudSplitTask.value = task;
-      }
+      stage.value = "uploading";
+      cloudTask.value = await submitCloudBackgroundTask(input, chargeResult, idempotencyKey);
       accepted = true;
       pendingSubmission = null;
       stage.value = "waiting";
-      const completed = await Promise.all(
-        items.map(item => app.waitForAutoLayerTask(
-          item.isBackground ? cloudTask.value! : cloudSplitTask.value!,
-          abortController.signal
-        ))
-      );
-      for (let index = 0; index < items.length; index += 1) {
-        const task = completed[index];
-        if (items[index].isBackground) cloudTask.value = task;
-        else cloudSplitTask.value = task;
-      }
-      await applyCloudOutputs();
-      if (!isSucceededTask(cloudTask.value) ||
-        (splitAtlas && !isSucceededTask(cloudSplitTask.value))) {
-        throw new Error("云端背景生成失败，可只重试背景。");
-      }
+      cloudTask.value = await app.waitForAutoLayerTask(cloudTask.value, abortController.signal);
+      await applyCloudOutput();
+      if (!isSucceededTask(cloudTask.value)) throw new Error("云端背景生成失败，可重试背景。");
       document.value = {
         ...document.value,
         status: "complete",
@@ -324,14 +296,7 @@ export function useAutoLayerWorkflow() {
       const ambiguousNetworkFailure = error instanceof ApiError && error.statusCode === 0;
       if (!accepted && !ambiguousNetworkFailure) {
         pendingSubmission = null;
-        // 已绑定任务的预扣由服务端在任务终态退款，只退回未创建任务的预扣。
-        const unbound = items.filter(item => {
-          const task = item.isBackground ? cloudTask.value : cloudSplitTask.value;
-          return !task;
-        }).map(item => item.charge);
-        for (const charge of unbound) {
-          await app.refundMatting(charge.mattingId).catch(() => undefined);
-        }
+        if (!cloudTask.value) await app.refundMatting(chargeResult.mattingId).catch(() => undefined);
       }
     } finally {
       controller.value = null;
@@ -341,7 +306,6 @@ export function useAutoLayerWorkflow() {
   async function createLayers() {
     if (!app.isAuthenticated) { showLogin.value = true; return; }
     if (!enabled.value) { actionError.value = "服务端尚未启用自动分层。"; return; }
-    if (splitConfirmOpen.value) return;
     const image = imageSource.value;
     if (!image || busy.value) return;
     if (!selections.value.length) { actionError.value = "请先框选元素或文字。"; return; }
@@ -349,10 +313,20 @@ export function useAutoLayerWorkflow() {
     const chargeResult = await charge();
     if (!chargeResult) return;
     document.value = null;
-    cloudAtlas.value = null;
+    cloudBackground.value = null;
     cloudTask.value = null;
     controller.value = new AbortController();
     stage.value = "local";
+    const cloudSourceBlob = selectedFile.value?.file;
+    cloudUploadPreparation = cloudSourceBlob
+      ? prepareAutoLayerCloudUpload(
+        cloudSourceBlob,
+        app.capabilities.backgroundRepairMaxBytes
+      ).then(
+        result => ({ result }),
+        error => ({ error: error instanceof Error ? error : new Error("整页背景压缩失败。") })
+      )
+      : null;
     const output = await inference.createAutoLayers(
       image.source,
       image.width,
@@ -360,17 +334,18 @@ export function useAutoLayerWorkflow() {
       cloneCutoutSelections(selections.value),
       {
         cloudMaxPixels: app.capabilities.backgroundRepairMaxPixels,
-        cloudMaxBytes: app.capabilities.backgroundRepairMaxBytes
+        cloudMaxBytes: app.capabilities.backgroundRepairMaxBytes,
+        ...(cloudSourceBlob ? { cloudSourceBlob } : {})
       }
     );
     if (!output) {
       stage.value = "idle";
+      cloudUploadPreparation = null;
       await app.refundMatting(chargeResult.mattingId).catch(() => undefined);
       controller.value = null;
       return;
     }
-    cloudAtlas.value = output.cloudAtlas ?? null;
-    cloudSplitAtlas.value = output.splitCloudAtlas ?? null;
+    cloudBackground.value = output.cloudBackground ?? null;
     document.value = {
       backgroundBlob: output.backgroundBlob,
       width: image.width,
@@ -383,64 +358,33 @@ export function useAutoLayerWorkflow() {
     };
     stage.value = "draft";
     drawerOpen.value = false;
-    if (!cloudAtlas.value) {
+    if (!cloudBackground.value) {
       // 纯色/渐变背景已在本地直接提取，无云端任务：退还预扣积分并完成分层。
       await app.refundMatting(chargeResult.mattingId).catch(() => undefined);
       document.value = { ...document.value, status: "complete" };
       stage.value = "complete";
       drawerOpen.value = true;
       controller.value = null;
+      cloudUploadPreparation = null;
       showMessage(`已生成 ${document.value.layers.length} 个可编辑图层`);
       return;
     }
-    if (cloudSplitAtlas.value) {
-      // 图集超载拆分：先提示双倍积分，确认后再预扣第二张图集的费用。
-      splitBaseCharge = chargeResult;
-      splitConfirmOpen.value = true;
-      return;
-    }
-    await createCloudBackgrounds([chargeResult]);
-  }
-
-  async function confirmSplitCloud() {
-    splitConfirmOpen.value = false;
-    if (!splitBaseCharge) return;
-    const baseCharge = splitBaseCharge;
-    splitBaseCharge = null;
-    const splitCharge = await charge();
-    if (!splitCharge) {
-      await app.refundMatting(baseCharge.mattingId).catch(() => undefined);
-      stage.value = "idle";
-      return;
-    }
-    await createCloudBackgrounds([baseCharge, splitCharge]);
-  }
-
-  function cancelSplitCloud() {
-    splitConfirmOpen.value = false;
-    if (splitBaseCharge) {
-      const baseCharge = splitBaseCharge;
-      splitBaseCharge = null;
-      void app.refundMatting(baseCharge.mattingId).catch(() => undefined);
-    }
-    stage.value = "idle";
+    await createCloudBackground(chargeResult);
   }
 
   async function retryCloudBackground() {
-    if (!document.value || !cloudAtlas.value || busy.value) return;
+    if (!document.value || !cloudBackground.value || busy.value) return;
     actionError.value = "";
     if (pendingSubmission) {
       // 网络歧义失败后重发：用原预扣与幂等键重新提交未绑定任务。
       await resubmitPendingSubmission();
       return;
     }
-    const hasSplit = Boolean(cloudSplitAtlas.value);
     const backgroundOk = isSucceededTask(cloudTask.value);
-    const splitOk = !hasSplit || isSucceededTask(cloudSplitTask.value);
-    if (backgroundOk && splitOk) {
+    if (backgroundOk) {
       try {
         stage.value = "waiting";
-        await applyCloudOutputs();
+        await applyCloudOutput();
         document.value = {
           ...document.value,
           status: "complete",
@@ -450,112 +394,66 @@ export function useAutoLayerWorkflow() {
         drawerOpen.value = true;
       } catch (error) {
         stage.value = "draft";
-        actionError.value = error instanceof Error ? error.message : "云端背景图集拆分失败。";
+        actionError.value = error instanceof Error ? error.message : "云端背景读取失败。";
       }
       return;
     }
-    if (isPendingTask(cloudTask.value) || (hasSplit && isPendingTask(cloudSplitTask.value))) {
-      // 已有任务在排队：等待完成后回填，成功部分直接采用。
-      await waitAndApplyCloudTasks();
+    if (isPendingTask(cloudTask.value)) {
+      await waitAndApplyCloudTask();
       return;
     }
-    // 失败或缺失的任务重新提交：失败任务服务端已退款，需要新预扣。
-    const charges: MattingChargeResult[] = [];
-    const items: Array<{ atlas: AutoLayerRepairAtlas; isBackground: boolean; charge: MattingChargeResult }> = [];
-    if (!backgroundOk) {
-      const chargeResult = await charge();
-      if (!chargeResult) return;
-      charges.push(chargeResult);
-      items.push({ atlas: cloudAtlas.value, isBackground: true, charge: chargeResult });
-    }
-    if (hasSplit && !splitOk) {
-      const chargeResult = await charge();
-      if (!chargeResult) {
-        for (const charge of charges) {
-          await app.refundMatting(charge.mattingId).catch(() => undefined);
-        }
-        return;
-      }
-      charges.push(chargeResult);
-      items.push({ atlas: cloudSplitAtlas.value!, isBackground: false, charge: chargeResult });
-    }
-    await submitAndWaitCloudItems(items);
+    const chargeResult = await charge();
+    if (chargeResult) await createCloudBackground(chargeResult);
   }
 
   /** 用保留的预扣与幂等键重新提交网络歧义失败的未绑定任务。 */
   async function resubmitPendingSubmission() {
     const submission = pendingSubmission;
-    if (!submission || !cloudAtlas.value || !document.value) return;
+    const input = cloudBackground.value;
+    if (!submission || !input || !document.value) return;
     pendingSubmission = null;
-    const items = submission.map((entry, index) => ({
-      atlas: index === 0 ? cloudAtlas.value! : cloudSplitAtlas.value!,
-      isBackground: index === 0,
-      charge: entry.charge,
-      idempotencyKey: entry.idempotencyKey
-    }));
-    await submitAndWaitCloudItems(items);
-  }
-
-  /** 提交缺失任务、等待全部任务完成并回填成功输出。 */
-  async function submitAndWaitCloudItems(
-    items: Array<{ atlas: AutoLayerRepairAtlas; isBackground: boolean; charge: MattingChargeResult; idempotencyKey?: string }>
-  ) {
     const abortController = controller.value ?? new AbortController();
     controller.value = abortController;
     drawerOpen.value = false;
     try {
-      for (const item of items) {
-        stage.value = "uploading";
-        const task = await submitAtlasTask(
-          item.atlas,
-          item.isBackground,
-          item.charge,
-          item.idempotencyKey ?? `huanhua:${crypto.randomUUID()}`
-        );
-        if (item.isBackground) cloudTask.value = task;
-        else cloudSplitTask.value = task;
-      }
-      await waitAndApplyCloudTasks();
+      stage.value = "uploading";
+      cloudTask.value = await submitCloudBackgroundTask(
+        input,
+        submission.charge,
+        submission.idempotencyKey
+      );
+      await waitAndApplyCloudTask();
     } finally {
       controller.value = null;
     }
   }
 
-  /** 等待所有非终态任务，回填成功输出并收敛状态。 */
-  async function waitAndApplyCloudTasks() {
-    const currentDocument = document.value;
-    if (!currentDocument) return;
+  /** 等待整页背景任务，回填输出并收敛状态。 */
+  async function waitAndApplyCloudTask() {
+    if (!document.value) return;
     const abortController = controller.value ?? new AbortController();
     controller.value = abortController;
     try {
-      const pendingTasks = [cloudTask.value, cloudSplitTask.value]
-        .filter((task): task is AutoLayerTask => Boolean(task) && isPendingTask(task));
-      if (pendingTasks.length) {
+      if (cloudTask.value && isPendingTask(cloudTask.value)) {
         stage.value = "waiting";
-        const settled = await Promise.all(
-          pendingTasks.map(task => app.waitForAutoLayerTask(task, abortController.signal)
-            .catch(() => null))
-        );
-        for (const task of settled) {
-          if (!task) continue;
-          if (cloudTask.value?.id === task.id) cloudTask.value = task;
-          if (cloudSplitTask.value?.id === task.id) cloudSplitTask.value = task;
-        }
+        cloudTask.value = await app.waitForAutoLayerTask(cloudTask.value, abortController.signal)
+          .catch(() => cloudTask.value);
       }
-      await applyCloudOutputs();
-      const hasSplit = Boolean(cloudSplitAtlas.value);
-      const allSucceeded = isSucceededTask(cloudTask.value) && (!hasSplit || isSucceededTask(cloudSplitTask.value));
+      await applyCloudOutput();
+      const allSucceeded = isSucceededTask(cloudTask.value);
+      const appliedDocument = document.value;
+      if (!appliedDocument) return;
       if (allSucceeded) {
         document.value = {
-          ...currentDocument,
+          ...appliedDocument,
           status: "complete",
           cloudInputAssetId: cloudTask.value?.inputAssetId
         };
         stage.value = "complete";
         drawerOpen.value = true;
-        showMessage(`已生成 ${currentDocument.layers.length} 个可编辑图层`);
+        showMessage(`已生成 ${appliedDocument.layers.length} 个可编辑图层`);
       } else {
-        document.value = { ...currentDocument, status: "draft" };
+        document.value = { ...appliedDocument, status: "draft" };
         stage.value = "draft";
         drawerOpen.value = false;
         actionError.value = "云端背景生成失败，可只重试背景。";
@@ -649,13 +547,13 @@ export function useAutoLayerWorkflow() {
   return {
     app, inference, selectedFile, imageSource, selections, document, sessionKey,
     selecting, clearing, showLogin, drawerOpen, selectionHistoryOpen, selectionHistoryLoading,
-    selectionRecords, stage, actionError, actionMessage, splitConfirmOpen,
+    selectionRecords, stage, actionError, actionMessage,
     recognitionResourceStatus, recognitionResourceProgress,
     source, cost, enabled, busy, insufficientCredits, canPackage, desktopAvailable,
     canSaveSelections, progress,
     chooseImage, loadDroppedImage, clearImage, handleReady, handleSelectionsChange,
     updateLayers, createLayers, retryCloudBackground, savePackage, saveSelections,
     openSelectionHistory, restoreSelections, removeSelectionRecord, cancel, handleLoginSuccess,
-    installRecognitionResource, confirmSplitCloud, cancelSplitCloud
+    installMissingResources
   };
 }

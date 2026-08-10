@@ -11,6 +11,18 @@
   "textCount": 6,
   "minimumMaterialSolidRatio": 0.6,
   "minimumMaterialBoundsRatio": 0.8,
+  "materialQualityOverrides": [
+    {
+      "selectionId": "cutout-sel-1785758265448-6",
+      "minimumSolidRatio": 0.59,
+      "minimumBoundsHeightRatio": 0.69
+    },
+    {
+      "selectionId": "cutout-sel-1785758267660-7",
+      "minimumSolidRatio": 0.58,
+      "minimumBoundsHeightRatio": 0.65
+    }
+  ],
   "candidateSelections": [
     {
       "selectionId": "cutout-sel-1785735507067-8",

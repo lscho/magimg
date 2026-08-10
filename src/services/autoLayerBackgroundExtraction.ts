@@ -3,14 +3,28 @@ import { analyzeMaterialContext, type MaterialContextAnalysis } from "@/services
 /** 蒙版邻域平均梯度能量低于该值视为低纹理背景（平缓渐变、低对比表面）。 */
 const LOW_TEXTURE_GRADIENT_MEAN = 8;
 const LOW_TEXTURE_MIN_SAMPLES = 64;
-/** 低纹理路由仍要求蒙版邻域颜色相对集中，避免多色块背景被扩散糊化。 */
-const LOW_TEXTURE_NEARBY_COVERAGE = 0.3;
+const STRONG_TEXTURE_GRADIENT = 18;
+/** 大面积挖空无法仅凭局部颜色可靠还原，强制转云端场景修复。 */
+const MAX_LOCAL_MASK_COVERAGE = 0.18;
+/** 本地整页提取只接受高置信的单一表面，不再把浅色插画当成缓渐变。 */
+const LOCAL_NEARBY_COVERAGE = 0.55;
+const LOCAL_DOMINANT_COVERAGE = 0.12;
+const MAX_LOCAL_STRONG_GRADIENT_RATIO = 0.015;
 const TEXTURE_SAMPLE_BAND = 32;
 const TEXTURE_MAX_SAMPLES = 16384;
 
 export interface AutoLayerBackgroundAnalysis extends MaterialContextAnalysis {
-  /** 蒙版邻域背景纹理能量低；即使颜色直方图不集中，本地修复也优于云端生成。 */
+  /** 蒙版邻域背景纹理能量低。 */
   lowTexture: boolean;
+  /** 明显边缘在已知背景采样中的占比，用于识别山体、建筑等插画结构。 */
+  strongGradientRatio: number;
+  /** 整页中实际需要移除的像素占比。 */
+  maskCoverage: number;
+}
+
+interface BackgroundTextureMetrics {
+  lowTexture: boolean;
+  strongGradientRatio: number;
 }
 
 /**
@@ -31,19 +45,28 @@ export function analyzeBackgroundExtraction(
   const alpha = new Uint8Array(width * height);
   alpha.fill(255);
   const analysis = analyzeMaterialContext(rgba, alpha, backgroundMask, width, height);
-  return { ...analysis, lowTexture: analyzeBackgroundTexture(rgba, backgroundMask, width, height) };
+  const texture = analyzeBackgroundTextureMetrics(rgba, backgroundMask, width, height);
+  let maskedPixels = 0;
+  for (const value of backgroundMask) {
+    if (value > 0) maskedPixels += 1;
+  }
+  return {
+    ...analysis,
+    ...texture,
+    maskCoverage: maskedPixels / Math.max(1, width * height)
+  };
 }
 
 /**
  * 统计蒙版邻域内未遮罩背景像素的平均梯度能量。
  * 采样间隔按区域面积自适应放大，控制在大图上的计算量。
  */
-export function analyzeBackgroundTexture(
+function analyzeBackgroundTextureMetrics(
   rgba: Uint8ClampedArray,
   backgroundMask: Uint8Array,
   width: number,
   height: number
-): boolean {
+): BackgroundTextureMetrics {
   if (rgba.length !== width * height * 4 || backgroundMask.length !== width * height) {
     throw new Error("背景纹理分析的像素数据尺寸不匹配。");
   }
@@ -60,13 +83,15 @@ export function analyzeBackgroundTexture(
     maskRight = Math.max(maskRight, x);
     maskBottom = Math.max(maskBottom, y);
   }
-  if (maskRight < 0) return false;
+  if (maskRight < 0) return { lowTexture: false, strongGradientRatio: 1 };
   // 留出 1px 用于中心差分；边界处退化为不采样。
   const sampleLeft = Math.max(1, maskLeft - TEXTURE_SAMPLE_BAND);
   const sampleTop = Math.max(1, maskTop - TEXTURE_SAMPLE_BAND);
   const sampleRight = Math.min(width - 2, maskRight + TEXTURE_SAMPLE_BAND);
   const sampleBottom = Math.min(height - 2, maskBottom + TEXTURE_SAMPLE_BAND);
-  if (sampleRight <= sampleLeft || sampleBottom <= sampleTop) return false;
+  if (sampleRight <= sampleLeft || sampleBottom <= sampleTop) {
+    return { lowTexture: false, strongGradientRatio: 1 };
+  }
 
   const regionWidth = sampleRight - sampleLeft + 1;
   const regionHeight = sampleBottom - sampleTop + 1;
@@ -76,6 +101,7 @@ export function analyzeBackgroundTexture(
   );
   let total = 0;
   let gradientSum = 0;
+  let strongGradients = 0;
   for (let y = sampleTop; y <= sampleBottom; y += stride) {
     for (let x = sampleLeft; x <= sampleRight; x += stride) {
       const pixel = y * width + x;
@@ -92,12 +118,28 @@ export function analyzeBackgroundTexture(
         Math.abs(rgba[downOffset] - rgba[upOffset]) +
         Math.abs(rgba[downOffset + 1] - rgba[upOffset + 1]) +
         Math.abs(rgba[downOffset + 2] - rgba[upOffset + 2]);
-      gradientSum += gradient / 6;
+      const normalizedGradient = gradient / 6;
+      gradientSum += normalizedGradient;
+      if (normalizedGradient >= STRONG_TEXTURE_GRADIENT) strongGradients += 1;
       total += 1;
     }
   }
-  if (total < LOW_TEXTURE_MIN_SAMPLES) return false;
-  return gradientSum / total <= LOW_TEXTURE_GRADIENT_MEAN;
+  if (total < LOW_TEXTURE_MIN_SAMPLES) {
+    return { lowTexture: false, strongGradientRatio: 1 };
+  }
+  return {
+    lowTexture: gradientSum / total <= LOW_TEXTURE_GRADIENT_MEAN,
+    strongGradientRatio: strongGradients / total
+  };
+}
+
+export function analyzeBackgroundTexture(
+  rgba: Uint8ClampedArray,
+  backgroundMask: Uint8Array,
+  width: number,
+  height: number
+): boolean {
+  return analyzeBackgroundTextureMetrics(rgba, backgroundMask, width, height).lowTexture;
 }
 
 /**
@@ -105,8 +147,12 @@ export function analyzeBackgroundTexture(
  */
 export function shouldExtractBackgroundLocally(analysis: AutoLayerBackgroundAnalysis | null): boolean {
   if (!analysis) return false;
-  if (analysis.useDiffusion) return true;
-  return analysis.lowTexture && analysis.nearbyCoverage >= LOW_TEXTURE_NEARBY_COVERAGE;
+  if (analysis.maskCoverage <= 0 || analysis.maskCoverage > MAX_LOCAL_MASK_COVERAGE) return false;
+  return analysis.useDiffusion &&
+    analysis.lowTexture &&
+    analysis.strongGradientRatio <= MAX_LOCAL_STRONG_GRADIENT_RATIO &&
+    analysis.nearbyCoverage >= LOCAL_NEARBY_COVERAGE &&
+    analysis.dominantCoverage >= LOCAL_DOMINANT_COVERAGE;
 }
 
 /**

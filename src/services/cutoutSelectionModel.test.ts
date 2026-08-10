@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAutomaticNesting,
   cloneCutoutSelections,
+  resolveAutoLayerHierarchy,
   selectionDescendants,
   setSelectionIndependent,
   translateCutoutSelection
@@ -116,6 +117,46 @@ describe("applyAutomaticNesting", () => {
       box("icon", 10, 10, 20, 20)
     ]);
     expect(byId(result, "icon").parentId).toBeNull();
+  });
+
+  it("preserves geometry-based text children after element Alpha validation", () => {
+    const nested = applyAutomaticNesting([
+      box("panel", 0, 0, 100, 100),
+      { ...box("label", 20, 20, 40, 16), layerKind: "text" }
+    ]);
+    const validatedElements = cloneCutoutSelections([byId(nested, "panel")]).map(selection => ({
+      ...selection,
+      behavior: "extract" as const
+    }));
+
+    const resolved = resolveAutoLayerHierarchy(nested, validatedElements);
+
+    expect(byId(resolved, "label").parentId).toBe("panel");
+    expect(byId(resolved, "panel").behavior).toBe("background");
+  });
+
+  it("uses validated element relations and rejects corrupt hierarchy cycles", () => {
+    const input = cloneCutoutSelections([
+      { ...box("parent", 0, 0, 100, 100), parentId: "child" },
+      { ...box("child", 10, 10, 20, 20), parentId: "parent" }
+    ]);
+    const validatedElements = cloneCutoutSelections(input).map(selection => selection.id === "child"
+      ? {
+        ...selection,
+        parentId: null,
+        behavior: "extract" as const,
+        relationSource: "manual" as const
+      }
+      : selection);
+
+    const resolved = resolveAutoLayerHierarchy(input, validatedElements);
+
+    expect(byId(resolved, "child")).toMatchObject({
+      parentId: null,
+      behavior: "extract",
+      relationSource: "manual"
+    });
+    expect(byId(resolved, "parent").parentId).toBe("child");
   });
 
   it("does not overwrite a manual independent selection", () => {

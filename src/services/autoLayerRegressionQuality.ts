@@ -20,6 +20,12 @@ export interface AutoLayerRegressionCase {
   textCount: number;
   minimumMaterialSolidRatio: number;
   minimumMaterialBoundsRatio: number;
+  materialQualityOverrides?: Array<{
+    selectionId: string;
+    minimumSolidRatio?: number;
+    minimumBoundsWidthRatio?: number;
+    minimumBoundsHeightRatio?: number;
+  }>;
   candidateSelections: Array<{ selectionId: string; selectedCandidateIndex: number }>;
   expectedTexts: Array<{
     sourceSelectionId: string;
@@ -78,6 +84,8 @@ export interface AutoLayerCloudQualityReport {
     pixels: number;
     meanDifference: number;
     changedRatio: number;
+    boxMeanDifference?: number;
+    boxChangedRatio?: number;
   }>;
 }
 
@@ -107,6 +115,31 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === "string" && item.length > 0);
 }
 
+function validRatio(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function validMaterialQualityOverrides(value: unknown) {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const selectionIds = new Set<string>();
+  return value.every(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const override = item as NonNullable<AutoLayerRegressionCase["materialQualityOverrides"]>[number];
+    if (typeof override.selectionId !== "string" || !override.selectionId ||
+      selectionIds.has(override.selectionId)) return false;
+    const thresholds = [
+      override.minimumSolidRatio,
+      override.minimumBoundsWidthRatio,
+      override.minimumBoundsHeightRatio
+    ];
+    if (!thresholds.some(threshold => threshold !== undefined) ||
+      thresholds.some(threshold => threshold !== undefined && !validRatio(threshold))) return false;
+    selectionIds.add(override.selectionId);
+    return true;
+  });
+}
+
 export function parseAutoLayerRegressionCase(value: unknown): AutoLayerRegressionCase {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("自动分层回归用例格式无效。");
@@ -120,6 +153,7 @@ export function parseAutoLayerRegressionCase(value: unknown): AutoLayerRegressio
     !finiteNumber(input.selectionCount, 1) || !finiteNumber(input.materialCount, 1) ||
     !finiteNumber(input.textCount) || !finiteNumber(input.minimumMaterialSolidRatio) ||
     !finiteNumber(input.minimumMaterialBoundsRatio) ||
+    !validMaterialQualityOverrides(input.materialQualityOverrides) ||
     !Array.isArray(input.candidateSelections) || !Array.isArray(input.expectedTexts) ||
     !stringArray(input.repairLayerIds) || !stringArray(input.topLevelSelectionIds) ||
     !cloud || !finiteNumber(cloud.minimumMaskedMeanDifference) ||
@@ -138,23 +172,18 @@ function sameMembers(actual: readonly string[], expected: readonly string[]) {
   return JSON.stringify(sorted(actual)) === JSON.stringify(sorted(expected));
 }
 
-function cropMaskToBox(
-  mask: Uint8Array,
-  imageWidth: number,
-  imageHeight: number,
-  box: CutoutSelectionBox
-) {
-  if (mask.length !== imageWidth * imageHeight) throw new Error("云端质量检查蒙版尺寸无效。");
-  const left = Math.max(0, Math.round(box.x));
-  const top = Math.max(0, Math.round(box.y));
-  const width = Math.max(1, Math.min(imageWidth - left, Math.round(box.width)));
-  const height = Math.max(1, Math.min(imageHeight - top, Math.round(box.height)));
-  const cropped = new Uint8Array(width * height);
-  for (let y = 0; y < height; y += 1) {
-    const sourceStart = (top + y) * imageWidth + left;
-    cropped.set(mask.subarray(sourceStart, sourceStart + width), y * width);
+function boxesMask(boxes: readonly CutoutSelectionBox[], width: number, height: number) {
+  const mask = new Uint8Array(width * height);
+  for (const box of boxes) {
+    const left = Math.max(0, Math.floor(box.x));
+    const top = Math.max(0, Math.floor(box.y));
+    const right = Math.min(width, Math.ceil(box.x + box.width));
+    const bottom = Math.min(height, Math.ceil(box.y + box.height));
+    for (let y = top; y < bottom; y += 1) {
+      mask.fill(255, y * width + left, y * width + right);
+    }
   }
-  return cropped;
+  return mask;
 }
 
 function addCheck(
@@ -332,6 +361,35 @@ function compareGlobalForeground(
       if (foregroundMask[y * imageWidth + x] < 128) continue;
       const targetPixel = (y - targetTop) * targetWidth + x - targetLeft;
       const difference = pixelDifference(source, target, targetPixel);
+      pixels += 1;
+      differenceTotal += difference;
+      if (difference >= 12) changed += 1;
+    }
+  }
+  return {
+    pixels,
+    meanDifference: differenceTotal / Math.max(1, pixels),
+    changedRatio: changed / Math.max(1, pixels)
+  };
+}
+
+function compareGlobalBox(
+  source: Uint8ClampedArray,
+  target: Uint8ClampedArray,
+  width: number,
+  height: number,
+  box: CutoutSelectionBox
+) {
+  const left = Math.max(0, Math.floor(box.x));
+  const top = Math.max(0, Math.floor(box.y));
+  const right = Math.min(width, Math.ceil(box.x + box.width));
+  const bottom = Math.min(height, Math.ceil(box.y + box.height));
+  let pixels = 0;
+  let differenceTotal = 0;
+  let changed = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const difference = pixelDifference(source, target, y * width + x);
       pixels += 1;
       differenceTotal += difference;
       if (difference >= 12) changed += 1;
@@ -563,7 +621,7 @@ function validateBackgroundMask(options: LocalQualityOptions, checks: AutoLayerQ
       selection,
       selection.layerKind === "text"
         ? repairMaskRadius(options.imageWidth, options.imageHeight) + 10
-        : highRecallChildMaskPadding(selection) + repairMaskRadius(options.imageWidth, options.imageHeight)
+        : highRecallChildMaskPadding(selection) + repairMaskRadius(options.imageWidth, options.imageHeight) * 2
     ))) outside += 1;
   }
   addCheck(
@@ -625,16 +683,23 @@ export async function evaluateLocalAutoLayerQuality(
   sorted(output.materials.map(material => material.sourceSelectionId ?? material.id)));
 
   const materialAlpha = await Promise.all(output.materials.map(materialAlphaStats));
+  const materialQualityOverrides = new Map(
+    (caseValue.materialQualityOverrides ?? []).map(override => [override.selectionId, override])
+  );
   for (const stats of materialAlpha) {
+    const override = materialQualityOverrides.get(stats.selectionId);
+    const minimumSolidRatio = override?.minimumSolidRatio ?? caseValue.minimumMaterialSolidRatio;
+    const minimumBoundsWidthRatio = override?.minimumBoundsWidthRatio ?? caseValue.minimumMaterialBoundsRatio;
+    const minimumBoundsHeightRatio = override?.minimumBoundsHeightRatio ?? caseValue.minimumMaterialBoundsRatio;
     addCheck(checks, `material-solid:${stats.selectionId}`,
-      stats.solidRatio >= caseValue.minimumMaterialSolidRatio,
+      stats.solidRatio >= minimumSolidRatio,
       `${stats.name} 实心 Alpha 占比 ${(stats.solidRatio * 100).toFixed(2)}%。`,
-      `>= ${caseValue.minimumMaterialSolidRatio}`, stats.solidRatio);
+      `>= ${minimumSolidRatio}`, stats.solidRatio);
     addCheck(checks, `material-bounds:${stats.selectionId}`,
-      stats.boundsWidthRatio >= caseValue.minimumMaterialBoundsRatio &&
-      stats.boundsHeightRatio >= caseValue.minimumMaterialBoundsRatio,
+      stats.boundsWidthRatio >= minimumBoundsWidthRatio &&
+      stats.boundsHeightRatio >= minimumBoundsHeightRatio,
       `${stats.name} 的有效边界为 ${(stats.boundsWidthRatio * 100).toFixed(1)}% x ${(stats.boundsHeightRatio * 100).toFixed(1)}%。`,
-      `>= ${caseValue.minimumMaterialBoundsRatio}`, {
+      { width: `>= ${minimumBoundsWidthRatio}`, height: `>= ${minimumBoundsHeightRatio}` }, {
         width: stats.boundsWidthRatio,
         height: stats.boundsHeightRatio
       });
@@ -671,28 +736,19 @@ export async function evaluateLocalAutoLayerQuality(
     caseValue.repairLayerIds
   ), "父层修复区域与用例一致。", sorted(caseValue.repairLayerIds),
   sorted(diagnostics.repairRegions.map(region => region.layerId)));
-  if (output.cloudAtlas) {
-    const atlasMaterialIds = output.cloudAtlas.tiles
-      .filter(tile => tile.kind === "material" && tile.layerId)
-      .map(tile => tile.layerId!);
-    const sourceMaskMaterialIds = output.cloudAtlas.sourceMasks
-      .filter(mask => mask.kind === "material" && mask.layerId)
-      .map(mask => mask.layerId!);
-    addCheck(checks, "atlas-tiles", output.cloudAtlas.tiles.filter(tile => tile.kind === "background").length === 1 &&
-      sameMembers(atlasMaterialIds, caseValue.repairLayerIds),
-    "单张云图集包含整页背景与全部父素材修复区。",
-    ["background", ...sorted(caseValue.repairLayerIds)],
-    output.cloudAtlas.tiles.map(tile => tile.kind === "background" ? "background" : tile.layerId));
-    addCheck(checks, "atlas-source-masks",
-      output.cloudAtlas.sourceMasks.filter(mask => mask.kind === "background").length === 1 &&
-      sameMembers(sourceMaskMaterialIds, caseValue.repairLayerIds),
-    "云图集保留整页与全部父素材的原始分辨率蒙版。",
-    ["background", ...sorted(caseValue.repairLayerIds)],
-    output.cloudAtlas.sourceMasks.map(mask => mask.kind === "background" ? "background" : mask.layerId));
+  if (output.cloudBackground) {
+    const actual = output.cloudBackground.selectionBoxes.map(box => ({
+      x: box.x, y: box.y, width: box.width, height: box.height
+    }));
+    const expected = diagnostics.backgroundBoxes.map(box => ({
+      x: box.x, y: box.y, width: box.width, height: box.height
+    }));
+    addCheck(checks, "background-boxes", JSON.stringify(actual) === JSON.stringify(expected),
+      "云端整页背景只提交去重框选，不提交蒙版。", expected, actual);
   } else {
     const extracted = shouldExtractBackgroundLocally(diagnostics.backgroundExtraction ?? null);
-    addCheck(checks, "atlas-tiles", extracted, "纯色/渐变或低纹理背景本地提取，不创建云端图集。", "local-extraction", extracted);
-    addCheck(checks, "atlas-source-masks", extracted, "本地提取路径无云端蒙版，与判定一致。", "local-extraction", extracted);
+    addCheck(checks, "background-boxes", extracted,
+      "纯色/渐变或低纹理背景本地提取，不创建云端任务。", "local-extraction", extracted);
   }
 
   await validateRepairMasks(options, checks);
@@ -711,17 +767,16 @@ export async function evaluateCloudAutoLayerQuality(
   const elementDiagnostics = new Map(diagnostics.elements.map(item => [item.selection.id, item]));
   const localTexts = textLayers(localDocument);
   const completeLayers = new Map(completeDocument.layers.map(layer => [layer.id, layer]));
-  const repairLayerIds = new Set(diagnostics.repairRegions.map(region => region.layerId));
   const layersScoped = localDocument.layers.length === completeDocument.layers.length &&
     localDocument.layers.every(layer => {
       const complete = completeLayers.get(layer.id);
       return Boolean(complete && complete.kind === layer.kind &&
         complete.x === layer.x && complete.y === layer.y &&
         complete.width === layer.width && complete.height === layer.height &&
-        (repairLayerIds.has(layer.id) ? complete.blob !== layer.blob : complete.blob === layer.blob));
+        complete.blob === layer.blob);
     });
   addCheck(checks, "cloud-layer-scope", layersScoped,
-    "云端任务只替换整页背景和包含直接子层的父素材。", true, layersScoped);
+    "云端任务只替换整页背景，全部素材层保持本地结果不变。", true, layersScoped);
 
   const targetInputs: Array<{
     id: string;
@@ -735,23 +790,9 @@ export async function evaluateCloudAutoLayerQuality(
     box: { id: "background", x: 0, y: 0, width: imageWidth, height: imageHeight },
     sourceBlob: localDocument.backgroundBlob,
     targetBlob: completeDocument.backgroundBlob,
-    mask: diagnostics.backgroundMask,
+    mask: boxesMask(diagnostics.backgroundBoxes, imageWidth, imageHeight),
     foregrounds: diagnostics.selections.filter(selection => !selection.parentId)
   }];
-
-  for (const region of diagnostics.repairRegions) {
-    const sourceLayer = localDocument.layers.find(layer => layer.id === region.layerId);
-    const targetLayer = completeDocument.layers.find(layer => layer.id === region.layerId);
-    if (!sourceLayer || sourceLayer.kind !== "material" || !targetLayer || targetLayer.kind !== "material") continue;
-    targetInputs.push({
-      id: `material:${region.layerId}`,
-      box: region.contentBox,
-      sourceBlob: sourceLayer.blob,
-      targetBlob: targetLayer.blob,
-      mask: cropMaskToBox(region.mask, imageWidth, imageHeight, region.contentBox),
-      foregrounds: diagnostics.selections.filter(selection => selection.parentId === region.layerId)
-    });
-  }
 
   for (const targetInput of targetInputs) {
     const width = Math.round(targetInput.box.width);
@@ -805,25 +846,47 @@ export async function evaluateCloudAutoLayerQuality(
         imageWidth,
         foreground
       );
+      const submittedBox = diagnostics.backgroundBoxes.find(box => box.id === foreground.id) ?? foreground;
+      const boxMetrics = compareGlobalBox(
+        sourcePixels,
+        targetPixels,
+        width,
+        height,
+        submittedBox
+      );
       foregroundRemovals.push({
         targetId: targetInput.id,
         foregroundId: foreground.id,
         kind: "material",
-        ...metrics
+        ...metrics,
+        boxMeanDifference: boxMetrics.meanDifference,
+        boxChangedRatio: boxMetrics.changedRatio
       });
     }
   }
 
   for (const removal of foregroundRemovals) {
-    const passed = removal.pixels > 0 &&
-      removal.meanDifference >= caseValue.cloud.minimumForegroundMeanDifference &&
+    const foregroundChanged = removal.meanDifference >= caseValue.cloud.minimumForegroundMeanDifference &&
       removal.changedRatio >= caseValue.cloud.minimumForegroundChangedRatio;
+    const submittedBoxChanged = typeof removal.boxMeanDifference === "number" &&
+      typeof removal.boxChangedRatio === "number" &&
+      removal.boxMeanDifference >= caseValue.cloud.minimumForegroundMeanDifference &&
+      removal.boxChangedRatio >= caseValue.cloud.minimumForegroundChangedRatio;
+    const passed = removal.pixels > 0 && (
+      foregroundChanged || submittedBoxChanged
+    );
     addCheck(checks, `cloud-foreground-removed:${removal.targetId}:${removal.foregroundId}`, passed,
       `${removal.kind === "text" ? "文字" : "素材"}前景区域平均变化 ${removal.meanDifference.toFixed(2)}，` +
-      `变化像素占比 ${(removal.changedRatio * 100).toFixed(2)}%。`, {
+      `变化像素占比 ${(removal.changedRatio * 100).toFixed(2)}%` +
+      (typeof removal.boxMeanDifference === "number" && typeof removal.boxChangedRatio === "number"
+        ? `；提交框平均变化 ${removal.boxMeanDifference.toFixed(2)}，变化像素占比 ` +
+          `${(removal.boxChangedRatio * 100).toFixed(2)}%。`
+        : "。"), {
         pixels: "> 0",
-        meanDifference: `>= ${caseValue.cloud.minimumForegroundMeanDifference}`,
-        changedRatio: `>= ${caseValue.cloud.minimumForegroundChangedRatio}`
+        foregroundOrSubmittedBox: {
+          meanDifference: `>= ${caseValue.cloud.minimumForegroundMeanDifference}`,
+          changedRatio: `>= ${caseValue.cloud.minimumForegroundChangedRatio}`
+        }
       }, removal);
   }
 

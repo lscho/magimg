@@ -64,7 +64,7 @@ function trapFocus(event: KeyboardEvent) {
           </div>
         </div>
 
-        <p class="resource-note">资源包含文字识别与元素命名模型，下载后保存在本机，后续无需重复下载。</p>
+        <p class="resource-note">将补齐 SAM 2.1、ViTMatte、Big-LaMa、文字识别与元素命名模型。资源保存在本机，后续无需重复下载。</p>
 
         <footer class="resource-actions">
           <button class="ghost-button" type="button" @click="emit('cancel')">取消</button>

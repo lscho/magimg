@@ -22,6 +22,7 @@ function appDataDirectory() {
 const APP_DATA = appDataDirectory();
 const STORE_PATH = join(APP_DATA, "auto-layer-selections.json");
 const cloud = process.argv.includes("--cloud");
+const forceCloudInput = cloud || process.argv.includes("--cloud-input");
 const caseArgument = process.argv.find(argument => argument.startsWith("--case="));
 const casePath = resolve(caseArgument?.slice("--case=".length) || "tests/auto-layer.case.json");
 const qualityCase = JSON.parse(await readFile(casePath, "utf8"));
@@ -29,7 +30,10 @@ const recordArgument = process.argv.find(argument => argument.startsWith("--reco
 const recordId = recordArgument?.slice("--record=".length) || qualityCase.recordId || await defaultRecordId();
 const runId = randomUUID();
 const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
-const outputDirectory = resolve("tests/output/auto-layer", `run-${timestamp}${cloud ? "-cloud" : "-local"}`);
+const outputDirectory = resolve(
+  "tests/output/auto-layer",
+  `run-${timestamp}${cloud ? "-cloud" : forceCloudInput ? "-cloud-input" : "-local"}`
+);
 await mkdir(outputDirectory, { recursive: true });
 
 async function defaultRecordId() {
@@ -133,7 +137,11 @@ console.log(`自动分层回归记录：${recordId}`);
 console.log(`质量用例：${casePath}`);
 console.log(`运行 ID：${runId}`);
 console.log(`产物目录：${outputDirectory}`);
-console.log(cloud ? "模式：本地推理 + 一次云端修复（20 积分）" : "模式：仅本地推理，不扣积分");
+console.log(cloud
+  ? "模式：本地推理 + 一次云端修复（20 积分）"
+  : forceCloudInput
+    ? "模式：生成真实云端输入，不提交任务、不扣积分"
+    : "模式：仅本地推理，不扣积分");
 
 const tauriConfig = JSON.stringify({
   build: {
@@ -150,6 +158,7 @@ const child = spawn("npm", [
     VITE_AUTO_LAYER_REGRESSION_URL: collectorUrl,
     VITE_AUTO_LAYER_REGRESSION_RECORD_ID: recordId,
     VITE_AUTO_LAYER_REGRESSION_CLOUD: String(cloud),
+    VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT: String(forceCloudInput),
     VITE_AUTO_LAYER_REGRESSION_RUN_ID: runId,
     VITE_AUTO_LAYER_REGRESSION_CASE: JSON.stringify(qualityCase)
   },

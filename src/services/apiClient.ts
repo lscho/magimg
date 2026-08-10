@@ -357,7 +357,15 @@ export const apiClient = {
     const body = new FormData();
     if (input.image) body.append("image", input.image, input.image.name);
     if (input.inputAssetId) body.append("inputAssetId", input.inputAssetId);
-    body.append("mask", input.mask, "auto-layer-mask.png");
+    if (input.mask) body.append("mask", input.mask, "auto-layer-mask.png");
+    if (input.selectionBoxes) {
+      body.append("selectionBoxes", JSON.stringify(input.selectionBoxes.map((box) => ({
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height
+      }))));
+    }
     body.append("mattingId", input.mattingId);
     return request<AutoLayerTask>("/auto-layer-tasks", {
       method: "POST",

@@ -47,6 +47,7 @@ pub fn run() {
             compression::compression_thumbnail,
             compression::compression_run,
             compression::compression_save,
+            compression::compression_auto_layer_upload,
             compression::compression_cancel,
             compression::compression_release
         ])

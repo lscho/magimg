@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  Download,
   History,
   Layers3,
   LoaderCircle,
@@ -11,12 +10,17 @@ import {
   X
 } from "lucide-vue-next";
 import { computed } from "vue";
-import type { CutoutProgress, CutoutResourceStatus } from "@/composables/useCutoutInference";
+import type {
+  CutoutProgress,
+  CutoutResourceProgress,
+  CutoutResourceStatus
+} from "@/composables/useCutoutInference";
 
 const props = defineProps<{
   stage: "idle" | "local" | "uploading" | "waiting" | "complete" | "draft";
   progress: CutoutProgress | null;
   resourceStatus: CutoutResourceStatus;
+  resourceProgress: CutoutResourceProgress | null;
   recognitionResourceStatus: CutoutResourceStatus;
   recognitionResourceProgress: number;
   drawerOpen: boolean;
@@ -34,7 +38,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  installResources: [];
   savePackage: [];
   saveSelections: [];
   openSelectionHistory: [];
@@ -45,24 +48,33 @@ const emit = defineEmits<{
 }>();
 
 const busy = computed(() => ["local", "uploading", "waiting"].includes(props.stage));
+const coreResourcesDownloading = computed(() => props.resourceStatus === "downloading");
 const recognitionDownloading = computed(() => props.recognitionResourceStatus === "downloading");
+const resourcesDownloading = computed(() => coreResourcesDownloading.value || recognitionDownloading.value);
+const resourcesChecking = computed(() => props.resourceStatus === "checking"
+  || props.recognitionResourceStatus === "checking");
 const stageLabel = computed(() => {
   if (props.stage === "local") {
     return ({ segmenting: "识别元素", refining: "精修与 OCR", repairing: "清理父层", uploading: "上传", waiting: "等待" } as const)
       [props.progress?.stage ?? "segmenting"];
   }
   if (props.stage === "idle") return props.hasSelections ? "准备分层" : "等待框选";
-  return ({ uploading: "上传背景蒙版", waiting: "云端生成背景", complete: "分层完成", draft: "本地草稿" } as const)
+  return ({ uploading: "上传原图与选区", waiting: "云端生成背景", complete: "分层完成", draft: "本地草稿" } as const)
     [props.stage as "uploading" | "waiting" | "complete" | "draft"];
 });
-const coreResourcesReady = computed(() => props.resourceStatus === "ready");
-const runDisabled = computed(() => !props.canRun || !coreResourcesReady.value
-  || props.recognitionResourceStatus === "checking" || recognitionDownloading.value);
+const runDisabled = computed(() => !props.canRun || resourcesChecking.value || resourcesDownloading.value);
+const resourceDownloadProgress = computed(() => {
+  const activeProgress: number[] = [];
+  if (coreResourcesDownloading.value) activeProgress.push(props.resourceProgress?.percent ?? 0);
+  if (recognitionDownloading.value) activeProgress.push(props.recognitionResourceProgress);
+  if (!activeProgress.length) return 0;
+  return Math.round(activeProgress.reduce((sum, value) => sum + value, 0) / activeProgress.length);
+});
 const runLabel = computed(() => {
-  if (recognitionDownloading.value) return `下载资源 ${props.recognitionResourceProgress}%`;
+  if (resourcesDownloading.value) return `下载资源 ${resourceDownloadProgress.value}%`;
   return props.hasDocument ? "重新分层" : "一键分层";
 });
-const recognitionProgressStyle = computed(() => ({ width: `${props.recognitionResourceProgress}%` }));
+const resourceProgressStyle = computed(() => ({ width: `${resourceDownloadProgress.value}%` }));
 </script>
 
 <template>
@@ -73,14 +85,6 @@ const recognitionProgressStyle = computed(() => ({ width: `${props.recognitionRe
       <span v-if="progress && stage === 'local'">{{ progress.current }}/{{ progress.total }}</span>
       <span>{{ cost }} 积分</span>
       <span>余额 {{ balance }}</span>
-      <button
-        v-if="resourceStatus !== 'ready'"
-        type="button"
-        :disabled="busy"
-        @click="emit('installResources')"
-      >
-        <Download :size="13" aria-hidden="true" /> 抠图资源
-      </button>
       <span v-if="error" class="status-error" role="alert">{{ error }}</span>
     </div>
     <div class="auto-layer-actions">
@@ -116,17 +120,17 @@ const recognitionProgressStyle = computed(() => ({ width: `${props.recognitionRe
         class="primary run-button"
         type="button"
         :disabled="runDisabled"
-        :aria-busy="recognitionDownloading"
+        :aria-busy="resourcesDownloading"
         @click="emit('run')"
       >
         <span
-          v-if="recognitionDownloading"
+          v-if="resourcesDownloading"
           class="run-progress"
-          :style="recognitionProgressStyle"
+          :style="resourceProgressStyle"
           aria-hidden="true"
         />
         <span class="run-content" aria-live="polite">
-          <LoaderCircle v-if="recognitionDownloading" class="run-spinner" :size="15" aria-hidden="true" />
+          <LoaderCircle v-if="resourcesDownloading" class="run-spinner" :size="15" aria-hidden="true" />
           <Layers3 v-else :size="15" aria-hidden="true" />
           {{ runLabel }}
         </span>

@@ -5,7 +5,6 @@ import AutoLayerActionBar from "@/components/auto-layer/AutoLayerActionBar.vue";
 import AutoLayerResourceDownloadModal from "@/components/auto-layer/AutoLayerResourceDownloadModal.vue";
 import AutoLayerResultWorkspace from "@/components/auto-layer/AutoLayerResultWorkspace.vue";
 import AutoLayerSelectionHistoryModal from "@/components/auto-layer/AutoLayerSelectionHistoryModal.vue";
-import AutoLayerSplitConfirmModal from "@/components/auto-layer/AutoLayerSplitConfirmModal.vue";
 import AutoLayerSplitHandle from "@/components/auto-layer/AutoLayerSplitHandle.vue";
 import CutoutWorkspace from "@/components/cutout/CutoutWorkspace.vue";
 import LoginModal from "@/components/LoginModal.vue";
@@ -30,7 +29,7 @@ const canRun = computed(() => Boolean(
 ));
 
 function handleKeydown(event: KeyboardEvent) {
-  if (showResourceDownload.value || workflow.selectionHistoryOpen.value || workflow.splitConfirmOpen.value) return;
+  if (showResourceDownload.value || workflow.selectionHistoryOpen.value) return;
   if (event.key === "Escape" && drawerVisible.value) workflow.drawerOpen.value = false;
 }
 
@@ -39,9 +38,13 @@ function toggleDrawer() {
 }
 
 function handleRun() {
-  if (workflow.recognitionResourceStatus.value !== "ready") {
-    if (workflow.recognitionResourceStatus.value !== "checking"
-      && workflow.recognitionResourceStatus.value !== "downloading") showResourceDownload.value = true;
+  const resourceStatuses = [
+    workflow.inference.resourceStatus.value,
+    workflow.recognitionResourceStatus.value
+  ];
+  if (resourceStatuses.some(status => status === "checking" || status === "downloading")) return;
+  if (resourceStatuses.some(status => status !== "ready")) {
+    showResourceDownload.value = true;
     return;
   }
   void workflow.createLayers();
@@ -49,7 +52,7 @@ function handleRun() {
 
 async function confirmResourceDownload() {
   showResourceDownload.value = false;
-  if (await workflow.installRecognitionResource()) await workflow.createLayers();
+  if (await workflow.installMissingResources()) await workflow.createLayers();
 }
 
 onMounted(() => window.addEventListener("keydown", handleKeydown));
@@ -105,6 +108,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       :stage="workflow.stage.value"
       :progress="workflow.progress.value"
       :resource-status="workflow.inference.resourceStatus.value"
+      :resource-progress="workflow.inference.resourceProgress.value"
       :recognition-resource-status="workflow.recognitionResourceStatus.value"
       :recognition-resource-progress="workflow.recognitionResourceProgress.value"
       :drawer-open="workflow.drawerOpen.value"
@@ -119,7 +123,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       :cost="workflow.cost.value"
       :balance="workflow.app.balance.balance"
       :error="workflow.inference.error.value || workflow.actionError.value"
-      @install-resources="workflow.inference.installResourcePackage"
       @save-package="workflow.savePackage"
       @save-selections="workflow.saveSelections"
       @open-selection-history="workflow.openSelectionHistory"
@@ -143,12 +146,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       @close="workflow.selectionHistoryOpen.value = false"
       @restore="workflow.restoreSelections"
       @remove="workflow.removeSelectionRecord"
-    />
-    <AutoLayerSplitConfirmModal
-      v-if="workflow.splitConfirmOpen.value"
-      :cost="workflow.cost.value"
-      @cancel="workflow.cancelSplitCloud"
-      @confirm="workflow.confirmSplitCloud"
     />
     <LoginModal
       v-if="workflow.showLogin.value"

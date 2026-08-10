@@ -11,6 +11,91 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: num
   });
 }
 
+function nearbyTransparentBackground(
+  pixels: Uint8ClampedArray,
+  mask: Uint8Array,
+  maskWidth: number,
+  boxX: number,
+  boxY: number,
+  boxWidth: number,
+  boxHeight: number,
+  x: number,
+  y: number
+) {
+  for (let radius = 1; radius <= 8; radius += 1) {
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    let samples = 0;
+    const left = Math.max(0, x - radius);
+    const right = Math.min(boxWidth - 1, x + radius);
+    const top = Math.max(0, y - radius);
+    const bottom = Math.min(boxHeight - 1, y + radius);
+    for (let sampleY = top; sampleY <= bottom; sampleY += 1) {
+      for (let sampleX = left; sampleX <= right; sampleX += 1) {
+        if (sampleX !== left && sampleX !== right && sampleY !== top && sampleY !== bottom) continue;
+        if (mask[(boxY + sampleY) * maskWidth + boxX + sampleX] > 8) continue;
+        const offset = (sampleY * boxWidth + sampleX) * 4;
+        red += pixels[offset];
+        green += pixels[offset + 1];
+        blue += pixels[offset + 2];
+        samples += 1;
+      }
+    }
+    if (samples >= 1) return [red / samples, green / samples, blue / samples] as const;
+  }
+  return null;
+}
+
+export function decontaminateCutoutRgba(
+  pixels: Uint8ClampedArray,
+  mask: Uint8Array,
+  maskWidth: number,
+  boxX: number,
+  boxY: number,
+  boxWidth: number,
+  boxHeight: number
+) {
+  const sourcePixels = pixels.slice();
+  for (let y = 0; y < boxHeight; y += 1) {
+    for (let x = 0; x < boxWidth; x += 1) {
+      const maskValue = mask[(boxY + y) * maskWidth + boxX + x];
+      const offset = (y * boxWidth + x) * 4;
+      if (maskValue <= 8) {
+        pixels[offset] = 0;
+        pixels[offset + 1] = 0;
+        pixels[offset + 2] = 0;
+        pixels[offset + 3] = 0;
+        continue;
+      }
+      if (maskValue >= 248) {
+        pixels[offset + 3] = Math.round(pixels[offset + 3] * maskValue / 255);
+        continue;
+      }
+      const background = nearbyTransparentBackground(
+        sourcePixels,
+        mask,
+        maskWidth,
+        boxX,
+        boxY,
+        boxWidth,
+        boxHeight,
+        x,
+        y
+      );
+      if (background) {
+        const alpha = maskValue / 255;
+        for (let channel = 0; channel < 3; channel += 1) {
+          pixels[offset + channel] = Math.max(0, Math.min(255, Math.round(
+            (pixels[offset + channel] - (1 - alpha) * background[channel]) / alpha
+          )));
+        }
+      }
+      pixels[offset + 3] = Math.round(pixels[offset + 3] * maskValue / 255);
+    }
+  }
+}
+
 /**
  * 将原图与 mask 合成为透明背景 PNG，并按选区 bbox 裁剪输出。
  * mask 尺寸需与原图一致，取值 0..255；输出 alpha 与原图 alpha 相乘。
@@ -42,16 +127,7 @@ export async function maskToTransparentPng(
 
   const imageData = outputContext.getImageData(0, 0, boxW, boxH);
   const pixels = imageData.data;
-  for (let y = 0; y < boxH; y += 1) {
-    const maskRow = (boxY + y) * imageWidth + boxX;
-    const pixelRow = y * boxW;
-    for (let x = 0; x < boxW; x += 1) {
-      const alphaIndex = (pixelRow + x) * 4 + 3;
-      pixels[alphaIndex] = Math.round(
-        (pixels[alphaIndex] * mask[maskRow + x]) / 255
-      );
-    }
-  }
+  decontaminateCutoutRgba(pixels, mask, imageWidth, boxX, boxY, boxW, boxH);
   outputContext.putImageData(imageData, 0, 0);
 
   const blob = await canvasToBlob(outputCanvas, mimeType, quality);

@@ -194,6 +194,53 @@ export function selectionChildren(
   return selections.filter((selection) => selection.parentId === parentId);
 }
 
+/**
+ * 自动分层中元素关系会经过 Alpha 包含度复核，文字框则只能沿用几何嵌套。
+ * 合并两类结果后重新收敛父层用途，并清理损坏或成环的历史关系。
+ */
+export function resolveAutoLayerHierarchy(
+  input: readonly CutoutSelection[],
+  validatedElements: readonly CutoutSelection[]
+) {
+  const validatedById = new Map(validatedElements.map(selection => [selection.id, selection]));
+  const selections = cloneCutoutSelections(input).map(selection => {
+    if (selection.layerKind === "text") return selection;
+    return validatedById.has(selection.id)
+      ? normalizeCutoutSelection(validatedById.get(selection.id)!)
+      : selection;
+  });
+  const byId = new Map(selections.map(selection => [selection.id, selection]));
+
+  for (const selection of selections) {
+    if (!selection.parentId) continue;
+    const visited = new Set([selection.id]);
+    let parentId: string | null = selection.parentId;
+    let valid = true;
+    while (parentId) {
+      const parent = byId.get(parentId);
+      if (!parent || parent.layerKind === "text" || visited.has(parent.id)) {
+        valid = false;
+        break;
+      }
+      visited.add(parent.id);
+      parentId = parent.parentId;
+    }
+    if (!valid) {
+      selection.parentId = null;
+      selection.behavior = "extract";
+      selection.relationSource = "manual";
+    }
+  }
+
+  for (const selection of selections) {
+    if (selection.relationSource !== "auto") continue;
+    selection.behavior = selections.some(child => child.parentId === selection.id)
+      ? "background"
+      : "extract";
+  }
+  return selections;
+}
+
 export function selectionDescendants(
   selections: readonly CutoutSelection[],
   parentId: string

@@ -13,6 +13,7 @@ const failure = shallowRef("");
 const collectorUrl = import.meta.env.VITE_AUTO_LAYER_REGRESSION_URL?.replace(/\/+$/u, "") ?? "";
 const recordId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RECORD_ID?.trim() || undefined;
 const cloud = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CLOUD === "true";
+const forceCloudInput = import.meta.env.VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT === "true";
 const runId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RUN_ID?.trim() || "";
 const qualityCaseJson = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CASE || "";
 const progressLabel = computed(() => {
@@ -40,6 +41,7 @@ onMounted(async () => {
       runId,
       qualityCase,
       cloud,
+      forceCloudInput,
       inference,
       app,
       onStatus: reportStatus
@@ -58,7 +60,7 @@ onMounted(async () => {
       <h1>自动分层回归</h1>
       <p>{{ failure || status }}</p>
       <p v-if="progressLabel">{{ progressLabel }}</p>
-      <p>{{ cloud ? "本次包含一次云端修复" : "本次仅运行本地模型" }}</p>
+      <p>{{ cloud ? "本次包含一次云端修复" : forceCloudInput ? "本次只生成云端输入" : "本次仅运行本地模型" }}</p>
     </section>
   </main>
 </template>

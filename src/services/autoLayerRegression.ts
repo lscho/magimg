@@ -4,10 +4,14 @@ import type {
   AutoLayerInferenceResult,
   useCutoutInference
 } from "@/composables/useCutoutInference";
-import type { AutoLayerRepairAtlas } from "@/services/autoLayerRepairAtlas";
 import { useAppStore } from "@/stores/app";
-import { applyAutoLayerRepairAtlas, autoLayerAtlasFileName } from "@/services/autoLayerRepairAtlas";
 import { buildAutoLayerManifest, renderAutoLayerAsset, renderAutoLayerPreview } from "@/services/autoLayerExport";
+import { compositeAutoLayerCloudOutput } from "@/services/autoLayerCloudComposite";
+import {
+  autoLayerUploadFileName,
+  prepareAutoLayerCloudUpload,
+  type PreparedAutoLayerCloudUpload
+} from "@/services/autoLayerCloudUpload";
 import { createAutoLayerItems, orderAutoLayersByHierarchy } from "@/services/autoLayerModel";
 import {
   evaluateCloudAutoLayerQuality,
@@ -31,6 +35,7 @@ export interface AutoLayerRegressionOptions {
   runId: string;
   qualityCase: AutoLayerRegressionCase;
   cloud: boolean;
+  forceCloudInput: boolean;
   inference: CutoutInference;
   app: AppStore;
   onStatus?: (message: string) => void;
@@ -61,45 +66,6 @@ function canvasBlob(canvas: HTMLCanvasElement) {
     blob => blob ? resolve(blob) : reject(new Error("自动分层回归图片编码失败。")),
     "image/png"
   ));
-}
-
-async function syntheticRepairedAtlas(atlas: AutoLayerRepairAtlas) {
-  const [image, mask] = await Promise.all([
-    createImageBitmap(atlas.imageBlob),
-    createImageBitmap(atlas.maskBlob)
-  ]);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = atlas.width;
-    canvas.height = atlas.height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("当前设备无法执行云图集合成自检。");
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(mask, 0, 0, canvas.width, canvas.height);
-    const maskPixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    for (let pixel = 0; pixel < canvas.width * canvas.height; pixel += 1) {
-      const strength = maskPixels[pixel * 4] / 255;
-      if (strength <= 0) continue;
-      const offset = pixel * 4;
-      const replacements = [
-        (pixels.data[offset] + 96) % 256,
-        (pixels.data[offset + 1] + 128) % 256,
-        (pixels.data[offset + 2] + 160) % 256
-      ];
-      for (let channel = 0; channel < 3; channel += 1) {
-        pixels.data[offset + channel] = Math.round(
-          pixels.data[offset + channel] * (1 - strength) + replacements[channel] * strength
-        );
-      }
-    }
-    context.putImageData(pixels, 0, 0);
-    return canvasBlob(canvas);
-  } finally {
-    image.close();
-    mask.close();
-  }
 }
 
 function safeName(value: string) {
@@ -190,6 +156,64 @@ async function renderLayersOnly(documentValue: AutoLayerDocument) {
   return canvasBlob(canvas);
 }
 
+async function renderSelectionBoxes(image: Blob, boxes: readonly CutoutSelectionBox[]) {
+  const bitmap = await createImageBitmap(image);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("当前设备无法生成云端框选诊断图。");
+    context.drawImage(bitmap, 0, 0);
+    const lineWidth = Math.max(3, Math.round(Math.max(bitmap.width, bitmap.height) / 500));
+    context.lineWidth = lineWidth;
+    context.strokeStyle = "#ff3355";
+    context.fillStyle = "rgba(255, 51, 85, 0.16)";
+    for (const box of boxes) {
+      const normalized = clampedBox(box, bitmap.width, bitmap.height);
+      context.fillRect(normalized.x, normalized.y, normalized.width, normalized.height);
+      context.strokeRect(
+        normalized.x + lineWidth / 2,
+        normalized.y + lineWidth / 2,
+        Math.max(0, normalized.width - lineWidth),
+        Math.max(0, normalized.height - lineWidth)
+      );
+    }
+    return canvasBlob(canvas);
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function assertCloudInputMatchesSource(
+  image: Blob,
+  source: ImageBitmap
+) {
+  const cloud = await createImageBitmap(image);
+  try {
+    if (cloud.width !== source.width || cloud.height !== source.height) {
+      throw new Error("云端整页输入尺寸与原图不一致。");
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = source.width;
+    canvas.height = source.height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("当前设备无法校验云端背景输入。");
+    context.drawImage(source, 0, 0);
+    const sourcePixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(cloud, 0, 0);
+    const cloudPixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 0; index < sourcePixels.length; index += 1) {
+      if (sourcePixels[index] !== cloudPixels[index]) {
+        throw new Error("云端整页输入不是原图，检测到本地修复或重采样像素。");
+      }
+    }
+  } finally {
+    cloud.close();
+  }
+}
+
 function textMetadata(layer: AutoLayerTextItem) {
   return {
     id: layer.id,
@@ -246,6 +270,7 @@ function diagnosticsMetadata(diagnostics: AutoLayerDiagnostics, layers: readonly
       mask: maskStats(region.mask)
     })),
     backgroundMask: maskStats(diagnostics.backgroundMask),
+    backgroundBoxes: diagnostics.backgroundBoxes,
     layers: layers.map(layerMetadata)
   };
 }
@@ -301,6 +326,14 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
       await upload("record.json", jsonBlob(record));
       await upload(`source/${safeName(record.sourceName.replace(/\.[^.]+$/u, ""))}.png`, restored.selectedFile.file);
       options.onStatus?.(`运行本地模型（${record.selections.length} 个选区）`);
+      // 传输副本编码与本地模型并行，结果仅在确实需要云端背景时使用。
+      const cloudUploadPreparation = prepareAutoLayerCloudUpload(
+        restored.selectedFile.file,
+        options.app.capabilities.backgroundRepairMaxBytes
+      ).then(
+        result => ({ result }),
+        error => ({ error: error instanceof Error ? error : new Error("整页背景压缩失败。") })
+      );
       const output = await options.inference.createAutoLayers(
         bitmap,
         bitmap.width,
@@ -308,6 +341,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         restored.selections,
         {
           collectDiagnostics: true,
+          forceCloudBackground: options.forceCloudInput,
           onDiagnosticStage: stage => options.onStatus?.(stage),
           cloudMaxPixels: options.app.capabilities.backgroundRepairMaxPixels,
           cloudMaxBytes: options.app.capabilities.backgroundRepairMaxBytes
@@ -316,25 +350,40 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
       if (!output) throw new Error(options.inference.error.value || "自动分层本地推理没有返回结果。");
       if (!output.diagnostics) throw new Error("自动分层回归未收集到诊断数据。");
       const documentValue = localDocument(output, bitmap.width, bitmap.height);
+      let preparedCloudUpload: PreparedAutoLayerCloudUpload | null = null;
 
       options.onStatus?.("导出本地素材与诊断蒙版");
       await upload("local/background-original.png", output.backgroundBlob);
       await upload("local/layers-only.png", await renderLayersOnly(documentValue));
       await upload("local/preview-with-original-background.png", await renderAutoLayerPreview(documentValue));
-      if (output.cloudAtlas) {
-        await upload("atlas/input-image", output.cloudAtlas.imageBlob);
-        await upload("atlas/input-mask.png", output.cloudAtlas.maskBlob);
-        await upload("atlas/layout.json", jsonBlob({
-          width: output.cloudAtlas.width,
-          height: output.cloudAtlas.height,
-          scale: output.cloudAtlas.scale,
-          imageType: output.cloudAtlas.imageBlob.type,
-          imageBytes: output.cloudAtlas.imageBlob.size,
-          maskBytes: output.cloudAtlas.maskBlob.size,
-          tiles: output.cloudAtlas.tiles
+      if (output.cloudBackground) {
+        options.onStatus?.("校验云端输入逐像素等于原图");
+        const preparation = await cloudUploadPreparation;
+        if ("error" in preparation) throw preparation.error;
+        preparedCloudUpload = preparation.result;
+        await assertCloudInputMatchesSource(output.cloudBackground.imageBlob, bitmap);
+        await upload("cloud-input/background.png", output.cloudBackground.imageBlob);
+        await upload(
+          `cloud-input/${autoLayerUploadFileName(preparedCloudUpload.blob)}`,
+          preparedCloudUpload.blob
+        );
+        await upload(
+          "cloud-input/selection-overlay.png",
+          await renderSelectionBoxes(output.cloudBackground.imageBlob, output.cloudBackground.selectionBoxes)
+        );
+        await upload("cloud-input/layout.json", jsonBlob({
+          strategy: "original-background-with-selection-boxes",
+          imageType: output.cloudBackground.imageBlob.type,
+          imageBytes: output.cloudBackground.imageBlob.size,
+          uploadType: preparedCloudUpload.blob.type,
+          uploadBytes: preparedCloudUpload.uploadBytes,
+          originalUploadBytes: preparedCloudUpload.originalBytes,
+          compressed: preparedCloudUpload.compressed,
+          sourcePixelMatch: true,
+          selectionBoxes: output.cloudBackground.selectionBoxes
         }));
       } else {
-        await upload("atlas/layout.json", jsonBlob({
+        await upload("cloud-input/layout.json", jsonBlob({
           localExtraction: true,
           backgroundAnalysis: output.diagnostics.backgroundExtraction ?? null
         }));
@@ -422,68 +471,49 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         const failed = localQuality.checks.filter(check => !check.passed).map(check => check.id);
         throw new Error(`本地素材质量门禁未通过：${failed.join("、")}`);
       }
-      if (output.cloudAtlas) {
-        options.onStatus?.("执行原分辨率蒙版合成自检");
-        const syntheticAtlas = await syntheticRepairedAtlas(output.cloudAtlas);
-        const syntheticRepair = await applyAutoLayerRepairAtlas(syntheticAtlas, output.cloudAtlas, {
-          backgroundBlob: documentValue.backgroundBlob,
-          layers: documentValue.layers
-        });
-        const syntheticDocument: AutoLayerDocument = {
-          ...documentValue,
-          backgroundBlob: syntheticRepair.backgroundBlob,
-          layers: syntheticRepair.layers,
-          status: "complete"
-        };
-        const compositingQuality = await evaluateCloudAutoLayerQuality({
-          caseValue: options.qualityCase,
-          localDocument: documentValue,
-          completeDocument: syntheticDocument,
-          diagnostics: output.diagnostics,
-          imageWidth: bitmap.width,
-          imageHeight: bitmap.height
-        });
-        await upload("quality/compositing.json", jsonBlob(compositingQuality));
-        if (!compositingQuality.passed) {
-          const failed = compositingQuality.checks.filter(check => !check.passed).map(check => check.id);
-          throw new Error(`原分辨率蒙版合成自检未通过：${failed.join("、")}`);
-        }
-      } else {
-        options.onStatus?.("纯色/渐变背景本地提取，跳过云端合成自检");
-      }
+      options.onStatus?.(output.cloudBackground
+        ? "整页背景使用无蒙版框选云修复"
+        : "纯色/渐变背景本地提取，跳过云端修复");
 
       let cloudTaskId: string | undefined;
       let cloudQuality: AutoLayerCloudQualityReport | undefined;
-      if (options.cloud && output.cloudAtlas) {
-        options.onStatus?.("提交一次云端图集修复（20 积分）");
+      if (options.cloud && output.cloudBackground) {
+        if (!preparedCloudUpload) throw new Error("云端上传传输副本不存在。");
+        options.onStatus?.("提交一次无蒙版整页背景修复（20 积分）");
         const charge = await options.app.chargeMatting("autoLayer");
         let accepted = false;
         try {
           const task = await options.app.createAutoLayerTask({
-            image: new File([output.cloudAtlas.imageBlob], autoLayerAtlasFileName(output.cloudAtlas.imageBlob), {
-              type: output.cloudAtlas.imageBlob.type || "image/png"
-            }),
-            mask: output.cloudAtlas.maskBlob,
+            image: new File(
+              [preparedCloudUpload.blob],
+              autoLayerUploadFileName(preparedCloudUpload.blob),
+              {
+                type: preparedCloudUpload.blob.type || "image/png"
+              }
+            ),
+            selectionBoxes: output.cloudBackground.selectionBoxes,
             mattingId: charge.mattingId,
             idempotencyKey: `auto-layer-test:${record.id.slice(-12)}:${options.runId}`
           });
           accepted = true;
           cloudTaskId = task.id;
           const complete = await options.app.waitForAutoLayerTask(task, new AbortController().signal);
-          const repairedAtlas = await options.app.downloadAutoLayerOutput(complete);
-          await upload("cloud/repaired-atlas.png", repairedAtlas);
-          const repaired = await applyAutoLayerRepairAtlas(repairedAtlas, output.cloudAtlas, {
-            backgroundBlob: documentValue.backgroundBlob,
-            layers: documentValue.layers
-          });
+          const serverBackground = await options.app.downloadAutoLayerOutput(complete);
+          const repairedBackground = await compositeAutoLayerCloudOutput(
+            output.cloudBackground.imageBlob,
+            serverBackground,
+            bitmap.width,
+            bitmap.height,
+            output.cloudBackground.selectionBoxes
+          );
           const completeDocument: AutoLayerDocument = {
             ...documentValue,
-            backgroundBlob: repaired.backgroundBlob,
-            layers: repaired.layers,
+            backgroundBlob: repairedBackground,
             status: "complete",
             cloudInputAssetId: complete.inputAssetId
           };
-          await upload("cloud/background.png", repaired.backgroundBlob);
+          await upload("cloud/background-server.png", serverBackground);
+          await upload("cloud/background.png", repairedBackground);
           await upload("cloud/preview.png", await renderAutoLayerPreview(completeDocument));
           await upload("cloud/layers-only.png", await renderLayersOnly(completeDocument));
           const assetNames = new Map(completeDocument.layers.map((layer, index) => [

@@ -223,13 +223,18 @@ export interface AutoLayerTask {
   updatedAt?: string;
 }
 
-export interface CreateAutoLayerTaskInput {
+interface CreateAutoLayerTaskBaseInput {
   image?: File;
   inputAssetId?: string;
-  mask: Blob;
   mattingId: string;
   idempotencyKey?: string;
 }
+
+/** 新整页背景任务提交框选；蒙版分支仅保留服务端旧任务兼容能力。 */
+export type CreateAutoLayerTaskInput = CreateAutoLayerTaskBaseInput & (
+  | { selectionBoxes: CutoutSelectionBox[]; mask?: never }
+  | { mask: Blob; selectionBoxes?: never }
+);
 
 export interface TemplateCategory {
   id: string;

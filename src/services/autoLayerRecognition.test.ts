@@ -71,6 +71,22 @@ describe("automatic-layer font style inference", () => {
       "修行奖励"
     ).fontWeight).toBe(600);
   });
+
+  it("keeps short numeric UI labels regular despite heavy outline evidence", () => {
+    const crop = textCrop(10);
+    expect(inferAutoLayerFontStyleFromPixels(
+      crop.pixels,
+      crop.width,
+      crop.height,
+      "5"
+    ).fontWeight).toBe(400);
+    expect(inferAutoLayerFontStyleFromPixels(
+      crop.pixels,
+      crop.width,
+      crop.height,
+      "10"
+    ).fontWeight).toBe(400);
+  });
 });
 
 describe("automatic-layer text removal matte", () => {

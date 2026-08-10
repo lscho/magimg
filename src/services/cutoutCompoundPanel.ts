@@ -21,8 +21,14 @@ export interface CompoundPanelCornerRadii {
 
 export interface CompoundPanelDetection {
   alpha: Uint8Array;
+  outerAlpha: Uint8Array;
   bounds: { x: number; y: number; width: number; height: number };
   cornerRadii: CompoundPanelCornerRadii;
+}
+
+export interface CompoundPanelGuidance {
+  interiorAlpha: Uint8Array;
+  outerAlpha: Uint8Array;
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -327,6 +333,47 @@ function roundedRectangleAlpha(
   return alpha;
 }
 
+function roundedRectangleOuterAlpha(
+  width: number,
+  height: number,
+  bounds: { x: number; y: number; width: number; height: number },
+  cornerRadii: CompoundPanelCornerRadii
+) {
+  const alpha = new Uint8Array(width * height);
+  // Keep antialiasing, outline, and a narrow outer glow while rejecting the
+  // much larger adjacent-background components selected by SAM.
+  const padding = 5;
+  const left = Math.max(0, bounds.x - padding);
+  const top = Math.max(0, bounds.y - padding);
+  const right = Math.min(width, bounds.x + bounds.width + padding);
+  const bottom = Math.min(height, bounds.y + bounds.height + padding);
+  if (right <= left || bottom <= top) return alpha;
+  const maximumRadius = Math.floor(Math.min(right - left, bottom - top) / 2);
+  const radii = {
+    topLeft: clamp(cornerRadii.topLeft + padding, 2, maximumRadius),
+    topRight: clamp(cornerRadii.topRight + padding, 2, maximumRadius),
+    bottomLeft: clamp(cornerRadii.bottomLeft + padding, 2, maximumRadius),
+    bottomRight: clamp(cornerRadii.bottomRight + padding, 2, maximumRadius)
+  };
+
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      let inside = true;
+      if (x < left + radii.topLeft && y < top + radii.topLeft) {
+        inside = insideRoundedCorner(x, y, left + radii.topLeft, top + radii.topLeft, radii.topLeft);
+      } else if (x >= right - radii.topRight && y < top + radii.topRight) {
+        inside = insideRoundedCorner(x, y, right - radii.topRight, top + radii.topRight, radii.topRight);
+      } else if (x < left + radii.bottomLeft && y >= bottom - radii.bottomLeft) {
+        inside = insideRoundedCorner(x, y, left + radii.bottomLeft, bottom - radii.bottomLeft, radii.bottomLeft);
+      } else if (x >= right - radii.bottomRight && y >= bottom - radii.bottomRight) {
+        inside = insideRoundedCorner(x, y, right - radii.bottomRight, bottom - radii.bottomRight, radii.bottomRight);
+      }
+      if (inside) alpha[y * width + x] = 255;
+    }
+  }
+  return alpha;
+}
+
 /**
  * Detects a tightly selected UI panel from four prominent border bands. The returned
  * mask is deliberately inset so only the panel interior becomes certain foreground;
@@ -381,12 +428,13 @@ export function detectCompoundPanelInterior(
   const cornerRadii = detectCornerRadii(rgba, width, height, bounds);
   return {
     alpha: roundedRectangleAlpha(width, height, bounds, cornerRadii),
+    outerAlpha: roundedRectangleOuterAlpha(width, height, bounds, cornerRadii),
     bounds,
     cornerRadii
   };
 }
 
-export function createCompoundPanelPrior(
+export function createCompoundPanelGuidance(
   image: CanvasImageSource,
   imageWidth: number,
   imageHeight: number,
@@ -417,13 +465,24 @@ export function createCompoundPanelPrior(
   );
   if (!detection) return null;
 
-  const prior = new Uint8Array(imageWidth * imageHeight);
+  const interiorAlpha = new Uint8Array(imageWidth * imageHeight);
+  const outerAlpha = new Uint8Array(imageWidth * imageHeight);
   for (let y = 0; y < bounds.height; y += 1) {
     const sourceRow = y * bounds.width;
     const targetRow = (bounds.y + y) * imageWidth + bounds.x;
-    prior.set(detection.alpha.subarray(sourceRow, sourceRow + bounds.width), targetRow);
+    interiorAlpha.set(detection.alpha.subarray(sourceRow, sourceRow + bounds.width), targetRow);
+    outerAlpha.set(detection.outerAlpha.subarray(sourceRow, sourceRow + bounds.width), targetRow);
   }
-  return prior;
+  return { interiorAlpha, outerAlpha };
+}
+
+export function createCompoundPanelPrior(
+  image: CanvasImageSource,
+  imageWidth: number,
+  imageHeight: number,
+  selection: CutoutSelection
+) {
+  return createCompoundPanelGuidance(image, imageWidth, imageHeight, selection)?.interiorAlpha ?? null;
 }
 
 export function applyOpaquePanelPrior(alpha: Uint8Array, prior: Uint8Array | null) {
@@ -436,4 +495,17 @@ export function applyOpaquePanelPrior(alpha: Uint8Array, prior: Uint8Array | nul
     if (prior[index]) merged[index] = 255;
   }
   return merged;
+}
+
+/** 智能分层的闭合 UI 卡片不得把外轮廓之外的相邻场景带入素材。 */
+export function constrainAlphaToPanelOuter(alpha: Uint8Array, outerAlpha: Uint8Array | null) {
+  if (!outerAlpha) return alpha;
+  if (alpha.length !== outerAlpha.length) {
+    throw new Error("面板外轮廓尺寸与抠图 Alpha 不匹配。");
+  }
+  const constrained = alpha.slice();
+  for (let index = 0; index < constrained.length; index += 1) {
+    if (!outerAlpha[index]) constrained[index] = 0;
+  }
+  return constrained;
 }

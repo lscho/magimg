@@ -84,6 +84,20 @@ describe("repair masks", () => {
     expect(prepared[0]).toBe(0);
   });
 
+  it("keeps the complete dilation core solid before the outer feather", () => {
+    const width = 100;
+    const height = 100;
+    const mask = new Uint8Array(width * height);
+    const center = 50 * width + 50;
+    mask[center] = 255;
+    const radius = repairMaskRadius(width, height);
+    const prepared = prepareRepairMask(mask, width, height);
+
+    expect(prepared[center + radius]).toBe(255);
+    expect(prepared[center + radius + 1]).toBeGreaterThan(0);
+    expect(prepared[center + radius * 2 + 1]).toBe(0);
+  });
+
   it("clips dilation and feathering back to the active selection", () => {
     const width = 12;
     const height = 12;
@@ -161,5 +175,18 @@ describe("repair masks", () => {
     expect(highRecallChildMaskPadding({ id: "small", x: 0, y: 0, width: 40, height: 40 })).toBe(12);
     expect(highRecallChildMaskPadding({ id: "large", x: 0, y: 0, width: 1200, height: 400 })).toBe(54);
     expect(repairMaskRadius(1536, 2730)).toBe(5);
+  });
+
+  it("keeps feather support within two repair radii of the source mask", () => {
+    const width = 100;
+    const height = 100;
+    const mask = new Uint8Array(width * height);
+    mask[50 * width + 50] = 255;
+
+    const prepared = prepareRepairMask(mask, width, height);
+    const radius = repairMaskRadius(width, height);
+
+    expect(prepared[50 * width + 50 + radius * 2]).toBeGreaterThan(0);
+    expect(prepared[50 * width + 50 + radius * 2 + 1]).toBe(0);
   });
 });

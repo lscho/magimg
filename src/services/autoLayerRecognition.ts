@@ -277,12 +277,13 @@ export function inferAutoLayerFontStyleFromPixels(
   const relativeThickness = strokeThickness / Math.max(8, height);
   const coreRatio = corePixels / Math.max(1, foregroundCount);
   const isHan = /\p{Script=Han}/u.test(text);
+  const isShortNumericLabel = /^\d{1,2}$/u.test(text.trim());
   const unmistakablyHeavy = isHan
     ? relativeThickness >= 0.3 && coreRatio >= 0.7
     : relativeThickness >= 0.28 && coreRatio >= 0.68;
   // Raster OCR crops cannot reliably distinguish a heavy font from outlines and shadows.
-  // Prefer an editable regular default, and only promote strong evidence to semibold.
-  const fontWeight = unmistakablyHeavy ? 600 : 400;
+  // Short numeric UI labels are especially ambiguous, so keep them editable at regular weight.
+  const fontWeight = unmistakablyHeavy && !isShortNumericLabel ? 600 : 400;
   const edgeDensity = edges / Math.max(1, width * height);
   let fontCategory: AutoLayerFontCategory = "sans";
   if (/^[A-Z0-9\s!?&-]+$/u.test(text) && text.length >= 3 && fontWeight >= 600) fontCategory = "display";

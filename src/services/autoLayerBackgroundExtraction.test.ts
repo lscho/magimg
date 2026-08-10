@@ -41,6 +41,7 @@ describe("automatic-layer background extraction", () => {
 
     expect(analysis.useDiffusion).toBe(true);
     expect(analysis.fillColor).toEqual([128, 128, 128]);
+    expect(shouldExtractBackgroundLocally(analysis)).toBe(true);
   });
 
   it("extracts locally for a slow gradient background", () => {
@@ -48,7 +49,10 @@ describe("automatic-layer background extraction", () => {
     const rgba = rgbaOf(size, (x, y) => [100 + (x + y) / 8, 100 + (x + y) / 8, 100 + (x + y) / 8]);
     const mask = centeredMask(size, 96, 96, 160, 160);
 
-    expect(analyzeBackgroundExtraction(rgba, mask, size, size).useDiffusion).toBe(true);
+    const analysis = analyzeBackgroundExtraction(rgba, mask, size, size);
+
+    expect(analysis.useDiffusion).toBe(true);
+    expect(shouldExtractBackgroundLocally(analysis)).toBe(true);
   });
 
   it("keeps the cloud path for a noisy photo-like background", () => {
@@ -123,6 +127,32 @@ describe("automatic-layer background extraction", () => {
     // 色块内部平坦但邻域颜色不集中，不能走本地扩散。
     expect(shouldExtractBackgroundLocally(analysis)).toBe(false);
   });
+
+  it("forces large removals onto the cloud path even on a smooth background", () => {
+    const size = 256;
+    const rgba = rgbaOf(size, () => [230, 235, 240]);
+    const mask = centeredMask(size, 64, 64, 192, 192);
+    const analysis = analyzeBackgroundExtraction(rgba, mask, size, size);
+
+    expect(analysis.maskCoverage).toBe(0.25);
+    expect(analysis.useDiffusion).toBe(true);
+    expect(shouldExtractBackgroundLocally(analysis)).toBe(false);
+  });
+
+  it("keeps pale illustrated structure on the cloud path", () => {
+    const size = 256;
+    const rgba = rgbaOf(size, (x, y) => {
+      const base = 220 + Math.round((x + y) / 32);
+      const ridge = (x + y) % 24 < 5 || Math.abs(x - y) % 31 < 4;
+      return ridge ? [base - 45, base - 24, base - 18] : [base, base + 3, base + 6];
+    });
+    const mask = centeredMask(size, 96, 96, 160, 160);
+    const analysis = analyzeBackgroundExtraction(rgba, mask, size, size);
+
+    expect(analysis.nearbyCoverage).toBeGreaterThan(0.55);
+    expect(analysis.strongGradientRatio).toBeGreaterThan(0.015);
+    expect(shouldExtractBackgroundLocally(analysis)).toBe(false);
+  });
 });
 
 describe("automatic-layer local extraction decision", () => {
@@ -133,16 +163,23 @@ describe("automatic-layer local extraction decision", () => {
       nearbyCoverage: 0.35,
       useDiffusion: false,
       lowTexture: false,
+      strongGradientRatio: 0,
+      maskCoverage: 0.05,
       ...overrides
     };
   }
 
   it("extracts locally when diffusion already applies", () => {
-    expect(shouldExtractBackgroundLocally(analysisOf({ useDiffusion: true }))).toBe(true);
+    expect(shouldExtractBackgroundLocally(analysisOf({
+      useDiffusion: true,
+      lowTexture: true,
+      dominantCoverage: 0.2,
+      nearbyCoverage: 0.65
+    }))).toBe(true);
   });
 
-  it("extracts locally for low-texture backgrounds with concentrated nearby colors", () => {
-    expect(shouldExtractBackgroundLocally(analysisOf({ lowTexture: true, nearbyCoverage: 0.35 }))).toBe(true);
+  it("keeps low-texture backgrounds on the cloud path without diffusion confidence", () => {
+    expect(shouldExtractBackgroundLocally(analysisOf({ lowTexture: true, nearbyCoverage: 0.65 }))).toBe(false);
   });
 
   it("keeps the cloud path when nearby colors are scattered", () => {
@@ -150,7 +187,31 @@ describe("automatic-layer local extraction decision", () => {
   });
 
   it("keeps the cloud path for high-texture backgrounds", () => {
-    expect(shouldExtractBackgroundLocally(analysisOf({ lowTexture: false, nearbyCoverage: 0.6 }))).toBe(false);
+    expect(shouldExtractBackgroundLocally(analysisOf({
+      useDiffusion: true,
+      lowTexture: false,
+      nearbyCoverage: 0.6
+    }))).toBe(false);
+  });
+
+  it("keeps the cloud path when strong illustrated edges are present", () => {
+    expect(shouldExtractBackgroundLocally(analysisOf({
+      useDiffusion: true,
+      lowTexture: true,
+      dominantCoverage: 0.2,
+      nearbyCoverage: 0.65,
+      strongGradientRatio: 0.03
+    }))).toBe(false);
+  });
+
+  it("keeps the cloud path when the removal mask is too large", () => {
+    expect(shouldExtractBackgroundLocally(analysisOf({
+      useDiffusion: true,
+      lowTexture: true,
+      dominantCoverage: 0.2,
+      nearbyCoverage: 0.65,
+      maskCoverage: 0.2
+    }))).toBe(false);
   });
 
   it("keeps the cloud path when analysis failed", () => {

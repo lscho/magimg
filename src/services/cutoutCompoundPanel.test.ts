@@ -3,6 +3,7 @@ import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 import {
   applyOpaquePanelPrior,
+  constrainAlphaToPanelOuter,
   detectCompoundPanelInterior
 } from "@/services/cutoutCompoundPanel";
 
@@ -68,6 +69,8 @@ describe("compound UI panel recovery", () => {
     expect(detection?.alpha[55 * 100 + 50]).toBe(255);
     expect(detection?.alpha[0]).toBe(0);
     expect(detection?.alpha[13 * 100 + 8]).toBe(0);
+    expect(detection?.outerAlpha[55 * 100 + 50]).toBe(255);
+    expect(detection?.outerAlpha[0]).toBe(0);
   });
 
   it("keeps protruding subject soft alpha while making the panel interior opaque", () => {
@@ -101,6 +104,18 @@ describe("compound UI panel recovery", () => {
     expect(() => applyOpaquePanelPrior(new Uint8Array(4), new Uint8Array(5))).toThrow(
       "面板先验尺寸与抠图 Alpha 不匹配"
     );
+    expect(() => constrainAlphaToPanelOuter(new Uint8Array(4), new Uint8Array(5))).toThrow(
+      "面板外轮廓尺寸与抠图 Alpha 不匹配"
+    );
+  });
+
+  it("removes automatic-layer background noise outside a detected panel", () => {
+    const outer = detectCompoundPanelInterior(panelPixels(), 100, 110)?.outerAlpha ?? null;
+    const alpha = new Uint8Array(100 * 110).fill(255);
+    const constrained = constrainAlphaToPanelOuter(alpha, outer);
+
+    expect(constrained[0]).toBe(0);
+    expect(constrained[55 * 100 + 50]).toBe(255);
   });
 
   it("recovers the real panel when the portrait protrudes beyond its top edge", () => {
