@@ -4,8 +4,8 @@ use std::{
     io::{Cursor, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -30,6 +30,10 @@ const LOSSY_QUALITY: u8 = 88;
 const PNG_MAX_COLORS: u32 = 256;
 const PNG_QUANTIZATION_SPEED: i32 = 6;
 const PNG_DITHERING: f32 = 0.5;
+const MAX_COMPRESSION_WORKERS: usize = 4;
+const INTERNALLY_THREADED_WORKERS: usize = 3;
+const LARGE_IMAGE_PIXELS: u64 = 16_000_000;
+const VERY_LARGE_IMAGE_PIXELS: u64 = 32_000_000;
 const CANCELLED_ERROR: &str = "压缩已取消。";
 
 #[derive(Default)]
@@ -382,7 +386,7 @@ pub async fn compression_save(
         return Err("当前压缩任务仍在运行。".into());
     }
 
-    let output_root = match validate_output_root(&session, Path::new(&output_root)) {
+    let selected_output_root = match validate_output_root(&session, Path::new(&output_root)) {
         Ok(path) => path,
         Err(error) => {
             session.running.store(false, Ordering::SeqCst);
@@ -394,6 +398,13 @@ pub async fn compression_save(
         session.running.store(false, Ordering::SeqCst);
         return Err("没有可保存的压缩结果。".into());
     }
+    let output_root = match create_save_output_root(&session, &selected_output_root) {
+        Ok(path) => path,
+        Err(error) => {
+            session.running.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+    };
 
     let task_session = session.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -518,76 +529,124 @@ fn run_session(
         total,
         ..CompressionSummary::default()
     };
+    let _work_guard = session
+        .work_lock
+        .lock()
+        .map_err(|_| "图片处理状态不可用。".to_string())?;
     let _ = progress.send(CompressionProgressEvent::Started { total });
 
-    for (index, item) in selected_items.iter().enumerate() {
-        if session.cancelled.load(Ordering::SeqCst) {
-            summary.cancelled = total - index;
-            summary.was_cancelled = true;
-            break;
+    let worker_count = compression_worker_count(&selected_items);
+    let next_index = AtomicUsize::new(0);
+    let (worker_tx, worker_rx) = mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let worker_tx = worker_tx.clone();
+            let selected_items = &selected_items;
+            let next_index = &next_index;
+            scope.spawn(move || loop {
+                if session.cancelled.load(Ordering::SeqCst) {
+                    break;
+                }
+                let index = next_index.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = selected_items.get(index).copied() else {
+                    break;
+                };
+                if session.cancelled.load(Ordering::SeqCst) {
+                    break;
+                }
+                if worker_tx
+                    .send(CompressionWorkerEvent::Started { index })
+                    .is_err()
+                {
+                    break;
+                }
+                let outcome = process_item(session_id, session, item, settings);
+                let was_cancelled = matches!(&outcome, Ok(ItemOutcome::Cancelled));
+                if worker_tx
+                    .send(CompressionWorkerEvent::Finished { index, outcome })
+                    .is_err()
+                {
+                    break;
+                }
+                if was_cancelled {
+                    break;
+                }
+            });
         }
-        let relative_path = relative_path_string(&item.relative_path);
-        let _ = progress.send(CompressionProgressEvent::ItemStarted {
-            item_id: item.id.clone(),
-            index,
-            total,
-            relative_path,
-        });
+        drop(worker_tx);
 
-        let outcome = match session.work_lock.lock() {
-            Ok(_guard) => process_item(session_id, session, item, settings),
-            Err(_) => Err("图片处理状态不可用。".into()),
-        };
-        let mut stop_after_item = false;
-        let (status, output_relative_path, output_size, saved_percent, message) = match outcome {
-            Ok(ItemOutcome::Succeeded {
-                size,
-                output_relative_path,
-            }) => {
-                summary.succeeded += 1;
-                summary.original_bytes += item.size;
-                summary.output_bytes += size;
-                (
-                    "succeeded",
-                    Some(output_relative_path),
-                    Some(size),
-                    saved_percent(item.size, size),
-                    None,
-                )
+        for event in worker_rx {
+            match event {
+                CompressionWorkerEvent::Started { index } => {
+                    let item = selected_items[index];
+                    let _ = progress.send(CompressionProgressEvent::ItemStarted {
+                        item_id: item.id.clone(),
+                        index,
+                        total,
+                        relative_path: relative_path_string(&item.relative_path),
+                    });
+                }
+                CompressionWorkerEvent::Finished { index, outcome } => {
+                    let item = selected_items[index];
+                    let (status, output_relative_path, output_size, saved_percent, message) =
+                        match outcome {
+                            Ok(ItemOutcome::Succeeded {
+                                size,
+                                output_relative_path,
+                            }) => {
+                                summary.succeeded += 1;
+                                summary.original_bytes += item.size;
+                                summary.output_bytes += size;
+                                (
+                                    "succeeded",
+                                    Some(output_relative_path),
+                                    Some(size),
+                                    saved_percent(item.size, size),
+                                    None,
+                                )
+                            }
+                            Ok(ItemOutcome::NoBenefit { size, message }) => {
+                                summary.no_benefit += 1;
+                                (
+                                    "noBenefit",
+                                    None,
+                                    Some(size),
+                                    saved_percent(item.size, size),
+                                    Some(message),
+                                )
+                            }
+                            Ok(ItemOutcome::Cancelled) => {
+                                summary.cancelled += 1;
+                                summary.was_cancelled = true;
+                                ("cancelled", None, None, None, Some(CANCELLED_ERROR.into()))
+                            }
+                            Err(message) => {
+                                summary.failed += 1;
+                                ("failed", None, None, None, Some(message))
+                            }
+                        };
+                    let _ = progress.send(CompressionProgressEvent::ItemFinished {
+                        item_id: item.id.clone(),
+                        index,
+                        status: status.into(),
+                        output_relative_path,
+                        output_size,
+                        saved_percent,
+                        message,
+                    });
+                }
             }
-            Ok(ItemOutcome::NoBenefit { size, message }) => {
-                summary.no_benefit += 1;
-                (
-                    "noBenefit",
-                    None,
-                    Some(size),
-                    saved_percent(item.size, size),
-                    Some(message),
-                )
-            }
-            Ok(ItemOutcome::Cancelled) => {
-                summary.cancelled = total - index;
-                summary.was_cancelled = true;
-                stop_after_item = true;
-                ("cancelled", None, None, None, Some(CANCELLED_ERROR.into()))
-            }
-            Err(message) => {
-                summary.failed += 1;
-                ("failed", None, None, None, Some(message))
-            }
-        };
-        let _ = progress.send(CompressionProgressEvent::ItemFinished {
-            item_id: item.id.clone(),
-            index,
-            status: status.into(),
-            output_relative_path,
-            output_size,
-            saved_percent,
-            message,
-        });
-        if stop_after_item {
-            break;
         }
+    });
+
+    if session.cancelled.load(Ordering::SeqCst) {
+        let accounted = summary.succeeded
+            + summary.no_benefit
+            + summary.skipped
+            + summary.failed
+            + summary.cancelled;
+        summary.cancelled += total.saturating_sub(accounted);
+        summary.was_cancelled = summary.cancelled > 0;
     }
 
     summary.saved_bytes = summary.original_bytes.saturating_sub(summary.output_bytes);
@@ -595,6 +654,68 @@ fn run_session(
         summary: summary.clone(),
     });
     Ok(summary)
+}
+
+enum CompressionWorkerEvent {
+    Started {
+        index: usize,
+    },
+    Finished {
+        index: usize,
+        outcome: Result<ItemOutcome, String>,
+    },
+}
+
+fn compression_worker_count(items: &[&NativeSourceItem]) -> usize {
+    let available_parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    compression_worker_count_for(items, available_parallelism)
+}
+
+fn compression_worker_count_for(
+    items: &[&NativeSourceItem],
+    available_parallelism: usize,
+) -> usize {
+    if items.is_empty() {
+        return 0;
+    }
+    let available_parallelism = available_parallelism.max(1);
+    let cpu_limit = available_parallelism
+        .saturating_sub(1)
+        .max(1)
+        .min(MAX_COMPRESSION_WORKERS);
+    let format_limit = if items.iter().any(|item| {
+        matches!(
+            item.format,
+            CompressionFormat::Png | CompressionFormat::Webp
+        )
+    }) {
+        available_parallelism
+            .div_ceil(2)
+            .min(INTERNALLY_THREADED_WORKERS)
+    } else {
+        MAX_COMPRESSION_WORKERS
+    };
+    let largest_image = items
+        .iter()
+        .map(|item| u64::from(item.width) * u64::from(item.height))
+        .max()
+        .unwrap_or(0);
+    let memory_limit = if largest_image >= VERY_LARGE_IMAGE_PIXELS {
+        1
+    } else if largest_image >= LARGE_IMAGE_PIXELS {
+        2
+    } else {
+        MAX_COMPRESSION_WORKERS
+    };
+
+    items
+        .len()
+        .min(cpu_limit)
+        .min(format_limit)
+        .min(memory_limit)
+        .max(1)
 }
 
 fn save_session(
@@ -1227,6 +1348,38 @@ fn validate_output_root(session: &CompressionSession, path: &Path) -> Result<Pat
     Ok(output)
 }
 
+fn create_save_output_root(
+    session: &CompressionSession,
+    selected_output_root: &Path,
+) -> Result<PathBuf, String> {
+    let Some(source_root) = session.source_root.as_deref() else {
+        return Ok(selected_output_root.to_path_buf());
+    };
+    let source_name = source_root
+        .file_name()
+        .unwrap_or_else(|| Path::new("压缩结果").as_os_str());
+
+    for index in 0..=10_000 {
+        let mut folder_name = source_name.to_os_string();
+        folder_name.push("-压缩");
+        if index > 0 {
+            folder_name.push(format!(" ({index})"));
+        }
+        let candidate = selected_output_root.join(folder_name);
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                return candidate
+                    .canonicalize()
+                    .map_err(|error| format!("无法确认输出文件夹：{error}"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("无法创建输出文件夹：{error}")),
+        }
+    }
+
+    Err("无法为压缩结果生成可用文件夹名称。".into())
+}
+
 fn validate_relative_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() || path.is_absolute() {
         return Err("输出相对路径无效。".into());
@@ -1640,6 +1793,23 @@ mod tests {
         }
     }
 
+    fn sizing_item(
+        id: usize,
+        format: CompressionFormat,
+        width: u32,
+        height: u32,
+    ) -> NativeSourceItem {
+        NativeSourceItem {
+            id: format!("item-{id}"),
+            source_path: PathBuf::from(format!("item-{id}.png")),
+            relative_path: PathBuf::from(format!("item-{id}.png")),
+            format,
+            width,
+            height,
+            size: 1,
+        }
+    }
+
     #[test]
     fn progress_event_fields_use_frontend_camel_case_contract() {
         let event = CompressionProgressEvent::ItemStarted {
@@ -1667,6 +1837,41 @@ mod tests {
         let finished = serde_json::to_value(finished).unwrap();
         assert_eq!(finished["outputRelativePath"], "nested/image (1).png");
         assert!(finished.get("output_relative_path").is_none());
+    }
+
+    #[test]
+    fn compression_workers_respect_cpu_encoder_and_memory_limits() {
+        assert_eq!(compression_worker_count_for(&[], 8), 0);
+
+        let jpeg_items = (0..6)
+            .map(|index| sizing_item(index, CompressionFormat::Jpeg, 1920, 1080))
+            .collect::<Vec<_>>();
+        let jpeg_refs = jpeg_items.iter().collect::<Vec<_>>();
+        assert_eq!(compression_worker_count_for(&jpeg_refs, 8), 4);
+        assert_eq!(compression_worker_count_for(&jpeg_refs, 2), 1);
+
+        let png_items = (0..6)
+            .map(|index| sizing_item(index, CompressionFormat::Png, 1920, 1080))
+            .collect::<Vec<_>>();
+        let png_refs = png_items.iter().collect::<Vec<_>>();
+        assert_eq!(compression_worker_count_for(&png_refs, 8), 3);
+
+        let large = sizing_item(0, CompressionFormat::Jpeg, 5000, 4000);
+        assert_eq!(compression_worker_count_for(&[&large], 8), 1);
+        let large_items = [
+            sizing_item(0, CompressionFormat::Jpeg, 5000, 4000),
+            sizing_item(1, CompressionFormat::Jpeg, 5000, 4000),
+            sizing_item(2, CompressionFormat::Jpeg, 5000, 4000),
+        ];
+        let large_refs = large_items.iter().collect::<Vec<_>>();
+        assert_eq!(compression_worker_count_for(&large_refs, 8), 2);
+
+        let very_large_items = [
+            sizing_item(0, CompressionFormat::Jpeg, 8000, 4000),
+            sizing_item(1, CompressionFormat::Jpeg, 8000, 4000),
+        ];
+        let very_large_refs = very_large_items.iter().collect::<Vec<_>>();
+        assert_eq!(compression_worker_count_for(&very_large_refs, 8), 1);
     }
 
     #[test]
@@ -2082,6 +2287,73 @@ mod tests {
     }
 
     #[test]
+    fn folder_save_creates_unique_container_and_preserves_relative_paths() {
+        let root = test_directory("folder-save-container");
+        let source_root = root.join("源图片");
+        let source_path = source_root.join("产品").join("封面.png");
+        let output_parent = root.join("导出");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(&output_parent).unwrap();
+        fs::write(&source_path, b"source").unwrap();
+        let canonical_source_root = source_root.canonicalize().unwrap();
+        let canonical_source_path = source_path.canonicalize().unwrap();
+        let item = NativeSourceItem {
+            id: "item-1".into(),
+            source_path: canonical_source_path.clone(),
+            relative_path: PathBuf::from("产品").join("封面.png"),
+            format: CompressionFormat::Png,
+            width: 32,
+            height: 24,
+            size: 6,
+        };
+        let session = test_session(
+            "folder-save-container",
+            Some(canonical_source_root),
+            vec![item.clone()],
+            HashSet::from([canonical_source_path]),
+        );
+        let cached_path = session.temp_root.join("item-1.compressed");
+        fs::write(&cached_path, b"compressed").unwrap();
+        session.results.lock().unwrap().insert(
+            item.id.clone(),
+            CachedOutput {
+                path: cached_path,
+                size: 10,
+            },
+        );
+
+        let first_output_root = create_save_output_root(&session, &output_parent).unwrap();
+        assert_eq!(first_output_root.file_name().unwrap(), "源图片-压缩");
+        let summary = save_session(
+            "session",
+            &session,
+            &HashSet::from([item.id.clone()]),
+            &first_output_root,
+            CompressionConflictPolicy::Rename,
+        )
+        .unwrap();
+        assert_eq!(summary.saved, 1);
+        assert_eq!(
+            fs::read(first_output_root.join("产品").join("封面.png")).unwrap(),
+            b"compressed"
+        );
+
+        let second_output_root = create_save_output_root(&session, &output_parent).unwrap();
+        assert_eq!(second_output_root.file_name().unwrap(), "源图片-压缩 (1)");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_save_uses_selected_output_directory_directly() {
+        let root = test_directory("file-save-root");
+        let session = test_session("file-save-root", None, Vec::new(), HashSet::new());
+
+        assert_eq!(create_save_output_root(&session, &root).unwrap(), root);
+        assert!(!root.join("压缩结果-压缩").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_output_inside_folder_source() {
         let root = test_directory("root-safety");
         let output = root.join("output");
@@ -2154,6 +2426,46 @@ mod tests {
         assert_eq!(summary.cancelled, 1);
         assert!(summary.was_cancelled);
         assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn multi_item_batch_caches_every_completed_result() {
+        let source_root = test_directory("parallel-batch-source");
+        let image = sample_rgba().to_rgb8();
+        let mut input = Vec::new();
+        image
+            .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                &mut input, 95,
+            ))
+            .unwrap();
+        let items = (0..4)
+            .map(|index| {
+                let source_path = source_root.join(format!("image-{index}.jpg"));
+                fs::write(&source_path, &input).unwrap();
+                NativeSourceItem {
+                    id: format!("item-{index}"),
+                    source_path: source_path.canonicalize().unwrap(),
+                    relative_path: PathBuf::from(format!("image-{index}.jpg")),
+                    format: CompressionFormat::Jpeg,
+                    width: image.width(),
+                    height: image.height(),
+                    size: input.len() as u64,
+                }
+            })
+            .collect::<Vec<_>>();
+        let selected_ids = items.iter().map(|item| item.id.clone()).collect();
+        let source_paths = items.iter().map(|item| item.source_path.clone()).collect();
+        let session = test_session("parallel-batch", None, items, source_paths);
+        let mut config = settings();
+        config.skip_no_benefit = false;
+        let channel = Channel::new(|_| Ok(()));
+
+        let summary = run_session("session", &session, &selected_ids, &config, &channel).unwrap();
+
+        assert_eq!(summary.succeeded, 4);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(session.results.lock().unwrap().len(), 4);
+        fs::remove_dir_all(source_root).unwrap();
     }
 
     #[test]

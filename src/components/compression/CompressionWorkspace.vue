@@ -74,7 +74,9 @@ async function selectFolder() {
 }
 
 async function saveResults() {
-  const path = await chooseCompressionOutputFolder();
+  const path = await chooseCompressionOutputFolder(
+    compression.session.value?.inputMode ?? "files"
+  );
   if (!path) return;
   const result = await compression.save(path);
   if (result) showSaveToast(compressionSaveToastMessage(result));

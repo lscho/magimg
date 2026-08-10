@@ -33,9 +33,12 @@ export async function chooseCompressionFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function chooseCompressionOutputFolder(): Promise<string | null> {
+export async function chooseCompressionOutputFolder(
+  inputMode: CompressionInputMode = "files"
+): Promise<string | null> {
   if (!isDesktopRuntime()) return null;
-  const selected = await open({ directory: true, multiple: false, title: "选择输出文件夹" });
+  const title = inputMode === "folder" ? "选择压缩文件夹的保存位置" : "选择输出文件夹";
+  const selected = await open({ directory: true, multiple: false, title });
   return typeof selected === "string" ? selected : null;
 }
 

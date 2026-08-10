@@ -947,9 +947,6 @@ export const useAppStore = defineStore("app", () => {
       task = await apiClient.autoLayerTask(task.id);
       balance.value = { balance: task.balance, frozen: 0, updatedAt: new Date().toISOString() };
     }
-    if (task.status !== "succeeded" || !task.outputUrl) {
-      throw new Error(task.errorMessage || (task.status === "canceled" ? "自动分层已取消。" : "自动分层云端背景失败。"));
-    }
     return task;
   }
 

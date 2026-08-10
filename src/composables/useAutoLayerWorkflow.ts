@@ -48,6 +48,11 @@ function isPendingTask(task: AutoLayerTask | null) {
   return task?.status === "pending" || task?.status === "processing";
 }
 
+function cloudTaskErrorMessage(task: AutoLayerTask | null) {
+  if (task?.errorMessage) return task.errorMessage;
+  return task?.status === "canceled" ? "自动分层云端背景已取消。" : "云端背景生成失败，可重试背景。";
+}
+
 export function useAutoLayerWorkflow() {
   const app = useAppStore();
   const inference = useCutoutInference();
@@ -278,8 +283,8 @@ export function useAutoLayerWorkflow() {
       pendingSubmission = null;
       stage.value = "waiting";
       cloudTask.value = await app.waitForAutoLayerTask(cloudTask.value, abortController.signal);
+      if (!isSucceededTask(cloudTask.value)) throw new Error(cloudTaskErrorMessage(cloudTask.value));
       await applyCloudOutput();
-      if (!isSucceededTask(cloudTask.value)) throw new Error("云端背景生成失败，可重试背景。");
       document.value = {
         ...document.value,
         status: "complete",
@@ -411,7 +416,6 @@ export function useAutoLayerWorkflow() {
     const submission = pendingSubmission;
     const input = cloudBackground.value;
     if (!submission || !input || !document.value) return;
-    pendingSubmission = null;
     const abortController = controller.value ?? new AbortController();
     controller.value = abortController;
     drawerOpen.value = false;
@@ -422,7 +426,18 @@ export function useAutoLayerWorkflow() {
         submission.charge,
         submission.idempotencyKey
       );
+      pendingSubmission = null;
       await waitAndApplyCloudTask();
+    } catch (error) {
+      const ambiguousNetworkFailure = error instanceof ApiError && error.statusCode === 0;
+      pendingSubmission = ambiguousNetworkFailure ? submission : null;
+      document.value = { ...document.value, status: "draft" };
+      stage.value = "draft";
+      drawerOpen.value = false;
+      actionError.value = error instanceof Error ? error.message : "云端背景任务提交失败。";
+      if (!ambiguousNetworkFailure && !cloudTask.value) {
+        await app.refundMatting(submission.charge.mattingId).catch(() => undefined);
+      }
     } finally {
       controller.value = null;
     }
@@ -436,28 +451,25 @@ export function useAutoLayerWorkflow() {
     try {
       if (cloudTask.value && isPendingTask(cloudTask.value)) {
         stage.value = "waiting";
-        cloudTask.value = await app.waitForAutoLayerTask(cloudTask.value, abortController.signal)
-          .catch(() => cloudTask.value);
+        cloudTask.value = await app.waitForAutoLayerTask(cloudTask.value, abortController.signal);
       }
+      if (!isSucceededTask(cloudTask.value)) throw new Error(cloudTaskErrorMessage(cloudTask.value));
       await applyCloudOutput();
-      const allSucceeded = isSucceededTask(cloudTask.value);
       const appliedDocument = document.value;
       if (!appliedDocument) return;
-      if (allSucceeded) {
-        document.value = {
-          ...appliedDocument,
-          status: "complete",
-          cloudInputAssetId: cloudTask.value?.inputAssetId
-        };
-        stage.value = "complete";
-        drawerOpen.value = true;
-        showMessage(`已生成 ${appliedDocument.layers.length} 个可编辑图层`);
-      } else {
-        document.value = { ...appliedDocument, status: "draft" };
-        stage.value = "draft";
-        drawerOpen.value = false;
-        actionError.value = "云端背景生成失败，可只重试背景。";
-      }
+      document.value = {
+        ...appliedDocument,
+        status: "complete",
+        cloudInputAssetId: cloudTask.value.inputAssetId
+      };
+      stage.value = "complete";
+      drawerOpen.value = true;
+      showMessage(`已生成 ${appliedDocument.layers.length} 个可编辑图层`);
+    } catch (error) {
+      document.value = { ...document.value, status: "draft" };
+      stage.value = "draft";
+      drawerOpen.value = false;
+      actionError.value = error instanceof Error ? error.message : "云端背景生成失败，可只重试背景。";
     } finally {
       controller.value = null;
     }
