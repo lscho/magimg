@@ -4,6 +4,7 @@ import {
   moveAutoLayer,
   orderAutoLayersByHierarchy,
   resetAutoLayer,
+  resetAutoLayers,
   scaleAutoLayer,
   setAutoLayerKind
 } from "@/services/autoLayerModel";
@@ -53,6 +54,30 @@ describe("auto layer model", () => {
       width: 100,
       height: 50
     });
+  });
+
+  it("resets every layer transform in one action", () => {
+    const layers = createAutoLayerItems([
+      material,
+      {
+        ...material,
+        id: "selection-2",
+        sourceBox: { id: "selection-2", x: 140, y: 80, width: 60, height: 40 },
+        width: 60,
+        height: 40
+      }
+    ]).map(layer => ({ ...layer, x: layer.x + 50, y: layer.y + 20, width: layer.width * 2 }));
+
+    expect(resetAutoLayers(layers).map(layer => ({
+      id: layer.id,
+      x: layer.x,
+      y: layer.y,
+      width: layer.width,
+      height: layer.height
+    }))).toEqual([
+      { id: "selection-1", x: 20, y: 30, width: 100, height: 50 },
+      { id: "selection-2", x: 140, y: 80, width: 60, height: 40 }
+    ]);
   });
 
   it("orders every parent below its descendants regardless of selection order", () => {

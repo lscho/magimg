@@ -123,3 +123,7 @@ export function resetAutoLayer(layer: AutoLayerItem): AutoLayerItem {
     height: layer.sourceBox.height
   };
 }
+
+export function resetAutoLayers(layers: readonly AutoLayerItem[]): AutoLayerItem[] {
+  return layers.map(resetAutoLayer);
+}

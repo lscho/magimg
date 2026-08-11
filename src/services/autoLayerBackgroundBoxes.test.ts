@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createAutoLayerBackgroundBoxes,
+  createAutoLayerBackgroundRegions,
   keepLargestOverlappingBoxes,
   mergeConnectedBackgroundBoxes
 } from "@/services/autoLayerBackgroundBoxes";
@@ -46,6 +47,19 @@ describe("automatic-layer background boxes", () => {
     expect(boxes.map(box => box.id)).toEqual(["second", "first"]);
   });
 
+  it("does not let connected UI groups grow into a page-sized repair region", () => {
+    const regions = createAutoLayerBackgroundRegions([
+      { id: "panel", x: 218, y: 133, width: 718, height: 423 },
+      { id: "left-1", x: 1, y: 127, width: 213, height: 105 },
+      { id: "left-2", x: 5, y: 235, width: 210, height: 111 }
+    ], 941, 1672);
+
+    expect(regions.selectionBoxes).toEqual([
+      { id: "panel", x: 182, y: 97, width: 759, height: 495 },
+      { id: "left-2", x: 0, y: 116, width: 226, height: 241 }
+    ]);
+  });
+
   it("expands retained boxes within image bounds for shadows and outlines", () => {
     const boxes = createAutoLayerBackgroundBoxes([
       { id: "top", x: 0, y: 0, width: 40, height: 40 },
@@ -65,6 +79,20 @@ describe("automatic-layer background boxes", () => {
 
     expect(boxes).toEqual([
       { id: "panel", x: 32, y: 52, width: 1096, height: 496 }
+    ]);
+  });
+
+  it("keeps exact composite boxes when expanded generation boxes are merged", () => {
+    const regions = createAutoLayerBackgroundRegions([
+      { id: "left", x: 0, y: 0, width: 48, height: 48 },
+      { id: "right", x: 40, y: 0, width: 48, height: 48 }
+    ], 300, 200);
+
+    expect(regions.selectionBoxes).toHaveLength(1);
+    expect(regions.selectionBoxes[0]).toMatchObject({ x: 0, y: 0, width: 96, height: 56 });
+    expect(regions.compositeBoxes).toEqual([
+      { id: "left", x: 0, y: 0, width: 48, height: 48 },
+      { id: "right", x: 40, y: 0, width: 48, height: 48 }
     ]);
   });
 });

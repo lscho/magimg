@@ -14,6 +14,7 @@ const collectorUrl = import.meta.env.VITE_AUTO_LAYER_REGRESSION_URL?.replace(/\/
 const recordId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RECORD_ID?.trim() || undefined;
 const cloud = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CLOUD === "true";
 const forceCloudInput = import.meta.env.VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT === "true";
+const skipQualityGate = import.meta.env.VITE_AUTO_LAYER_REGRESSION_SKIP_QUALITY_GATE === "true";
 const runId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RUN_ID?.trim() || "";
 const qualityCaseJson = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CASE || "";
 const progressLabel = computed(() => {
@@ -42,6 +43,7 @@ onMounted(async () => {
       qualityCase,
       cloud,
       forceCloudInput,
+      skipQualityGate,
       inference,
       app,
       onStatus: reportStatus

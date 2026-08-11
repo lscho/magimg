@@ -9,7 +9,7 @@ import {
   RotateCcw,
   Type
 } from "lucide-vue-next";
-import { materialToText, resetAutoLayer, scaleAutoLayer, textToMaterial } from "@/services/autoLayerModel";
+import { materialToText, resetAutoLayers, scaleAutoLayer, textToMaterial } from "@/services/autoLayerModel";
 import { fitAutoLayerTextFontSize } from "@/services/autoLayerRecognition";
 import type { AutoLayerFontCategory, AutoLayerItem } from "./types";
 
@@ -80,12 +80,8 @@ function setText(value: string) {
   });
 }
 
-function resetSelected() {
-  const layer = selectedLayer.value;
-  if (!layer) return;
-  emit("updateLayers", props.layers.map((item) =>
-    item.id === layer.id ? resetAutoLayer(item) : item
-  ));
+function resetAllTransforms() {
+  emit("updateLayers", resetAutoLayers(props.layers));
 }
 
 function moveLayer(id: string, direction: 1 | -1) {
@@ -259,9 +255,9 @@ function moveLayer(id: string, direction: 1 | -1) {
         <input type="range" min="20" max="400" step="1" :value="selectedScale" @input="setScale" />
       </label>
 
-      <button class="auto-layer-reset-button" type="button" @click="resetSelected">
+      <button class="auto-layer-reset-button" type="button" @click="resetAllTransforms">
         <RotateCcw :size="13" aria-hidden="true" />
-        还原位置与大小
+        还原全部位置与大小
       </button>
     </section>
   </aside>

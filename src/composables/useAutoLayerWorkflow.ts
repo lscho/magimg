@@ -259,7 +259,7 @@ export function useAutoLayerWorkflow() {
       repairedBlob,
       document.value.width,
       document.value.height,
-      input.selectionBoxes
+      input.compositeBoxes
     );
     document.value = {
       ...document.value,

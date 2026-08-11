@@ -23,6 +23,7 @@ const APP_DATA = appDataDirectory();
 const STORE_PATH = join(APP_DATA, "auto-layer-selections.json");
 const cloud = process.argv.includes("--cloud");
 const forceCloudInput = cloud || process.argv.includes("--cloud-input");
+const skipQualityGate = process.argv.includes("--skip-quality-gate");
 const caseArgument = process.argv.find(argument => argument.startsWith("--case="));
 const casePath = resolve(caseArgument?.slice("--case=".length) || "tests/auto-layer.case.json");
 const qualityCase = JSON.parse(await readFile(casePath, "utf8"));
@@ -142,6 +143,7 @@ console.log(cloud
   : forceCloudInput
     ? "模式：生成真实云端输入，不提交任务、不扣积分"
     : "模式：仅本地推理，不扣积分");
+if (skipQualityGate) console.log("质量门禁：仅记录报告，不阻断本次调试运行");
 
 const tauriConfig = JSON.stringify({
   build: {
@@ -159,6 +161,7 @@ const child = spawn("npm", [
     VITE_AUTO_LAYER_REGRESSION_RECORD_ID: recordId,
     VITE_AUTO_LAYER_REGRESSION_CLOUD: String(cloud),
     VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT: String(forceCloudInput),
+    VITE_AUTO_LAYER_REGRESSION_SKIP_QUALITY_GATE: String(skipQualityGate),
     VITE_AUTO_LAYER_REGRESSION_RUN_ID: runId,
     VITE_AUTO_LAYER_REGRESSION_CASE: JSON.stringify(qualityCase)
   },

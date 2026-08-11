@@ -7,7 +7,7 @@ import {
 describe("auto layer cloud output compositing", () => {
   const box = { id: "subject", x: 5, y: 5, width: 20, height: 20 };
 
-  it("keeps every pixel outside submitted boxes and feathers inward", () => {
+  it("keeps every pixel outside allowed composite boxes and feathers inward", () => {
     const mask = createAutoLayerCloudCompositeMask(30, 30, [box]);
     expect(mask[4 * 30 + 10]).toBe(0);
     expect(mask[5 * 30 + 10]).toBe(0);
@@ -30,5 +30,16 @@ describe("auto layer cloud output compositing", () => {
     expect([...output.slice(outside, outside + 4)]).toEqual([10, 20, 30, 77]);
     expect([...output.slice(edge, edge + 4)]).toEqual([10, 20, 30, 77]);
     expect([...output.slice(inside, inside + 4)]).toEqual([110, 120, 130, 77]);
+  });
+
+  it("preserves unselected pixels between separate composite boxes", () => {
+    const mask = createAutoLayerCloudCompositeMask(40, 20, [
+      { id: "left", x: 2, y: 2, width: 10, height: 16 },
+      { id: "right", x: 28, y: 2, width: 10, height: 16 }
+    ]);
+
+    expect(mask[10 * 40 + 6]).toBe(255);
+    expect(mask[10 * 40 + 20]).toBe(0);
+    expect(mask[10 * 40 + 33]).toBe(255);
   });
 });

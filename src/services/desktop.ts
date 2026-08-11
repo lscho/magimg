@@ -406,7 +406,12 @@ export interface ProjectFile {
 
 export async function saveProjectDirectory(suggestedName: string, files: readonly ProjectFile[]) {
   if (!isTauri) throw new Error("浏览器预览不能导出自动分层项目，请在桌面客户端中使用。");
-  const parent = await open({ directory: true, multiple: false, title: "选择分层项目保存位置" });
+  const parent = await open({
+    directory: true,
+    multiple: false,
+    recursive: true,
+    title: "选择分层项目保存位置"
+  });
   if (typeof parent !== "string") return null;
   const safeName = suggestedName.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "-").replace(/^\.+|\.+$/gu, "") || "image-layers";
   let directory = await join(parent, safeName);

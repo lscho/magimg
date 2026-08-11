@@ -36,6 +36,7 @@ export interface AutoLayerRegressionOptions {
   qualityCase: AutoLayerRegressionCase;
   cloud: boolean;
   forceCloudInput: boolean;
+  skipQualityGate?: boolean;
   inference: CutoutInference;
   app: AppStore;
   onStatus?: (message: string) => void;
@@ -380,7 +381,8 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
           originalUploadBytes: preparedCloudUpload.originalBytes,
           compressed: preparedCloudUpload.compressed,
           sourcePixelMatch: true,
-          selectionBoxes: output.cloudBackground.selectionBoxes
+          selectionBoxes: output.cloudBackground.selectionBoxes,
+          compositeBoxes: output.cloudBackground.compositeBoxes
         }));
       } else {
         await upload("cloud-input/layout.json", jsonBlob({
@@ -457,7 +459,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         output.diagnostics,
         documentValue.layers
       )));
-      options.onStatus?.("执行本地素材质量门禁");
+      options.onStatus?.(options.skipQualityGate ? "生成本地素材质量报告" : "执行本地素材质量门禁");
       const localQuality = await evaluateLocalAutoLayerQuality({
         caseValue: options.qualityCase,
         record,
@@ -467,7 +469,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         imageHeight: bitmap.height
       });
       await upload("quality/local.json", jsonBlob(localQuality));
-      if (!localQuality.passed) {
+      if (!localQuality.passed && !options.skipQualityGate) {
         const failed = localQuality.checks.filter(check => !check.passed).map(check => check.id);
         throw new Error(`本地素材质量门禁未通过：${failed.join("、")}`);
       }
@@ -504,7 +506,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
             serverBackground,
             bitmap.width,
             bitmap.height,
-            output.cloudBackground.selectionBoxes
+            output.cloudBackground.compositeBoxes
           );
           const completeDocument: AutoLayerDocument = {
             ...documentValue,

@@ -74,7 +74,7 @@ import { assignAutoLayerNames } from "@/services/autoLayerNaming";
 import {
   type AutoLayerRepairRegion
 } from "@/services/autoLayerRepairAtlas";
-import { createAutoLayerBackgroundBoxes } from "@/services/autoLayerBackgroundBoxes";
+import { createAutoLayerBackgroundRegions } from "@/services/autoLayerBackgroundBoxes";
 import {
   sampleBackgroundAnalysis,
   shouldExtractBackgroundLocally,
@@ -151,7 +151,10 @@ export interface AutoLayerInferenceResult {
   /** 复杂整页背景上传原始整页图与去重框选，不再上传修复蒙版。 */
   cloudBackground?: {
     imageBlob: Blob;
+    /** 提交给服务端的外扩、合并生成区域。 */
     selectionBoxes: CutoutSelectionBox[];
+    /** 客户端最终允许采纳生成 RGB 的原始框选区域。 */
+    compositeBoxes: CutoutSelectionBox[];
   };
   diagnostics?: AutoLayerDiagnostics;
 }
@@ -1121,11 +1124,12 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
         backgroundAnalysisPromise
       ]);
       const extractLocally = !options.forceCloudBackground && shouldExtractBackgroundLocally(backgroundAnalysis);
-      const backgroundBoxes = createAutoLayerBackgroundBoxes(
+      const backgroundRegions = createAutoLayerBackgroundRegions(
         selections.filter(selection => !selection.parentId),
         imageWidth,
         imageHeight
       );
+      const backgroundBoxes = backgroundRegions.selectionBoxes;
       const cloudBackground = extractLocally || !backgroundBoxes.length
         ? null
         : {
@@ -1133,7 +1137,8 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
           // 当成背景纹理继续放大；本地修复稿仍作为云任务失败时的草稿。
           imageBlob: options.cloudSourceBlob
             ?? await canvasSourceToPngBlob(image, imageWidth, imageHeight),
-          selectionBoxes: backgroundBoxes
+          selectionBoxes: backgroundBoxes,
+          compositeBoxes: backgroundRegions.compositeBoxes
         };
       return {
         backgroundBlob: localBackgroundBlob,
