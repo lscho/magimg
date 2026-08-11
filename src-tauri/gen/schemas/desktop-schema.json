@@ -2313,10 +2313,10 @@
           "markdownDescription": "Allow the main window to run automatic-layer recognition and restore saved selection sources."
         },
         {
-          "description": "Allow the main window to run cutout inference, background repair, and release native sessions.",
+          "description": "Allow the main window to run cutout inference, SAM automatic proposals, background repair, and release native sessions.",
           "type": "string",
           "const": "allow-cutout-inference",
-          "markdownDescription": "Allow the main window to run cutout inference, background repair, and release native sessions."
+          "markdownDescription": "Allow the main window to run cutout inference, SAM automatic proposals, background repair, and release native sessions."
         },
         {
           "description": "Allow the main window to run local image compression sessions and encode auto-layer upload copies.",

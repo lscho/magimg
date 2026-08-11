@@ -133,7 +133,7 @@ interface DownloadedModelFile {
   sha256: string;
 }
 
-const isTauri = "__TAURI_INTERNALS__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let cachedModelsDir: string | null = null;
 
 function emptyManifest(): ModelManifest {

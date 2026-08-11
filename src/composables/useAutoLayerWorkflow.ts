@@ -4,6 +4,7 @@ import {
   useCutoutInference,
   type AutoLayerInferenceResult
 } from "@/composables/useCutoutInference";
+import { useSmartSelection } from "@/composables/useSmartSelection";
 import { ApiError } from "@/services/apiClient";
 import { compositeAutoLayerCloudOutput } from "@/services/autoLayerCloudComposite";
 import {
@@ -13,7 +14,8 @@ import {
 } from "@/services/autoLayerCloudUpload";
 import { createAutoLayerItems, orderAutoLayersByHierarchy } from "@/services/autoLayerModel";
 import { saveAutoLayerPackage } from "@/services/autoLayerExport";
-import { chooseImageFile, isDesktopApp, selectedImageFileFromFile } from "@/services/desktop";
+import { exportAutoLayerPsd } from "@/services/autoLayerPsdExport";
+import { chooseImageFile, isDesktopApp, savePsdBlobAs, selectedImageFileFromFile } from "@/services/desktop";
 import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
 import {
   downloadAutoLayerRecognitionResources,
@@ -30,6 +32,7 @@ import type {
   AutoLayerSelectionRecord,
   AutoLayerTask,
   CutoutSelection,
+  CutoutSelectionCommand,
   MattingChargeResult,
   SelectedImageFile
 } from "@/types";
@@ -56,9 +59,11 @@ function cloudTaskErrorMessage(task: AutoLayerTask | null) {
 export function useAutoLayerWorkflow() {
   const app = useAppStore();
   const inference = useCutoutInference();
+  const smartSelection = useSmartSelection();
   const selectedFile = shallowRef<SelectedImageFile | null>(null);
   const imageSource = shallowRef<{ source: CanvasImageSource; width: number; height: number } | null>(null);
   const selections = shallowRef<CutoutSelection[]>([]);
+  const selectionCommand = shallowRef<CutoutSelectionCommand | null>(null);
   const document = shallowRef<AutoLayerDocument | null>(null);
   const cloudBackground = shallowRef<AutoLayerCloudBackground | null>(null);
   const cloudTask = shallowRef<AutoLayerTask | null>(null);
@@ -77,6 +82,7 @@ export function useAutoLayerWorkflow() {
   const controller = shallowRef<AbortController | null>(null);
   const recognitionResourceStatus = shallowRef<"checking" | "missing" | "downloading" | "ready" | "error">("checking");
   const recognitionResourceProgress = shallowRef(0);
+  const exportingPsd = shallowRef(false);
   let messageTimer: number | undefined;
   let pendingSubmission: { charge: MattingChargeResult; idempotencyKey: string } | null = null;
   let cloudUploadPreparation: Promise<CloudUploadPreparation> | null = null;
@@ -88,7 +94,7 @@ export function useAutoLayerWorkflow() {
   const cost = computed(() => app.capabilities.autoLayerCost ?? 20);
   const enabled = computed(() => app.capabilities.autoLayerEnabled === true);
   const busy = computed(() => stage.value === "local" || stage.value === "uploading" || stage.value === "waiting"
-    || recognitionResourceStatus.value === "downloading");
+    || recognitionResourceStatus.value === "downloading" || smartSelection.busy.value);
   const insufficientCredits = computed(() => app.isAuthenticated && (app.balance.balance < cost.value || insufficient.value));
   const canPackage = computed(() => document.value?.status === "complete");
   const progress = computed(() => inference.progress.value);
@@ -157,6 +163,7 @@ export function useAutoLayerWorkflow() {
     selectedFile.value = selected;
     imageSource.value = null;
     selections.value = cloneCutoutSelections(restoredSelections);
+    selectionCommand.value = null;
     document.value = null;
     cloudBackground.value = null;
     cloudTask.value = null;
@@ -206,6 +213,25 @@ export function useAutoLayerWorkflow() {
       cloudTask.value = null;
       drawerOpen.value = false;
     }
+  }
+
+  async function smartSelect() {
+    const image = imageSource.value;
+    if (!image || busy.value) return;
+    if (selections.value.length &&
+      !window.confirm("智能框选会替换当前选区，是否继续？")) return;
+    actionError.value = "";
+    const detected = await smartSelection.detect(image);
+    if (!detected) {
+      if (smartSelection.error.value) actionError.value = smartSelection.error.value;
+      return;
+    }
+    if (!detected.length) {
+      actionError.value = "未识别到可框选元素，可继续手动框选。";
+      return;
+    }
+    selectionCommand.value = { id: Date.now(), selections: detected };
+    showMessage(`已智能框选 ${detected.length} 个元素`);
   }
 
   function updateLayers(layers: AutoLayerItem[]) {
@@ -485,6 +511,21 @@ export function useAutoLayerWorkflow() {
     }
   }
 
+  async function savePsd() {
+    if (!document.value || !selectedFile.value || exportingPsd.value) return;
+    exportingPsd.value = true;
+    actionError.value = "";
+    try {
+      const baseName = selectedFile.value.name.replace(/\.[^.]+$/u, "") || "image-layers";
+      const path = await savePsdBlobAs(await exportAutoLayerPsd(document.value), `${baseName}-layers`);
+      if (path) showMessage("PSD 分层文件已保存");
+    } catch (error) {
+      actionError.value = error instanceof Error ? error.message : "PSD 导出失败。";
+    } finally {
+      exportingPsd.value = false;
+    }
+  }
+
   async function saveSelections() {
     if (!selectedFile.value || !imageSource.value || !canSaveSelections.value) return;
     actionError.value = "";
@@ -557,14 +598,14 @@ export function useAutoLayerWorkflow() {
   void refreshRecognitionResource();
 
   return {
-    app, inference, selectedFile, imageSource, selections, document, sessionKey,
+    app, inference, smartSelection, selectedFile, imageSource, selections, selectionCommand, document, sessionKey,
     selecting, clearing, showLogin, drawerOpen, selectionHistoryOpen, selectionHistoryLoading,
-    selectionRecords, stage, actionError, actionMessage,
+    selectionRecords, stage, actionError, actionMessage, exportingPsd,
     recognitionResourceStatus, recognitionResourceProgress,
     source, cost, enabled, busy, insufficientCredits, canPackage, desktopAvailable,
     canSaveSelections, progress,
-    chooseImage, loadDroppedImage, clearImage, handleReady, handleSelectionsChange,
-    updateLayers, createLayers, retryCloudBackground, savePackage, saveSelections,
+    chooseImage, loadDroppedImage, clearImage, handleReady, handleSelectionsChange, smartSelect,
+    updateLayers, createLayers, retryCloudBackground, savePackage, savePsd, saveSelections,
     openSelectionHistory, restoreSelections, removeSelectionRecord, cancel, handleLoginSuccess,
     installMissingResources
   };

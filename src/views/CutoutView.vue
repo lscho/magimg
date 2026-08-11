@@ -4,6 +4,7 @@ import CutoutResultPanel from "@/components/cutout/CutoutResultPanel.vue";
 import CutoutWorkspace from "@/components/cutout/CutoutWorkspace.vue";
 import LoginModal from "@/components/LoginModal.vue";
 import { useCutoutInference } from "@/composables/useCutoutInference";
+import { useSmartSelection } from "@/composables/useSmartSelection";
 import {
   chooseImageFile,
   copyImageBlobToClipboard,
@@ -24,18 +25,21 @@ import type {
   CutoutRepairMode,
   CutoutSelection,
   CutoutSelectionBox,
+  CutoutSelectionCommand,
   MattingChargeResult,
   SelectedImageFile
 } from "@/types";
 
 const app = useAppStore();
 const inference = useCutoutInference({ segmentationModel: "birefnet" });
+const smartSelection = useSmartSelection();
 
 const selectedFile = shallowRef<SelectedImageFile | null>(null);
 const sessionKey = shallowRef(0);
 const selecting = shallowRef(false);
 const clearing = shallowRef(false);
 const selections = shallowRef<CutoutSelection[]>([]);
+const selectionCommand = shallowRef<CutoutSelectionCommand | null>(null);
 const results = shallowRef<CutoutResult[]>([]);
 const repairMode = shallowRef<CutoutRepairMode>("local");
 const cloudInputAssetId = shallowRef<string | null>(null);
@@ -171,6 +175,26 @@ function handleSelectionsChange(next: CutoutSelection[]) {
   const changed = JSON.stringify(normalized) !== JSON.stringify(selections.value);
   selections.value = normalized;
   if (changed && inference.phase.value === "idle") results.value = [];
+}
+
+async function smartSelect() {
+  const image = imageSource.value;
+  if (!image || smartSelection.busy.value || inference.phase.value !== "idle") return;
+  if (selections.value.length &&
+    !window.confirm("智能框选会替换当前选区，是否继续？")) return;
+  actionError.value = "";
+  actionMessage.value = "";
+  const detected = await smartSelection.detect(image);
+  if (!detected) {
+    if (smartSelection.error.value) actionError.value = smartSelection.error.value;
+    return;
+  }
+  if (!detected.length) {
+    actionError.value = "未识别到可框选元素，可继续手动框选。";
+    return;
+  }
+  selectionCommand.value = { id: Date.now(), selections: detected };
+  showMessage(`已智能框选 ${detected.length} 个元素`);
 }
 
 async function installResources() {
@@ -438,12 +462,18 @@ onBeforeUnmount(() => {
         :initial-selections="selections"
         :importing="selecting"
         :clearing="clearing"
-        :locked="inference.phase.value === 'processing'"
+        :locked="inference.phase.value === 'processing' || smartSelection.busy.value"
+        :selection-command="selectionCommand"
+        :smart-selecting="smartSelection.busy.value"
+        :smart-selection-available="smartSelection.available"
+        :smart-selection-threshold="smartSelection.threshold.value"
         @ready="handleReady"
         @selections-change="handleSelectionsChange"
         @import="importImage"
         @clear="clearImage"
         @drop-file="loadDroppedImage"
+        @smart-select="smartSelect"
+        @update-smart-selection-threshold="smartSelection.setThreshold"
       />
       <CutoutResultPanel
         :results="results"

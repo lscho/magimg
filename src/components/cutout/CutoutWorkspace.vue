@@ -7,7 +7,8 @@ import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
 import { pointInCutoutPolygon } from "@/services/cutoutSelectionShape";
 import type {
   CutoutSelection,
-  CutoutSelectionBox
+  CutoutSelectionBox,
+  CutoutSelectionCommand
 } from "@/types";
 
 const props = withDefaults(defineProps<{
@@ -18,13 +19,21 @@ const props = withDefaults(defineProps<{
   locked?: boolean;
   mode?: "cutout" | "auto-layer";
   plainSelections?: boolean;
+  selectionCommand?: CutoutSelectionCommand | null;
+  smartSelecting?: boolean;
+  smartSelectionAvailable?: boolean;
+  smartSelectionThreshold?: number;
 }>(), {
   initialSelections: () => [],
   importing: false,
   clearing: false,
   locked: false,
   mode: "cutout",
-  plainSelections: false
+  plainSelections: false,
+  selectionCommand: null,
+  smartSelecting: false,
+  smartSelectionAvailable: true,
+  smartSelectionThreshold: 0.95
 });
 
 const emit = defineEmits<{
@@ -33,6 +42,8 @@ const emit = defineEmits<{
   import: [];
   clear: [];
   dropFile: [file: File];
+  smartSelect: [];
+  updateSmartSelectionThreshold: [value: number];
 }>();
 
 const viewport = useTemplateRef<HTMLElement>("viewport");
@@ -73,6 +84,13 @@ watch(
     if (!next.length) brushCursor.value = null;
   },
   { deep: false }
+);
+
+watch(
+  () => props.selectionCommand?.id,
+  () => {
+    if (props.selectionCommand) canvas.replaceSelections(props.selectionCommand.selections);
+  }
 );
 
 onMounted(async () => {
@@ -384,13 +402,13 @@ function handleContextMenu(event: MouseEvent) {
     class="cutout-shell"
     role="region"
     aria-label="AI 抠图画布"
-    :aria-busy="canvas.busy.value || locked"
+    :aria-busy="canvas.busy.value || locked || smartSelecting"
     :class="{ 'is-plain-selections': plainSelections }"
   >
     <div class="cutout-workspace">
       <CutoutToolbar
         :active-tool="canvas.activeTool.value"
-        :busy="canvas.busy.value || locked"
+        :busy="canvas.busy.value || locked || smartSelecting"
         :ready="canvas.ready.value"
         :can-clear="canvas.canClear.value"
         :can-undo="canvas.canUndo.value"
@@ -402,7 +420,12 @@ function handleContextMenu(event: MouseEvent) {
         :brush-operation="canvas.brushOperation.value"
         :brush-radius="canvas.brushRadius.value"
         :smart-brush="canvas.smartBrush.value"
+        :smart-selecting="smartSelecting"
+        :smart-selection-available="smartSelectionAvailable"
+        :smart-selection-threshold="smartSelectionThreshold"
         :mode="mode"
+        @smart-select="emit('smartSelect')"
+        @update-smart-selection-threshold="emit('updateSmartSelectionThreshold', $event)"
         @select-tool="selectTool"
         @clear-selections="canvas.clearSelections"
         @import-image="emit('import')"

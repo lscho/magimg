@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import {
+  ChevronUp,
+  FileDown,
+  FolderDown,
   History,
   Layers3,
   LoaderCircle,
@@ -9,14 +12,22 @@ import {
   Save,
   X
 } from "lucide-vue-next";
-import { computed } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  shallowRef,
+  useTemplateRef,
+  watch
+} from "vue";
 import type {
   CutoutProgress,
   CutoutResourceProgress,
   CutoutResourceStatus
 } from "@/composables/useCutoutInference";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   stage: "idle" | "local" | "uploading" | "waiting" | "complete" | "draft";
   progress: CutoutProgress | null;
   resourceStatus: CutoutResourceStatus;
@@ -35,10 +46,12 @@ const props = defineProps<{
   cost: number;
   balance: number;
   error: string;
-}>();
+  exportingPsd?: boolean;
+}>(), { exportingPsd: false });
 
 const emit = defineEmits<{
   savePackage: [];
+  savePsd: [];
   saveSelections: [];
   openSelectionHistory: [];
   toggleDrawer: [];
@@ -47,6 +60,10 @@ const emit = defineEmits<{
   cancel: [];
 }>();
 
+const packageMenuOpen = shallowRef(false);
+const packageActionRef = useTemplateRef<HTMLElement>("packageAction");
+const packageButtonRef = useTemplateRef<HTMLButtonElement>("packageButton");
+const packageMenuRef = useTemplateRef<HTMLElement>("packageMenu");
 const busy = computed(() => ["local", "uploading", "waiting"].includes(props.stage));
 const coreResourcesDownloading = computed(() => props.resourceStatus === "downloading");
 const recognitionDownloading = computed(() => props.recognitionResourceStatus === "downloading");
@@ -75,6 +92,72 @@ const runLabel = computed(() => {
   return props.hasDocument ? "重新分层" : "一键分层";
 });
 const resourceProgressStyle = computed(() => ({ width: `${resourceDownloadProgress.value}%` }));
+
+function packageMenuItems() {
+  return [...(packageMenuRef.value?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+}
+
+function closePackageMenu(restoreFocus = false) {
+  if (!packageMenuOpen.value) return;
+  packageMenuOpen.value = false;
+  if (restoreFocus) void nextTick(() => packageButtonRef.value?.focus());
+}
+
+function togglePackageMenu() {
+  if (!props.canPackage || busy.value) return;
+  packageMenuOpen.value = !packageMenuOpen.value;
+  if (packageMenuOpen.value) void nextTick(() => packageMenuItems()[0]?.focus());
+}
+
+function choosePackageAction(action: "psd" | "folder") {
+  if (action === "psd" && props.exportingPsd) return;
+  closePackageMenu();
+  if (action === "psd") emit("savePsd");
+  else emit("savePackage");
+}
+
+function handlePackageMenuKeydown(event: KeyboardEvent) {
+  const items = packageMenuItems();
+  if (!items.length) return;
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  let next = current;
+  if (event.key === "ArrowDown") next = (current + 1) % items.length;
+  else if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = items.length - 1;
+  else if (event.key === "Escape") {
+    event.preventDefault();
+    closePackageMenu(true);
+    return;
+  } else return;
+  event.preventDefault();
+  items[next]?.focus();
+}
+
+function handleWindowPointerDown(event: PointerEvent) {
+  if (packageMenuOpen.value && !packageActionRef.value?.contains(event.target as Node)) {
+    closePackageMenu();
+  }
+}
+
+function handleWindowKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && packageMenuOpen.value) {
+    event.preventDefault();
+    closePackageMenu(true);
+  }
+}
+
+watch(() => [props.canPackage, busy.value] as const, ([canPackage, isBusy]) => {
+  if (!canPackage || isBusy) closePackageMenu();
+});
+onMounted(() => {
+  window.addEventListener("pointerdown", handleWindowPointerDown);
+  window.addEventListener("keydown", handleWindowKeydown);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("pointerdown", handleWindowPointerDown);
+  window.removeEventListener("keydown", handleWindowKeydown);
+});
 </script>
 
 <template>
@@ -101,9 +184,43 @@ const resourceProgressStyle = computed(() => ({ width: `${resourceDownloadProgre
         <History v-else :size="15" aria-hidden="true" />
         选区记录
       </button>
-      <button type="button" :disabled="!canPackage || busy" @click="emit('savePackage')">
-        <Package :size="15" aria-hidden="true" /> 打包保存
-      </button>
+      <div ref="packageAction" class="package-action">
+        <button
+          ref="packageButton"
+          type="button"
+          :disabled="!canPackage || busy"
+          aria-haspopup="menu"
+          :aria-expanded="packageMenuOpen"
+          @click="togglePackageMenu"
+        >
+          <Package :size="15" aria-hidden="true" /> 打包保存
+          <ChevronUp class="package-chevron" :class="{ open: packageMenuOpen }" :size="13" aria-hidden="true" />
+        </button>
+        <div
+          v-if="packageMenuOpen"
+          ref="packageMenu"
+          class="package-menu"
+          role="menu"
+          aria-label="打包保存方式"
+          @keydown="handlePackageMenuKeydown"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            :disabled="exportingPsd"
+            :aria-busy="exportingPsd"
+            @click="choosePackageAction('psd')"
+          >
+            <LoaderCircle v-if="exportingPsd" class="run-spinner" :size="15" aria-hidden="true" />
+            <FileDown v-else :size="15" aria-hidden="true" />
+            <span>保存为 PSD</span>
+          </button>
+          <button type="button" role="menuitem" @click="choosePackageAction('folder')">
+            <FolderDown :size="15" aria-hidden="true" />
+            <span>保存为文件夹</span>
+          </button>
+        </div>
+      </div>
       <button type="button" :disabled="!canOpenDrawer" @click="emit('toggleDrawer')">
         <PanelRightClose v-if="drawerOpen" :size="15" aria-hidden="true" />
         <PanelRightOpen v-else :size="15" aria-hidden="true" />
@@ -170,6 +287,26 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: 0.42; cursor: not-allowed; }
 button.primary { color: var(--accent-contrast); border-color: var(--accent); background: var(--accent); font-weight: 700; }
 button.danger { color: var(--danger); }
+.package-action { position: relative; flex: 0 0 auto; }
+.package-action > button { width: 100%; }
+.package-chevron { transition: transform 160ms ease; }
+.package-chevron.open { transform: rotate(180deg); }
+.package-menu {
+  position: absolute; z-index: 20; right: 0; bottom: calc(100% + 7px); width: 172px;
+  display: grid; gap: 3px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px;
+  background: var(--surface-raised); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+.package-menu::after {
+  position: absolute; right: 18px; bottom: -5px; width: 8px; height: 8px; content: "";
+  border-right: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong);
+  background: var(--surface-raised); transform: rotate(45deg);
+}
+.package-menu button {
+  position: relative; z-index: 1; width: 100%; min-height: 34px; justify-content: flex-start;
+  padding: 0 9px; border-color: transparent; background: transparent;
+}
+.package-menu button:hover:not(:disabled),
+.package-menu button:focus-visible { border-color: var(--line); background: var(--surface-subtle); }
 .run-button { position: relative; min-width: 104px; overflow: hidden; }
 .run-button:disabled[aria-busy="true"] { opacity: 1; }
 .run-progress { position: absolute; inset: 0 auto 0 0; background: rgba(255, 255, 255, 0.18); transition: width 160ms ease; }
@@ -180,11 +317,12 @@ button.danger { color: var(--danger); }
 @media (max-width: 900px) {
   .auto-layer-action-bar { align-items: stretch; flex-direction: column; gap: 7px; }
   .auto-layer-status { overflow-x: auto; }
-  .auto-layer-actions { justify-content: flex-end; overflow-x: auto; }
+  .auto-layer-actions { flex-wrap: wrap; justify-content: flex-end; overflow: visible; }
 }
 @media (prefers-reduced-motion: reduce) {
   .status-dot.active,
   .run-spinner { animation: none; }
-  .run-progress { transition: none; }
+  .run-progress,
+  .package-chevron { transition: none; }
 }
 </style>

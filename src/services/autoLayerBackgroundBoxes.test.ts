@@ -60,6 +60,18 @@ describe("automatic-layer background boxes", () => {
     ]);
   });
 
+  it("splits a continuous bottom navigation row before it becomes one ambiguous repair tile", () => {
+    const regions = createAutoLayerBackgroundRegions([
+      { id: "nav-1", x: 53, y: 1519, width: 187, height: 146 },
+      { id: "nav-2", x: 255, y: 1525, width: 197, height: 141 },
+      { id: "nav-3", x: 470, y: 1530, width: 176, height: 133 },
+      { id: "nav-4", x: 657, y: 1521, width: 237, height: 148 }
+    ], 941, 1672);
+
+    expect(regions.selectionBoxes.length).toBeGreaterThan(1);
+    expect(regions.selectionBoxes.every(box => box.width * box.height <= 941 * 1672 * 0.08)).toBe(true);
+  });
+
   it("expands retained boxes within image bounds for shadows and outlines", () => {
     const boxes = createAutoLayerBackgroundBoxes([
       { id: "top", x: 0, y: 0, width: 40, height: 40 },
@@ -82,17 +94,17 @@ describe("automatic-layer background boxes", () => {
     ]);
   });
 
-  it("keeps exact composite boxes when expanded generation boxes are merged", () => {
+  it("uses individually expanded boxes for compositing when generation boxes are merged", () => {
     const regions = createAutoLayerBackgroundRegions([
       { id: "left", x: 0, y: 0, width: 48, height: 48 },
       { id: "right", x: 40, y: 0, width: 48, height: 48 }
-    ], 300, 200);
+    ], 320, 240);
 
     expect(regions.selectionBoxes).toHaveLength(1);
     expect(regions.selectionBoxes[0]).toMatchObject({ x: 0, y: 0, width: 96, height: 56 });
     expect(regions.compositeBoxes).toEqual([
-      { id: "left", x: 0, y: 0, width: 48, height: 48 },
-      { id: "right", x: 40, y: 0, width: 48, height: 48 }
+      { id: "left", x: 0, y: 0, width: 56, height: 56 },
+      { id: "right", x: 32, y: 0, width: 64, height: 56 }
     ]);
   });
 });

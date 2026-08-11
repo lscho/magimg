@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fs::{self, File},
     io::{BufReader, Read},
     path::{Path, PathBuf},
@@ -31,6 +32,11 @@ const EMBEDDING_OUTPUT_NAMES: [&str; 3] = [
 const EMBEDDING_SHAPES: [[i64; 4]; 3] = [[1, 32, 256, 256], [1, 64, 128, 128], [1, 256, 64, 64]];
 const MASK_LOGIT_TRANSITION_HALF_WIDTH: f32 = 1.0;
 const MAX_POINT_PROMPTS: usize = 16;
+const MAX_AUTO_PROPOSAL_POINTS: usize = 144;
+const AUTO_PROPOSAL_BATCH_SIZE: usize = 1;
+const AUTO_PROPOSAL_STABILITY_OFFSET: f32 = 1.0;
+const AUTO_PROPOSAL_MIN_COMPONENT_PIXELS: usize = 8;
+const AUTO_PROPOSAL_MAX_AREA_RATIO: f32 = 0.92;
 /// SAM 官方约定的 padding 点标签，decoder 会忽略该点。
 const POINT_LABEL_PADDING: i64 = -10;
 const REFINER_INPUT_MULTIPLE: usize = 32;
@@ -219,6 +225,29 @@ pub struct DecodeRequest {
     /// true 时返回全部候选遮罩与评分，供分层抠图挑选粒度。
     #[serde(default)]
     return_candidates: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoProposeRequest {
+    model_id: String,
+    embedding_id: String,
+    /// 独立前景点（encoder 输入坐标系），按点顺序生成候选遮罩。
+    point_coordinates: Vec<[f32; 2]>,
+    min_predicted_iou: f32,
+    min_stability_score: f32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoProposal {
+    confidence: f32,
+    predicted_iou: f32,
+    stability: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
 }
 
 impl CutoutState {
@@ -832,6 +861,34 @@ fn validate_prompts(spec: ModelSpec, request: &DecodeRequest) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_auto_proposal_request(
+    spec: ModelSpec,
+    request: &AutoProposeRequest,
+) -> Result<(), String> {
+    if request.point_coordinates.is_empty()
+        || request.point_coordinates.len() > MAX_AUTO_PROPOSAL_POINTS
+    {
+        return Err("自动框选采样点数量无效。".to_string());
+    }
+    for [x, y] in &request.point_coordinates {
+        if !x.is_finite()
+            || !y.is_finite()
+            || *x < 0.0
+            || *y < 0.0
+            || *x > spec.input_width as f32
+            || *y > spec.input_height as f32
+        {
+            return Err("自动框选采样点超出图片范围。".to_string());
+        }
+    }
+    for threshold in [request.min_predicted_iou, request.min_stability_score] {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+            return Err("自动框选质量阈值无效。".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn mask_logit_to_alpha(logit: f32) -> u8 {
     let normalized = ((logit + MASK_LOGIT_TRANSITION_HALF_WIDTH)
         / (2.0 * MASK_LOGIT_TRANSITION_HALF_WIDTH))
@@ -962,6 +1019,153 @@ fn encode_candidate_response(
         bytes.extend(plane.iter().copied().map(mask_logit_to_alpha));
     }
     Ok(bytes)
+}
+
+#[derive(Debug, PartialEq)]
+struct ComponentBounds {
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+    area: usize,
+}
+
+fn nearest_foreground_seed(
+    mask: &[f32],
+    width: usize,
+    height: usize,
+    seed_x: usize,
+    seed_y: usize,
+) -> Option<(usize, usize)> {
+    let seed_index = seed_y * width + seed_x;
+    if mask.get(seed_index).is_some_and(|value| *value > 0.0) {
+        return Some((seed_x, seed_y));
+    }
+    for radius in 1..=4_usize {
+        let left = seed_x.saturating_sub(radius);
+        let top = seed_y.saturating_sub(radius);
+        let right = (seed_x + radius).min(width - 1);
+        let bottom = (seed_y + radius).min(height - 1);
+        for y in top..=bottom {
+            for x in left..=right {
+                if x != left && x != right && y != top && y != bottom {
+                    continue;
+                }
+                if mask[y * width + x] > 0.0 {
+                    return Some((x, y));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn foreground_component_bounds(
+    mask: &[f32],
+    width: usize,
+    height: usize,
+    seed_x: usize,
+    seed_y: usize,
+) -> Option<ComponentBounds> {
+    if width == 0 || height == 0 || mask.len() != width * height {
+        return None;
+    }
+    let (seed_x, seed_y) = nearest_foreground_seed(
+        mask,
+        width,
+        height,
+        seed_x.min(width - 1),
+        seed_y.min(height - 1),
+    )?;
+    let mut visited = vec![false; mask.len()];
+    let mut queue = VecDeque::from([(seed_x, seed_y)]);
+    visited[seed_y * width + seed_x] = true;
+    let mut bounds = ComponentBounds {
+        left: seed_x,
+        top: seed_y,
+        right: seed_x + 1,
+        bottom: seed_y + 1,
+        area: 0,
+    };
+
+    while let Some((x, y)) = queue.pop_front() {
+        bounds.left = bounds.left.min(x);
+        bounds.top = bounds.top.min(y);
+        bounds.right = bounds.right.max(x + 1);
+        bounds.bottom = bounds.bottom.max(y + 1);
+        bounds.area += 1;
+        for (next_x, next_y) in [
+            (x.wrapping_sub(1), y),
+            (x + 1, y),
+            (x, y.wrapping_sub(1)),
+            (x, y + 1),
+        ] {
+            if next_x >= width || next_y >= height {
+                continue;
+            }
+            let index = next_y * width + next_x;
+            if visited[index] || mask[index] <= 0.0 {
+                continue;
+            }
+            visited[index] = true;
+            queue.push_back((next_x, next_y));
+        }
+    }
+    Some(bounds)
+}
+
+fn mask_stability_score(mask: &[f32]) -> f32 {
+    let intersection = mask
+        .iter()
+        .filter(|value| **value > AUTO_PROPOSAL_STABILITY_OFFSET)
+        .count();
+    let union = mask
+        .iter()
+        .filter(|value| **value > -AUTO_PROPOSAL_STABILITY_OFFSET)
+        .count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f32 / union as f32
+    }
+}
+
+fn auto_proposal_layout(
+    mask_shape: &[i64],
+    mask_data_len: usize,
+    iou_shape: &[i64],
+    iou_data_len: usize,
+    batch_size: usize,
+    spec: ModelSpec,
+) -> Result<(usize, usize), String> {
+    let expected_batch =
+        i64::try_from(batch_size).map_err(|_| "自动框选批次数量无效。".to_string())?;
+    if mask_shape.len() != 5
+        || mask_shape[0] != 1
+        || mask_shape[1] != expected_batch
+        || mask_shape[3] != spec.mask_height as i64
+        || mask_shape[4] != spec.mask_width as i64
+    {
+        return Err(format!(
+            "自动框选 decoder 返回的遮罩尺寸不兼容：{mask_shape:?}。"
+        ));
+    }
+    let candidates_per_point =
+        usize::try_from(mask_shape[2]).map_err(|_| "自动框选候选数量无效。".to_string())?;
+    if candidates_per_point == 0 || iou_shape != [1, expected_batch, mask_shape[2]] {
+        return Err("自动框选 decoder 返回的评分尺寸不匹配。".to_string());
+    }
+    let plane_size = spec
+        .mask_width
+        .checked_mul(spec.mask_height)
+        .ok_or_else(|| "自动框选遮罩尺寸无效。".to_string())?;
+    let candidate_count = batch_size
+        .checked_mul(candidates_per_point)
+        .ok_or_else(|| "自动框选候选数量无效。".to_string())?;
+    if mask_data_len != candidate_count * plane_size || iou_data_len != candidate_count {
+        return Err("自动框选 decoder 返回的候选数据不完整。".to_string());
+    }
+    Ok((candidates_per_point, plane_size))
 }
 
 fn refiner_output_alpha(
@@ -1121,6 +1325,163 @@ fn decode_mask(app: &AppHandle, request: DecodeRequest) -> Result<Response, Stri
         )?
     };
     Ok(Response::new(payload))
+}
+
+fn auto_propose_masks(
+    app: &AppHandle,
+    request: AutoProposeRequest,
+) -> Result<Vec<AutoProposal>, String> {
+    let state = app.state::<CutoutState>();
+    let epoch = state.cancel_epoch.load(Ordering::SeqCst);
+    let requested_spec = find_model(&request.model_id)?;
+    validate_auto_proposal_request(requested_spec, &request)?;
+    let embedding_id = request
+        .embedding_id
+        .parse::<u64>()
+        .map_err(|_| "图片特征标识无效，请重新执行智能框选。".to_string())?;
+
+    let mut inference = state.inference()?;
+    let loaded = inference
+        .loaded
+        .as_mut()
+        .ok_or_else(|| "图片特征已释放，请重新执行智能框选。".to_string())?;
+    if loaded.spec.id != requested_spec.id || loaded.embedding.id != embedding_id {
+        return Err("图片特征与当前模型不匹配，请重新执行智能框选。".to_string());
+    }
+    let LoadedModel {
+        spec,
+        decoder,
+        embedding,
+    } = loaded;
+    let [feature_0, feature_1, feature_2] = embedding.features.as_slice() else {
+        return Err("图片特征数量无效，请重新执行智能框选。".to_string());
+    };
+    let mut proposals = Vec::new();
+
+    for point_batch in request.point_coordinates.chunks(AUTO_PROPOSAL_BATCH_SIZE) {
+        if state.is_cancelled(epoch) {
+            return Err(cancelled_error());
+        }
+        let batch_size = point_batch.len();
+        let point_values = point_batch
+            .iter()
+            .flat_map(|point| point.iter().copied())
+            .collect::<Vec<f32>>();
+        let input_points = Tensor::from_array(([1_usize, batch_size, 1, 2], point_values))
+            .map_err(|error| format!("无法创建自动框选采样点：{error}"))?;
+        let input_labels = Tensor::from_array(([1_usize, batch_size, 1], vec![1_i64; batch_size]))
+            .map_err(|error| format!("无法创建自动框选采样标签：{error}"))?;
+        let input_boxes = Tensor::<f32>::new(&Allocator::default(), [1_i64, 0, 4])
+            .map_err(|error| format!("无法创建自动框选空框输入：{error}"))?;
+        let embedding_0 =
+            TensorRef::from_array_view((feature_0.shape.as_slice(), feature_0.data.as_slice()))
+                .map_err(|error| format!("无法读取图像特征 0：{error}"))?;
+        let embedding_1 =
+            TensorRef::from_array_view((feature_1.shape.as_slice(), feature_1.data.as_slice()))
+                .map_err(|error| format!("无法读取图像特征 1：{error}"))?;
+        let embedding_2 =
+            TensorRef::from_array_view((feature_2.shape.as_slice(), feature_2.data.as_slice()))
+                .map_err(|error| format!("无法读取图像特征 2：{error}"))?;
+
+        let run_options = state.begin_run(epoch)?;
+        let outputs = decoder.run_with_options(
+            ort::inputs! {
+                "input_points" => input_points,
+                "input_labels" => input_labels,
+                "input_boxes" => input_boxes,
+                "image_embeddings.0" => embedding_0,
+                "image_embeddings.1" => embedding_1,
+                "image_embeddings.2" => embedding_2
+            },
+            run_options.as_ref(),
+        );
+        state.finish_run(&run_options);
+        let outputs = outputs.map_err(|error| {
+            if state.is_cancelled(epoch) {
+                cancelled_error()
+            } else {
+                format!("自动框选 decoder 推理失败：{error}")
+            }
+        })?;
+        if state.is_cancelled(epoch) {
+            return Err(cancelled_error());
+        }
+
+        let masks = outputs
+            .get("pred_masks")
+            .ok_or_else(|| "自动框选 decoder 未返回分割遮罩。".to_string())?;
+        let (mask_shape, mask_data) = masks
+            .try_extract_tensor::<f32>()
+            .map_err(|error| format!("自动框选 decoder 分割遮罩无效：{error}"))?;
+        let scores = outputs
+            .get("iou_scores")
+            .ok_or_else(|| "自动框选 decoder 未返回遮罩评分。".to_string())?;
+        let (iou_shape, iou_data) = scores
+            .try_extract_tensor::<f32>()
+            .map_err(|error| format!("自动框选 decoder 遮罩评分无效：{error}"))?;
+        let (candidates_per_point, plane_size) = auto_proposal_layout(
+            mask_shape,
+            mask_data.len(),
+            iou_shape,
+            iou_data.len(),
+            batch_size,
+            *spec,
+        )?;
+
+        for (point_index, point) in point_batch.iter().enumerate() {
+            let seed_x = ((point[0] / spec.input_width as f32) * spec.mask_width as f32)
+                .floor()
+                .clamp(0.0, (spec.mask_width - 1) as f32) as usize;
+            let seed_y = ((point[1] / spec.input_height as f32) * spec.mask_height as f32)
+                .floor()
+                .clamp(0.0, (spec.mask_height - 1) as f32) as usize;
+            for candidate_index in 0..candidates_per_point {
+                let flat_index = point_index * candidates_per_point + candidate_index;
+                let predicted_iou = iou_data[flat_index];
+                if !predicted_iou.is_finite() || predicted_iou < request.min_predicted_iou {
+                    continue;
+                }
+                let plane_start = flat_index * plane_size;
+                let plane = &mask_data[plane_start..plane_start + plane_size];
+                if plane.iter().any(|value| !value.is_finite()) {
+                    return Err("自动框选 decoder 返回了无效的遮罩数据。".to_string());
+                }
+                let stability = mask_stability_score(plane);
+                if stability < request.min_stability_score {
+                    continue;
+                }
+                let Some(bounds) = foreground_component_bounds(
+                    plane,
+                    spec.mask_width,
+                    spec.mask_height,
+                    seed_x,
+                    seed_y,
+                ) else {
+                    continue;
+                };
+                let area_ratio = bounds.area as f32 / plane_size as f32;
+                if bounds.area < AUTO_PROPOSAL_MIN_COMPONENT_PIXELS
+                    || area_ratio > AUTO_PROPOSAL_MAX_AREA_RATIO
+                    || bounds.right - bounds.left < 2
+                    || bounds.bottom - bounds.top < 2
+                {
+                    continue;
+                }
+                let scale_x = spec.input_width as f32 / spec.mask_width as f32;
+                let scale_y = spec.input_height as f32 / spec.mask_height as f32;
+                proposals.push(AutoProposal {
+                    confidence: predicted_iou.clamp(0.0, 1.0) * stability,
+                    predicted_iou,
+                    stability,
+                    x: bounds.left as f32 * scale_x,
+                    y: bounds.top as f32 * scale_y,
+                    width: (bounds.right - bounds.left) as f32 * scale_x,
+                    height: (bounds.bottom - bounds.top) as f32 * scale_y,
+                });
+            }
+        }
+    }
+    Ok(proposals)
 }
 
 fn refine_mask(
@@ -1366,6 +1727,17 @@ pub async fn cutout_decode(app: AppHandle, request: DecodeRequest) -> Result<Res
 }
 
 #[tauri::command]
+pub async fn cutout_auto_propose(
+    app: AppHandle,
+    request: AutoProposeRequest,
+) -> Result<Vec<AutoProposal>, String> {
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || auto_propose_masks(&task_app, request))
+        .await
+        .map_err(|error| format!("原生自动框选任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub async fn cutout_refine(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
     let (model_id, width, height, bytes) = parse_refine_request(request)?;
     let task_app = app.clone();
@@ -1441,11 +1813,12 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_repair_float_bytes, encode_candidate_response, find_repairer, find_segmenter,
-        mask_logit_to_alpha, refiner_output_alpha, repairer_output_rgb, segmenter_output_alpha,
-        select_best_mask_alpha, validate_prompts, validate_release_target, validate_sam_model_file,
-        CutoutState, DecodeRequest, ModelFileSpec, CUTOUT_MODELS, CUTOUT_REPAIRER,
-        CUTOUT_SEGMENTER,
+        auto_proposal_layout, decode_repair_float_bytes, encode_candidate_response, find_repairer,
+        find_segmenter, foreground_component_bounds, mask_logit_to_alpha, mask_stability_score,
+        refiner_output_alpha, repairer_output_rgb, segmenter_output_alpha, select_best_mask_alpha,
+        validate_auto_proposal_request, validate_prompts, validate_release_target,
+        validate_sam_model_file, AutoProposeRequest, ComponentBounds, CutoutState, DecodeRequest,
+        ModelFileSpec, CUTOUT_MODELS, CUTOUT_REPAIRER, CUTOUT_SEGMENTER,
     };
 
     fn decode_request(
@@ -1507,6 +1880,68 @@ mod tests {
         assert_eq!(
             validate_prompts(spec, &too_many),
             Err("点选提示数量超出限制。".to_string())
+        );
+    }
+
+    #[test]
+    fn validates_auto_proposal_points_and_thresholds() {
+        let spec = CUTOUT_MODELS[0];
+        let valid = AutoProposeRequest {
+            model_id: spec.id.to_string(),
+            embedding_id: "1".to_string(),
+            point_coordinates: vec![[64.0, 64.0], [960.0, 960.0]],
+            min_predicted_iou: 0.7,
+            min_stability_score: 0.8,
+        };
+        assert!(validate_auto_proposal_request(spec, &valid).is_ok());
+
+        let invalid_threshold = AutoProposeRequest {
+            min_predicted_iou: 1.1,
+            ..valid
+        };
+        assert_eq!(
+            validate_auto_proposal_request(spec, &invalid_threshold),
+            Err("自动框选质量阈值无效。".to_string())
+        );
+    }
+
+    #[test]
+    fn finds_foreground_component_around_prompt() {
+        let mask = [
+            -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 2.0, 2.0, -1.0, 2.0, -1.0, 2.0, 2.0, -1.0, 2.0,
+            -1.0, -1.0, -1.0, -1.0, -1.0,
+        ];
+        assert_eq!(
+            foreground_component_bounds(&mask, 5, 4, 1, 1),
+            Some(ComponentBounds {
+                left: 1,
+                top: 1,
+                right: 3,
+                bottom: 3,
+                area: 4,
+            })
+        );
+        assert_eq!(
+            foreground_component_bounds(&mask, 5, 4, 4, 1).unwrap().area,
+            2
+        );
+    }
+
+    #[test]
+    fn computes_stability_and_batched_output_layout() {
+        assert_eq!(mask_stability_score(&[-2.0, -0.5, 0.5, 2.0]), 1.0 / 3.0);
+        let spec = CUTOUT_MODELS[0];
+        let plane = spec.mask_width * spec.mask_height;
+        assert_eq!(
+            auto_proposal_layout(
+                &[1, 2, 3, spec.mask_height as i64, spec.mask_width as i64],
+                2 * 3 * plane,
+                &[1, 2, 3],
+                6,
+                2,
+                spec,
+            ),
+            Ok((3, plane))
         );
     }
 
@@ -1605,6 +2040,64 @@ mod tests {
 
         println!("candidates: {candidate_count}, plane: {plane_size}, scores: {iou_data:?}");
         assert!(candidate_count >= 1);
+    }
+
+    /// 用本机已安装的 SAM 2.1 decoder 验证自动提议可连续运行独立点：
+    /// CUTOUT_DECODER_PATH=<models 目录>/prompt_encoder_mask_decoder.onnx \
+    ///   cargo test decoder_accepts_automatic_point_sequence -- --ignored --nocapture
+    #[test]
+    #[ignore = "需要本机 SAM 2.1 decoder 模型文件"]
+    fn decoder_accepts_automatic_point_sequence() {
+        use ort::{memory::Allocator, value::Tensor};
+
+        let path = std::env::var("CUTOUT_DECODER_PATH")
+            .expect("请通过 CUTOUT_DECODER_PATH 指定 decoder onnx 路径");
+        let mut session = super::create_session(std::path::Path::new(&path), "SAM 2.1 decoder")
+            .expect("decoder session");
+        let [embedding_0, embedding_1, embedding_2] = super::EMBEDDING_SHAPES.map(|shape| {
+            let dimensions = shape.map(|dimension| dimension as usize);
+            let count = dimensions.iter().product::<usize>();
+            Tensor::from_array((dimensions, vec![0.0_f32; count])).expect("embedding tensor")
+        });
+        for coordinate in [[256.0_f32, 256.0], [768.0, 768.0]] {
+            let input_points = Tensor::from_array(([1_usize, 1, 1, 2], coordinate.to_vec()))
+                .expect("points tensor");
+            let input_labels =
+                Tensor::from_array(([1_usize, 1, 1], vec![1_i64])).expect("labels tensor");
+            let input_boxes = Tensor::<f32>::new(&Allocator::default(), [1_i64, 0, 4])
+                .expect("empty boxes tensor");
+            let outputs = session
+                .run(ort::inputs! {
+                    "input_points" => input_points,
+                    "input_labels" => input_labels,
+                    "input_boxes" => input_boxes,
+                    "image_embeddings.0" => &embedding_0,
+                    "image_embeddings.1" => &embedding_1,
+                    "image_embeddings.2" => &embedding_2
+                })
+                .expect("sequential point decode should run");
+            let (mask_shape, mask_data) = outputs
+                .get("pred_masks")
+                .expect("pred_masks output")
+                .try_extract_tensor::<f32>()
+                .expect("masks tensor");
+            let (iou_shape, iou_data) = outputs
+                .get("iou_scores")
+                .expect("iou_scores output")
+                .try_extract_tensor::<f32>()
+                .expect("scores tensor");
+            let (candidates, plane) = super::auto_proposal_layout(
+                mask_shape,
+                mask_data.len(),
+                iou_shape,
+                iou_data.len(),
+                1,
+                super::CUTOUT_MODELS[0],
+            )
+            .expect("proposal layout");
+            assert!(candidates >= 1);
+            assert_eq!(plane, 256 * 256);
+        }
     }
 
     #[test]

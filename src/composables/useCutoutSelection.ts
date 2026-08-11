@@ -596,6 +596,15 @@ export function useCutoutSelection(
     activeSelectionId.value = null;
   }
 
+  function replaceSelections(next: readonly (CutoutSelectionBox | CutoutSelection)[]) {
+    cancelBox();
+    cancelPolygon();
+    cancelStroke();
+    cancelMoveSelection();
+    commitSelections(next);
+    activeSelectionId.value = null;
+  }
+
   function undo() {
     if (!canUndo.value) return;
     historyIndex.value -= 1;
@@ -701,6 +710,7 @@ export function useCutoutSelection(
     setSmartBrush,
     removeSelection,
     clearSelections,
+    replaceSelections,
     undo,
     redo,
     imageSourceForInference

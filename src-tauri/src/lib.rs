@@ -32,6 +32,7 @@ pub fn run() {
             toggle_devtools,
             cutout::cutout_encode,
             cutout::cutout_decode,
+            cutout::cutout_auto_propose,
             cutout::cutout_refine,
             cutout::cutout_repair,
             cutout::cutout_birefnet_segment,

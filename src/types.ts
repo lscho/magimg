@@ -596,6 +596,12 @@ export interface CutoutSelection extends CutoutSelectionBox {
   removalStrokes: CutoutRemovalStroke[];
 }
 
+/** Parent-to-canvas command used for atomic selection replacement and undo. */
+export interface CutoutSelectionCommand {
+  id: number;
+  selections: CutoutSelection[];
+}
+
 /** 桌面自动分层页保存的可恢复选区；原图只保存用户选择时的绝对路径。 */
 export interface AutoLayerSelectionRecord {
   schemaVersion: 1;

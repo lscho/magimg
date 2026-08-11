@@ -5,7 +5,7 @@ const BACKGROUND_BOX_PADDING_RATIO = 0.05;
 const MIN_BACKGROUND_BOX_PADDING = 8;
 const MAX_BACKGROUND_BOX_PADDING = 48;
 const CONNECTED_BOX_PRIMARY_AXIS_COVERAGE = 0.5;
-const MAX_MERGED_BACKGROUND_AREA_RATIO = 0.22;
+const MAX_MERGED_BACKGROUND_AREA_RATIO = 0.08;
 
 function boxArea(box: CutoutSelectionBox) {
   return Math.max(0, box.width) * Math.max(0, box.height);
@@ -73,8 +73,8 @@ export function keepLargestOverlappingBoxes(boxes: readonly CutoutSelectionBox[]
 }
 
 /**
- * 阴影外扩后沿一个主轴连续相交的 UI 组使用同一个云修复框，避免相邻裁片
- * 分别生成天空、山脊或水流后形成拼图接缝。角部轻微擦边的独立目标不合并。
+ * 阴影外扩后沿一个主轴连续相交的 UI 组使用同一个云修复框，帮助模型把连续
+ * 导航或面板识别为完整目标。角部轻微擦边的独立目标不合并。
  */
 export function mergeConnectedBackgroundBoxes(
   boxes: readonly CutoutSelectionBox[],
@@ -133,22 +133,23 @@ export function createAutoLayerBackgroundBoxes(
 }
 
 /**
- * 云端生成使用外扩、合并框保证上下文连续；最终合成只采用用户原始框选，
- * 避免合并框之间没有被选中的内容被生成结果覆盖。
+ * 云端生成使用外扩、合并框标记连续目标；最终合成采用每个顶级框独立的
+ * 阴影扩展范围，既覆盖描边/阴影，又避免合并框之间的未选内容被生成结果覆盖。
  */
 export function createAutoLayerBackgroundRegions(
   boxes: readonly CutoutSelectionBox[],
   imageWidth: number,
   imageHeight: number
 ) {
-  const compositeBoxes = keepLargestOverlappingBoxes(boxes)
+  const retainedBoxes = keepLargestOverlappingBoxes(boxes)
     .map(box => clampBackgroundBox(box, imageWidth, imageHeight))
     .filter((box): box is CutoutSelectionBox => box !== null);
+  const compositeBoxes = retainedBoxes.map(box => ({
+    ...expandAutoLayerBackgroundBox(box, imageWidth, imageHeight),
+    id: box.id
+  }));
   const selectionBoxes = mergeConnectedBackgroundBoxes(
-    compositeBoxes.map(box => ({
-      ...expandAutoLayerBackgroundBox(box, imageWidth, imageHeight),
-      id: box.id
-    })),
+    compositeBoxes,
     imageWidth * imageHeight * MAX_MERGED_BACKGROUND_AREA_RATIO
   );
   return { selectionBoxes, compositeBoxes };

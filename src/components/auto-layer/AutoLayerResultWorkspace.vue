@@ -6,12 +6,15 @@ import AutoLayerInspector from "./AutoLayerInspector.vue";
 import type { AutoLayerDocument, AutoLayerItem } from "./types";
 
 const props = defineProps<{ document: AutoLayerDocument }>();
-const emit = defineEmits<{ close: []; updateLayers: [layers: AutoLayerItem[]] }>();
-const selectedId = shallowRef<string | null>(props.document.layers.at(-1)?.id ?? null);
+const emit = defineEmits<{
+  close: [];
+  updateLayers: [layers: AutoLayerItem[]];
+}>();
+const selectedId = shallowRef<string | null>(null);
 
 watch(() => props.document.layers.map(layer => layer.id).join("|"), () => {
   if (!props.document.layers.some(layer => layer.id === selectedId.value)) {
-    selectedId.value = props.document.layers.at(-1)?.id ?? null;
+    selectedId.value = null;
   }
 });
 </script>

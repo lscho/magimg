@@ -9,6 +9,7 @@ import {
   Plus,
   Redo2,
   Scan,
+  ScanSearch,
   Spline,
   SquareDashed,
   Type,
@@ -16,6 +17,11 @@ import {
   Undo2
 } from "lucide-vue-next";
 import type { CutoutTool } from "@/composables/useCutoutSelection";
+import {
+  DEFAULT_SMART_SELECTION_THRESHOLD,
+  SMART_SELECTION_THRESHOLD_MAX,
+  SMART_SELECTION_THRESHOLD_MIN
+} from "@/services/smartSelection";
 import type {
   CutoutBrushOperation,
   CutoutSelection
@@ -35,8 +41,16 @@ const props = withDefaults(defineProps<{
   brushOperation: CutoutBrushOperation;
   brushRadius: number;
   smartBrush: boolean;
+  smartSelecting?: boolean;
+  smartSelectionAvailable?: boolean;
+  smartSelectionThreshold?: number;
   mode?: "cutout" | "auto-layer";
-}>(), { mode: "cutout" });
+}>(), {
+  mode: "cutout",
+  smartSelecting: false,
+  smartSelectionAvailable: true,
+  smartSelectionThreshold: DEFAULT_SMART_SELECTION_THRESHOLD
+});
 
 const primaryTools = props.mode === "auto-layer"
   ? [
@@ -66,11 +80,56 @@ const emit = defineEmits<{
   setBrushOperation: [operation: CutoutBrushOperation];
   setBrushRadius: [radius: number];
   setSmartBrush: [enabled: boolean];
+  smartSelect: [];
+  updateSmartSelectionThreshold: [value: number];
 }>();
 </script>
 
 <template>
   <aside class="cutout-toolbar" role="toolbar" aria-label="抠图工具">
+    <div class="cutout-tool-group smart-selection-tool">
+      <button
+        class="cutout-tool-button smart-selection-button"
+        type="button"
+        :data-tooltip="smartSelectionAvailable ? undefined : '智能框选仅支持桌面客户端'"
+        aria-label="智能框选"
+        :aria-busy="smartSelecting"
+        :disabled="busy || !ready || !smartSelectionAvailable"
+        @click="emit('smartSelect')"
+      >
+        <LoaderCircle v-if="smartSelecting" class="cutout-tool-spinner" :size="18" aria-hidden="true" />
+        <ScanSearch v-else :size="18" aria-hidden="true" />
+      </button>
+      <section
+        v-if="smartSelectionAvailable"
+        class="smart-selection-panel"
+        role="group"
+        aria-label="智能框选设置"
+      >
+        <label class="smart-selection-threshold">
+          <span class="smart-selection-threshold-heading">
+            <strong>智能框选强度</strong>
+            <output>{{ Math.round(smartSelectionThreshold * 100) }}%</output>
+          </span>
+          <input
+            type="range"
+            :min="SMART_SELECTION_THRESHOLD_MIN"
+            :max="SMART_SELECTION_THRESHOLD_MAX"
+            step="0.01"
+            :value="smartSelectionThreshold"
+            aria-label="智能框选强度"
+            :aria-valuetext="`${Math.round(smartSelectionThreshold * 100)}%，数值越高候选越少`"
+            :disabled="busy || smartSelecting"
+            @input="emit('updateSmartSelectionThreshold', Number(($event.target as HTMLInputElement).value))"
+          />
+          <span class="smart-selection-threshold-scale" aria-hidden="true">
+            <span>更多</span>
+            <span>更少</span>
+          </span>
+        </label>
+      </section>
+    </div>
+
     <div class="cutout-tool-group">
       <button
         v-for="tool in primaryTools"
@@ -260,6 +319,14 @@ const emit = defineEmits<{
   background: var(--surface);
 }
 
+.cutout-tool-spinner { animation: cutout-tool-spin 900ms linear infinite; }
+
+@keyframes cutout-tool-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cutout-tool-spinner { animation: none; }
+}
+
 .cutout-brush-options {
   position: absolute;
   z-index: 25;
@@ -377,6 +444,103 @@ const emit = defineEmits<{
   gap: 0;
 }
 
+.smart-selection-tool {
+  position: relative;
+
+  &:hover .smart-selection-panel,
+  &:focus-within .smart-selection-panel {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+    visibility: visible;
+  }
+}
+
+.smart-selection-button:not([data-tooltip])::after {
+  display: none;
+}
+
+.smart-selection-panel {
+  position: absolute;
+  z-index: 35;
+  top: 0;
+  left: 43px;
+  width: 220px;
+  padding: 11px 12px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0 7px 7px 0;
+  color: var(--soft);
+  background: rgba(16, 22, 29, 0.98);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+  visibility: hidden;
+}
+
+.smart-selection-threshold {
+  display: grid;
+  gap: 6px;
+
+  input[type="range"] {
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    accent-color: var(--accent);
+    background: transparent;
+    box-shadow: none;
+    cursor: pointer;
+
+    &:hover,
+    &:focus {
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+    }
+  }
+}
+
+.smart-selection-threshold-heading,
+.smart-selection-threshold-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.smart-selection-threshold-heading {
+  color: var(--soft);
+  font-size: 11px;
+
+  strong { font-weight: 650; }
+  output {
+    min-width: 32px;
+    color: var(--accent-strong);
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    text-align: right;
+  }
+}
+
+.smart-selection-threshold-scale {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .cutout-zoom-group,
 .cutout-history-group {
   border-top: 1px solid var(--line);
@@ -470,6 +634,10 @@ const emit = defineEmits<{
 
 @media (prefers-reduced-motion: reduce) {
   .cutout-smart-option input::after {
+    transition: none;
+  }
+
+  .smart-selection-panel {
     transition: none;
   }
 }

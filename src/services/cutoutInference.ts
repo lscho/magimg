@@ -29,8 +29,9 @@ export interface CutoutImageEmbedding {
   scaleY: number;
 }
 
-const isTauri = "__TAURI_INTERNALS__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const MAX_POINT_PROMPTS = 16;
+const MAX_AUTO_PROPOSAL_POINTS = 144;
 const SAM2_IMAGE_MEAN = [0.485, 0.456, 0.406] as const;
 const SAM2_IMAGE_STD = [0.229, 0.224, 0.225] as const;
 const REFINER_MIN_LONG_EDGE = 512;
@@ -214,6 +215,16 @@ export interface CutoutMaskCandidate {
   alpha: Uint8Array;
 }
 
+export interface CutoutAutoProposal {
+  confidence: number;
+  predictedIou: number;
+  stability: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 function promptPointInputs(context: CutoutImageEmbedding, points: CutoutPointPrompt[]) {
   const pointCoordinates: [number, number][] = [];
   const pointLabels: number[] = [];
@@ -300,6 +311,48 @@ export async function decodeCutoutCandidates(
     throw normalizeNativeError(exception, "原生 decoder 推理失败。");
   }
   return parseCandidateResponse(responseBytes(response), context);
+}
+
+/**
+ * 把每个前景点作为独立提示顺序送入 SAM 2.1，返回低分辨率遮罩组件的包围框。
+ * 坐标使用 encoder 的 1024x1024 输入空间，由调用方映射回原图。
+ */
+export async function proposeCutoutMasks(
+  descriptor: CutoutModelDescriptor,
+  context: CutoutImageEmbedding,
+  points: CutoutPointPrompt[],
+  options: {
+    minPredictedIou: number;
+    minStabilityScore: number;
+  },
+  signal?: AbortSignal
+): Promise<CutoutAutoProposal[]> {
+  ensureNativeRuntime();
+  if (context.modelId !== descriptor.id) {
+    throw new Error("图片特征与当前模型不匹配，请重新执行智能框选。");
+  }
+  if (!points.length || points.length > MAX_AUTO_PROPOSAL_POINTS) {
+    throw new Error("智能框选采样点数量无效。");
+  }
+  if (signal?.aborted) throw abortError();
+  const { pointCoordinates } = promptPointInputs(context, points);
+  try {
+    return await invokeWithCancellation(
+      () => invoke<CutoutAutoProposal[]>("cutout_auto_propose", {
+        request: {
+          modelId: descriptor.id,
+          embeddingId: context.embeddingId,
+          pointCoordinates,
+          minPredictedIou: options.minPredictedIou,
+          minStabilityScore: options.minStabilityScore
+        }
+      }),
+      signal
+    );
+  } catch (exception) {
+    if (signal?.aborted) throw abortError();
+    throw normalizeNativeError(exception, "SAM 2 自动提议失败。");
+  }
 }
 
 export async function decodeCutoutBox(

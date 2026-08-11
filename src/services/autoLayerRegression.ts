@@ -530,7 +530,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
             if (layer.kind !== "material" || !layer.cleanedChildren) continue;
             await upload(`cloud/repaired-materials/${safeName(layer.name)}.png`, layer.blob);
           }
-          options.onStatus?.("执行云端背景质量门禁");
+          options.onStatus?.(options.skipQualityGate ? "生成云端背景质量报告" : "执行云端背景质量门禁");
           cloudQuality = await evaluateCloudAutoLayerQuality({
             caseValue: options.qualityCase,
             localDocument: documentValue,
@@ -540,7 +540,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
             imageHeight: bitmap.height
           });
           await upload("quality/cloud.json", jsonBlob(cloudQuality));
-          if (!cloudQuality.passed) {
+          if (!cloudQuality.passed && !options.skipQualityGate) {
             const failed = cloudQuality.checks.filter(check => !check.passed).map(check => check.id);
             throw new Error(`云端背景质量门禁未通过：${failed.join("、")}`);
           }

@@ -79,11 +79,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
           :importing="workflow.selecting.value"
           :clearing="workflow.clearing.value"
           :locked="workflow.busy.value"
+          :selection-command="workflow.selectionCommand.value"
+          :smart-selecting="workflow.smartSelection.busy.value"
+          :smart-selection-available="workflow.smartSelection.available"
+          :smart-selection-threshold="workflow.smartSelection.threshold.value"
           @ready="workflow.handleReady"
           @selections-change="workflow.handleSelectionsChange"
           @import="workflow.chooseImage"
           @clear="workflow.clearImage"
           @drop-file="workflow.loadDroppedImage"
+          @smart-select="workflow.smartSelect"
+          @update-smart-selection-threshold="workflow.smartSelection.setThreshold"
         />
       </section>
 
@@ -123,7 +129,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       :cost="workflow.cost.value"
       :balance="workflow.app.balance.balance"
       :error="workflow.inference.error.value || workflow.actionError.value"
+      :exporting-psd="workflow.exportingPsd.value"
       @save-package="workflow.savePackage"
+      @save-psd="workflow.savePsd"
       @save-selections="workflow.saveSelections"
       @open-selection-history="workflow.openSelectionHistory"
       @toggle-drawer="toggleDrawer"

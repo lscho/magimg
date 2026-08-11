@@ -352,6 +352,30 @@ export async function saveImageBlobAs(
   return path;
 }
 
+export async function savePsdBlobAs(blob: Blob, suggestedName: string): Promise<string | null> {
+  const basename = suggestedName
+    .replace(/\.psd$/iu, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "-") || "image-layers";
+  const filename = `${basename}.psd`;
+  if (!isTauri) {
+    const blobUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(blobUrl);
+    return filename;
+  }
+  const path = await save({
+    title: "保存 Photoshop 分层文件",
+    defaultPath: filename,
+    filters: [{ name: "Photoshop 文档", extensions: ["psd"] }]
+  });
+  if (!path) return null;
+  await writeImageFile(path, new Uint8Array(await blob.arrayBuffer()));
+  return path;
+}
+
 export interface LocalImageDownload {
   blob: Blob;
   suggestedName: string;
