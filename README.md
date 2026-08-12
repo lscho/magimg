@@ -68,7 +68,7 @@ VITE_ENABLE_UPDATER=true
 
 `.env.production` 会随仓库进入 GitHub Actions。`npm run build` 以及 Tauri 正式构建中的前端步骤会由 Vite 自动加载该文件；构建会校验正式 API 必须使用 HTTPS。这里的变量会进入客户端构建，不能存放 updater 私钥、登录 Token 或其他服务端密钥。
 
-自动分层的 OCR/命名资源复用 AI 抠图的 `CUTOUT_MODEL_DOWNLOAD_BASE_URL` 下载前缀，当前为 `https://download.atmomo.cn/model`，不增加独立环境变量。服务器需要在该目录部署以下四个固定文件名。点击“一键分层”时会统一检查 SAM 2.1、ViTMatte、Big-LaMa、OCR 与命名资源；存在缺失项时先确认下载，两组独立资源并行补齐，进度直接显示在主按钮内，全部完成后自动继续分层。页面不再提供独立资源下载按钮；普通 AI 抠图页仍保持 Big-LaMa 按本地背景修复需求单独下载。
+自动分层的 ViTMatte、Big-LaMa、OCR 与命名资源复用 AI 抠图的 `CUTOUT_MODEL_DOWNLOAD_BASE_URL` 下载前缀，当前为 `https://download.atmomo.cn/model`，不增加独立环境变量。服务器需要在该目录部署对应的固定文件名。点击“一键分层”时会统一检查 SAM 2.1、ViTMatte、Big-LaMa、OCR 与命名资源；存在缺失项时先确认下载，两组独立资源并行补齐，进度直接显示在主按钮内，全部完成后自动继续分层。页面不再提供独立资源下载按钮；普通 AI 抠图页仍保持 Big-LaMa 按本地背景修复需求单独下载。
 
 | 部署文件名 | 固定上游地址 | 字节数 | SHA-256 |
 | --- | --- | ---: | --- |
@@ -114,11 +114,11 @@ Windows 的官方 ONNX Runtime 二进制依赖 Microsoft Visual C++ 运行库。
 | 档位 | 下载大小 | 内置下载地址 |
 | --- | ---: | --- |
 | SAM 2.1 Hiera Base+（quantized ONNX） | 115.3 MiB | [幻画模型镜像](https://download.atmomo.cn/model/) |
-| ViTMatte Base（full precision ONNX） | 369.4 MiB | [固定版本文件](https://huggingface.co/Xenova/vitmatte-base-composition-1k/resolve/1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a/onnx/model.onnx) |
+| ViTMatte Base（full precision ONNX） | 369.4 MiB | [幻画模型镜像](https://download.atmomo.cn/model/vitmatte-base-composition-1k.onnx) |
 
 SAM 2.1 ONNX 资源来自 Apache-2.0 许可的 [onnx-community/sam2.1-hiera-base-plus-ONNX](https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX/tree/bab18593f44e652f04cf18b60b3690f60e8996b0/onnx)，内容固定到提交 `bab18593f44e652f04cf18b60b3690f60e8996b0`，总计 `108676041` 字节。客户端从幻画模型镜像下载该提交中的 `vision_encoder_quantized.onnx`、`vision_encoder_quantized.onnx_data`、`prompt_encoder_mask_decoder.onnx` 和 `prompt_encoder_mask_decoder.onnx_data`，并按固定大小和 SHA-256 校验，避免镜像或上游内容变化导致模型与校验信息不一致。旧 ViT-H、ViT-L、ViT-B 和 MobileSAM 文件不会被主动删除，但客户端不再展示、下载或加载。
 
-资源包同时包含 Apache-2.0 许可的 [Xenova/vitmatte-base-composition-1k](https://huggingface.co/Xenova/vitmatte-base-composition-1k)，全精度 ONNX 文件固定到提交 `1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a`。客户端校验精确大小 `387371620` 字节和 SHA-256 `f6978437f5068849bcbf49b1f4e37b90aaca5155744e9fde4e6c689f70c2b9ee`。统一资源入口的总下载量为 `496047661` 字节（约 473.1 MiB），底层仍分别使用 `model-manifest.json` 与 `cutout-refiner-manifest.json` 持久化安装状态，因此能跳过已存在的部分并只补齐缺失资源；Base 安装成功后会删除旧 Small 文件，模型不随安装包分发。`tests/cinematic-portrait.webp` 的同输入 CPU 回归中，Base 推理约 2.894 秒，原 Small 约 1.325 秒；两者视觉差异较细微，因此此次替换主要提高复杂边缘的模型容量，同时接受更大的下载体积和约 2.2 倍精修耗时。量化 Base 在该素材上出现发丝缺失、肩部锯齿和暗色边缘色带，未纳入客户端。
+资源包同时包含 Apache-2.0 许可的 [Xenova/vitmatte-base-composition-1k](https://huggingface.co/Xenova/vitmatte-base-composition-1k)，全精度 ONNX 文件固定到提交 `1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a`，镜像文件名为 `vitmatte-base-composition-1k.onnx`。客户端校验精确大小 `387371620` 字节和 SHA-256 `f6978437f5068849bcbf49b1f4e37b90aaca5155744e9fde4e6c689f70c2b9ee`。统一资源入口的总下载量为 `496047661` 字节（约 473.1 MiB），底层仍分别使用 `model-manifest.json` 与 `cutout-refiner-manifest.json` 持久化安装状态，因此能跳过已存在的部分并只补齐缺失资源；Base 安装成功后会删除旧 Small 文件，模型不随安装包分发。`tests/cinematic-portrait.webp` 的同输入 CPU 回归中，Base 推理约 2.894 秒，原 Small 约 1.325 秒；两者视觉差异较细微，因此此次替换主要提高复杂边缘的模型容量，同时接受更大的下载体积和约 2.2 倍精修耗时。量化 Base 在该素材上出现发丝缺失、肩部锯齿和暗色边缘色带，未纳入客户端。
 
 本地背景修复使用全自动混合策略，不增加操作项。客户端从当前素材 Alpha 内且修复蒙版外采样，使用稳健二次 RGB 曲面拟合、颜色集中度、平均梯度、强边缘比例和空间覆盖率把背景分成三类：纯色或缓渐变直接重建二维颜色曲面，再用调和扩散贴合孔洞边界；中等置信背景先生成确定性结果，若接缝误差超限则自动运行 Big-LaMa，并选择接缝更自然的候选；复杂纹理、照片和结构背景直接使用 Big-LaMa。没有直接子框、关闭智能吸附的纯手动涂抹仍固定走确定性路径，闭合 UI 面板也不允许生成模型改写边框。双框背景的移除蒙版同时合并 ViTMatte 精修 Alpha 和其附近的 BiRefNet 粗蒙版弱响应，并按子元素长边的 2.5% 动态扩张（限制 4–18 px），用于覆盖阴影、描边和发丝碎片；粗蒙版只在子框附近参与合并，不会扩散到父框边缘。复杂场景使用 Apache-2.0 许可的 [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX/tree/c3c0c9e468934d62e79c329e35d82dd09ff8c444) [lama_fp32.onnx](https://download.atmomo.cn/model/lama_fp32.onnx)。模型固定提交 `c3c0c9e468934d62e79c329e35d82dd09ff8c444`、大小 `208044816` 字节、SHA-256 `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6`，输入固定为 512×512。客户端以父级精修 Alpha 收紧当前素材的真实内容边界，Alpha 外像素和模型方形留白统一使用素材主背景色，不再拉伸边缘形成条纹；矩形选框余量中的底图和框外图片内容不会进入修复上下文。模型输出再映射回素材边界，本地结果在蒙版核心区完整替换 RGB，羽化区使用偏向修复结果的缓出权重，减少残留阴影与旧前景色，同时逐像素保留蒙版外内容。进入修复阶段前会释放已完成工作的 BiRefNet 与 ViTMatte 会话；原生释放协议同时识别 BiRefNet 与 SAM 会话 ID，嵌套框不会因切换分割模型而中断背景修复。模型使用独立 `cutout-repair-manifest.json`，由用户首次使用背景修复时下载。
 

@@ -6,6 +6,7 @@ dist/
 src-tauri/target/
 src-tauri/windows-runtime/
 tests/output/
+promo/
 
 # Environment variables
 .env

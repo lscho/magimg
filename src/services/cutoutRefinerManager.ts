@@ -12,6 +12,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
+import { CUTOUT_MODEL_DOWNLOAD_BASE_URL } from "@/constants/cutoutModels";
 import { fetchHttp } from "@/services/desktop";
 import type { ModelDownloadProgress } from "@/services/cutoutModelManager";
 import type {
@@ -28,7 +29,7 @@ const LEGACY_REFINER_FILE_NAME = "cutout-refiner-vitmatte-small.onnx";
 export const CUTOUT_REFINER: CutoutRefinerDescriptor = {
   id: "vitmatte-base-composition-1k",
   name: "ViTMatte Base",
-  url: "https://huggingface.co/Xenova/vitmatte-base-composition-1k/resolve/1290b014b994e95ca1b9dd9c5f72c3b6d5b7236a/onnx/model.onnx",
+  url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/vitmatte-base-composition-1k.onnx`,
   fileName: "cutout-refiner-vitmatte-base.onnx",
   sizeBytes: 387_371_620,
   sha256: "f6978437f5068849bcbf49b1f4e37b90aaca5155744e9fde4e6c689f70c2b9ee",
