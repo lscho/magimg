@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import {
   analyzeMaterialContext,
-  diffuseRepairRgba
+  repairSmoothBackgroundRgba
 } from "@/services/cutoutRepairContext";
-import { compositeMaskedRgba } from "@/services/cutoutRepairCompositing";
+import { compositeLocalRepairRgba } from "@/services/cutoutRepairCompositing";
 import { prepareRepairMask } from "@/services/cutoutRepairMask";
 
 type Region = {
@@ -58,7 +58,7 @@ const preparedFullMask = prepareRepairMask(fullRemovalMask, input.width, input.h
 });
 const repairMask = cropPlane(preparedFullMask, input.width, selection);
 const analysis = analyzeMaterialContext(source, parentAlpha, repairMask, width, height);
-const repaired = diffuseRepairRgba(
+const repaired = repairSmoothBackgroundRgba(
   source,
   parentAlpha,
   repairMask,
@@ -66,7 +66,7 @@ const repaired = diffuseRepairRgba(
   height,
   analysis.fillColor
 );
-const composited = compositeMaskedRgba(source, repaired, repairMask);
+const composited = compositeLocalRepairRgba(source, repaired, repairMask);
 
 fs.mkdirSync(outputDirectory, { recursive: true });
 writePng(path.join(outputDirectory, "01-source.png"), source, width, height);
@@ -78,7 +78,7 @@ writePng(
   height
 );
 writePng(
-  path.join(outputDirectory, "04-diffusion-result.png"),
+  path.join(outputDirectory, "04-repair-result.png"),
   applyOutputAlpha(composited, parentAlpha),
   width,
   height
@@ -88,15 +88,20 @@ const diagnostics = {
   input: path.relative(repositoryRoot, inputPath),
   selection,
   outputSize: { width, height },
-  suggestedMode: analysis.useDiffusion ? "diffusion" : "lama",
-  executedMode: "diffusion",
+  suggestedMode: analysis.repairStrategy,
+  executedMode: analysis.repairStrategy === "model" ? "surface-preview" : analysis.repairStrategy,
   fillColor: analysis.fillColor,
   dominantCoverage: round(analysis.dominantCoverage),
   nearbyCoverage: round(analysis.nearbyCoverage),
+  surfaceFitError: round(analysis.surfaceFitError),
+  meanGradient: round(analysis.meanGradient),
+  strongGradientRatio: round(analysis.strongGradientRatio),
+  compatibleSampleRatio: round(analysis.compatibleSampleRatio),
+  spatialCoverage: round(analysis.spatialCoverage),
   repairedPixels: repairMask.reduce((count, value) => count + Number(value > 0), 0),
-  note: analysis.useDiffusion
-    ? "当前生产逻辑会使用二维扩散。"
-    : "当前生产逻辑会回退到 LaMa；脚本仍输出扩散结果，便于调试分类阈值。"
+  note: analysis.repairStrategy === "model"
+    ? "当前生产逻辑会使用 Big-LaMa；脚本输出曲面预览，便于调试分类阈值。"
+    : "当前生产逻辑会使用曲面重建与调和扩散。"
 };
 fs.writeFileSync(
   path.join(outputDirectory, "diagnostics.json"),

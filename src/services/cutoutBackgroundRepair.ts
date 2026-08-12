@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { CUTOUT_REPAIR_MODEL } from "@/services/cutoutRepairModelManager";
-import { compositeMaskedRgba } from "@/services/cutoutRepairCompositing";
+import {
+  compositeLocalRepairRgba,
+  compositeMaskedRgba
+} from "@/services/cutoutRepairCompositing";
 import {
   buildCutoutRepairLayoutFromBounds,
   type CutoutRepairInputRect,
@@ -10,9 +13,11 @@ import {
   analyzeMaterialContext,
   alphaContentBounds,
   cropAlpha,
-  diffuseRepairRgba,
-  fillRgbaOutsideAlpha
+  fillRgbaOutsideAlpha,
+  repairSmoothBackgroundRgba,
+  type MaterialContextAnalysis
 } from "@/services/cutoutRepairContext";
+import { analyzeRepairBoundaryQuality } from "@/services/cutoutRepairSurface";
 import {
   buildRepairTileAxis,
   MAX_REPAIR_TILES,
@@ -82,8 +87,11 @@ interface LocalRepairContext {
   parentAlpha: Uint8Array;
   repairMask: Uint8Array;
   fillColor: readonly [number, number, number];
-  useDiffusion: boolean;
+  analysis: MaterialContextAnalysis;
 }
+
+const MAX_DETERMINISTIC_BOUNDARY_ERROR = 14;
+const MAX_DETERMINISTIC_STRONG_ERROR_RATIO = 0.12;
 
 function prepareRepairContext(
   image: CanvasImageSource,
@@ -134,7 +142,7 @@ function prepareRepairContext(
     parentAlpha: croppedParentAlpha,
     repairMask: croppedRepairMask,
     fillColor: analysis.fillColor,
-    useDiffusion: analysis.useDiffusion
+    analysis
   };
 }
 
@@ -341,6 +349,51 @@ async function repairBackgroundTiled(
   return output;
 }
 
+async function repairBackgroundWithModel(
+  repairContext: LocalRepairContext,
+  layout: CutoutRepairLayout,
+  signal?: AbortSignal
+) {
+  const { bounds } = layout;
+  const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
+  const needsTiling = bounds.width > inputWidth || bounds.height > inputHeight;
+  // 只在下采样超过约 10% 时分块；轻微超尺寸仍走单次整框，避免无谓的多次调用。
+  const downscaleSignificant = Math.min(inputWidth / bounds.width, inputHeight / bounds.height) < 0.9;
+  if (needsTiling && downscaleSignificant) {
+    return (await repairBackgroundTiled(repairContext, bounds, signal))
+      ?? await repairBackgroundSingle(repairContext, layout, signal);
+  }
+  return repairBackgroundSingle(repairContext, layout, signal);
+}
+
+function repairQualityScore(
+  repairContext: LocalRepairContext,
+  repaired: Uint8ClampedArray,
+  width: number,
+  height: number
+) {
+  const quality = analyzeRepairBoundaryQuality(
+    repairContext.sourceRgba,
+    repaired,
+    repairContext.parentAlpha,
+    repairContext.repairMask,
+    width,
+    height
+  );
+  return {
+    ...quality,
+    score: quality.meanError + quality.strongErrorRatio * 24
+  };
+}
+
+function deterministicRepairNeedsModelFallback(
+  quality: ReturnType<typeof repairQualityScore>
+) {
+  if (quality.sampleCount < 8) return true;
+  return quality.meanError > MAX_DETERMINISTIC_BOUNDARY_ERROR ||
+    quality.strongErrorRatio > MAX_DETERMINISTIC_STRONG_ERROR_RATIO;
+}
+
 function repairedModelCanvas(bytes: Uint8Array) {
   const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
   const planeSize = inputWidth * inputHeight;
@@ -394,18 +447,9 @@ export async function repairBackgroundLocally(
     bounds
   );
   let repairedPixels: Uint8ClampedArray;
-  const needsModel = !(forceDiffusion || repairContext.useDiffusion);
-  const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
-  const needsTiling = bounds.width > inputWidth || bounds.height > inputHeight;
-  // 只在下采样超过约 10% 时分块；轻微超尺寸仍走单次整框，避免无谓的多次调用。
-  const downscaleSignificant = Math.min(inputWidth / bounds.width, inputHeight / bounds.height) < 0.9;
-  if (needsModel && needsTiling && downscaleSignificant) {
-    repairedPixels = (await repairBackgroundTiled(repairContext, bounds, signal))
-      ?? await repairBackgroundSingle(repairContext, layout, signal);
-  } else if (needsModel) {
-    repairedPixels = await repairBackgroundSingle(repairContext, layout, signal);
-  } else {
-    repairedPixels = diffuseRepairRgba(
+  const deterministic = forceDiffusion || repairContext.analysis.repairStrategy !== "model";
+  if (deterministic) {
+    repairedPixels = repairSmoothBackgroundRgba(
       repairContext.sourceRgba,
       repairContext.parentAlpha,
       repairContext.repairMask,
@@ -413,6 +457,27 @@ export async function repairBackgroundLocally(
       bounds.height,
       repairContext.fillColor
     );
+    // 高置信曲面直接采用；较复杂的确定性候选若接缝异常，则运行 Big-LaMa 并择优。
+    if (!forceDiffusion && repairContext.analysis.repairStrategy === "diffusion") {
+      const deterministicQuality = repairQualityScore(
+        repairContext,
+        repairedPixels,
+        bounds.width,
+        bounds.height
+      );
+      if (deterministicRepairNeedsModelFallback(deterministicQuality)) {
+        const modelPixels = await repairBackgroundWithModel(repairContext, layout, signal);
+        const modelQuality = repairQualityScore(
+          repairContext,
+          modelPixels,
+          bounds.width,
+          bounds.height
+        );
+        if (modelQuality.score < deterministicQuality.score) repairedPixels = modelPixels;
+      }
+    }
+  } else {
+    repairedPixels = await repairBackgroundWithModel(repairContext, layout, signal);
   }
   if (signal?.aborted) throw abortError();
 
@@ -423,7 +488,7 @@ export async function repairBackgroundLocally(
   if (!context) throw new Error("当前设备无法合成背景修复结果。");
   context.drawImage(image, 0, 0, imageWidth, imageHeight);
   const sourcePixels = context.getImageData(bounds.x, bounds.y, bounds.width, bounds.height);
-  sourcePixels.data.set(compositeMaskedRgba(
+  sourcePixels.data.set(compositeLocalRepairRgba(
     sourcePixels.data,
     repairedPixels,
     repairContext.repairMask

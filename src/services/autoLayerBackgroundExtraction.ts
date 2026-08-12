@@ -29,11 +29,11 @@ interface BackgroundTextureMetrics {
 
 /**
  * 自动分层「纯背景提取」决策：判断整页背景在顶层元素蒙版附近是否为
- * 纯色 / 缓渐变等低信息量背景。若是，可在本地用确定性扩散直接提取背景，
+ * 纯色 / 缓渐变等低信息量背景。若是，可在本地用确定性曲面/扩散直接提取背景，
  * 完全跳过云端 inpainting 生成，避免生成模型在蒙版区域凭空添加内容。
  *
  * 判定直接复用抠图路径的 analyzeMaterialContext（背景颜色集中度阈值），
- * 与 `repairBackgroundLocally` 的扩散回退行为保持一致，并叠加低纹理能量判据，
+ * 与 `repairBackgroundLocally` 的确定性分流保持一致，并叠加低纹理能量判据，
  * 覆盖颜色直方图分散但表面平滑的宽幅渐变背景。
  */
 export function analyzeBackgroundExtraction(

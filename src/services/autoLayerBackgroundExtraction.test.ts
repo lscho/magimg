@@ -161,9 +161,14 @@ describe("automatic-layer local extraction decision", () => {
       fillColor: [128, 128, 128],
       dominantCoverage: 0.4,
       nearbyCoverage: 0.35,
+      surfaceFitError: 0,
+      meanGradient: 0,
+      strongGradientRatio: 0,
+      compatibleSampleRatio: 1,
+      spatialCoverage: 1,
+      repairStrategy: "model",
       useDiffusion: false,
       lowTexture: false,
-      strongGradientRatio: 0,
       maskCoverage: 0.05,
       ...overrides
     };

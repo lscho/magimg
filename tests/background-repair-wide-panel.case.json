@@ -1,0 +1,70 @@
+{
+  "image": "test.png",
+  "outputDirectory": "output/background-repair-wide-panel",
+  "selection": {
+    "x": 17,
+    "y": 2377,
+    "width": 1499,
+    "height": 329
+  },
+  "parentAlpha": [
+    {
+      "type": "roundedRect",
+      "x": 0,
+      "y": 0,
+      "width": 1499,
+      "height": 329,
+      "radius": 52
+    }
+  ],
+  "removalMask": [
+    {
+      "type": "roundedRect",
+      "x": 47,
+      "y": 60,
+      "width": 226,
+      "height": 234,
+      "radius": 34
+    },
+    {
+      "type": "roundedRect",
+      "x": 285,
+      "y": 45,
+      "width": 210,
+      "height": 259,
+      "radius": 34
+    },
+    {
+      "type": "roundedRect",
+      "x": 520,
+      "y": 51,
+      "width": 206,
+      "height": 249,
+      "radius": 34
+    },
+    {
+      "type": "roundedRect",
+      "x": 748,
+      "y": 53,
+      "width": 219,
+      "height": 249,
+      "radius": 34
+    },
+    {
+      "type": "roundedRect",
+      "x": 988,
+      "y": 49,
+      "width": 219,
+      "height": 250,
+      "radius": 34
+    },
+    {
+      "type": "roundedRect",
+      "x": 1230,
+      "y": 52,
+      "width": 218,
+      "height": 243,
+      "radius": 34
+    }
+  ]
+}

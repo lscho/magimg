@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { compositeMaskedRgba } from "@/services/cutoutRepairCompositing";
+import {
+  compositeLocalRepairRgba,
+  compositeMaskedRgba
+} from "@/services/cutoutRepairCompositing";
 import { buildCutoutRepairLayout } from "@/services/cutoutRepairLayout";
 import {
   analyzeMaterialContext,
   alphaContentBounds,
   diffuseRepairRgba,
   fillRgbaOutsideAlpha,
+  repairSmoothBackgroundRgba,
   shouldForceManualDiffusion
 } from "@/services/cutoutRepairContext";
+import { analyzeRepairBoundaryQuality } from "@/services/cutoutRepairSurface";
 
 describe("background repair compositing", () => {
   it("forces script-equivalent diffusion only for manual add strokes without children", () => {
@@ -56,6 +61,25 @@ describe("background repair compositing", () => {
     expect([...output.slice(0, 4)]).toEqual([10, 20, 30, 40]);
     expect([...output.slice(4, 8)]).toEqual([210, 220, 230, 80]);
     expect([...output.slice(8, 12)]).toEqual([165, 170, 175, 120]);
+  });
+
+  it("fully replaces the local repair core and uses a repair-biased outer feather", () => {
+    const source = new Uint8ClampedArray([
+      10, 20, 30, 40,
+      10, 20, 30, 80,
+      10, 20, 30, 120
+    ]);
+    const repaired = new Uint8ClampedArray([
+      210, 220, 230, 255,
+      210, 220, 230, 255,
+      210, 220, 230, 255
+    ]);
+    const output = compositeLocalRepairRgba(source, repaired, new Uint8Array([0, 128, 255]));
+
+    expect([...output.slice(0, 4)]).toEqual([10, 20, 30, 40]);
+    expect(output[4]).toBeGreaterThan(150);
+    expect(output[5]).toBeGreaterThan(160);
+    expect([...output.slice(8, 12)]).toEqual([210, 220, 230, 120]);
   });
 
   it("uses only the active selection as local model context", () => {
@@ -265,5 +289,105 @@ describe("background repair compositing", () => {
     const repairedTop = (1 * width + 3) * 4;
 
     expect([...repaired.slice(repairedTop, repairedTop + 3)]).toEqual([238, 228, 201]);
+  });
+
+  it("reconstructs a wide smooth panel without card-width color bands", () => {
+    const width = 360;
+    const height = 120;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    const expected = new Uint8ClampedArray(rgba.length);
+    const alpha = new Uint8Array(width * height).fill(255);
+    const mask = new Uint8Array(width * height);
+    const holes = Array.from({ length: 6 }, (_, index) => ({
+      left: 8 + index * 59,
+      right: 54 + index * 59,
+      top: 16,
+      bottom: 104
+    }));
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const pixel = y * width + x;
+        const offset = pixel * 4;
+        const background = [
+          242 + Math.round(x / (width - 1) * 3),
+          235 + Math.round(y / (height - 1) * 3),
+          219 + Math.round((x + y) / (width + height - 2) * 5)
+        ];
+        expected.set([...background, 255], offset);
+        rgba.set([...background, 255], offset);
+        if (holes.some((hole) => (
+          x >= hole.left && x <= hole.right && y >= hole.top && y <= hole.bottom
+        ))) {
+          mask[pixel] = 255;
+          rgba.set([40 + x % 180, 30 + y % 160, 80, 255], offset);
+        }
+      }
+    }
+    const analysis = analyzeMaterialContext(rgba, alpha, mask, width, height);
+    const repaired = repairSmoothBackgroundRgba(
+      rgba,
+      alpha,
+      mask,
+      width,
+      height,
+      analysis.fillColor
+    );
+    let error = 0;
+    let samples = 0;
+    for (let pixel = 0; pixel < mask.length; pixel += 1) {
+      if (!mask[pixel]) continue;
+      const offset = pixel * 4;
+      error += Math.abs(repaired[offset] - expected[offset]);
+      error += Math.abs(repaired[offset + 1] - expected[offset + 1]);
+      error += Math.abs(repaired[offset + 2] - expected[offset + 2]);
+      samples += 3;
+    }
+
+    expect(analysis.repairStrategy).toBe("surface");
+    expect(error / samples).toBeLessThan(1.2);
+  });
+
+  it("routes structured repeated texture to the repair model", () => {
+    const width = 96;
+    const height = 96;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    const alpha = new Uint8Array(width * height).fill(255);
+    const mask = new Uint8Array(width * height);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const pixel = y * width + x;
+        const offset = pixel * 4;
+        const stripe = (Math.floor(x / 6) + Math.floor(y / 6)) % 2 === 0;
+        rgba.set(stripe ? [225, 235, 245, 255] : [155, 175, 205, 255], offset);
+        if (x >= 32 && x < 64 && y >= 32 && y < 64) mask[pixel] = 255;
+      }
+    }
+
+    expect(analyzeMaterialContext(rgba, alpha, mask, width, height).repairStrategy).toBe("model");
+  });
+
+  it("scores a visible repair seam worse than a continuous surface", () => {
+    const width = 12;
+    const height = 12;
+    const source = new Uint8ClampedArray(width * height * 4);
+    const good = new Uint8ClampedArray(source.length);
+    const bad = new Uint8ClampedArray(source.length);
+    const alpha = new Uint8Array(width * height).fill(255);
+    const mask = new Uint8Array(width * height);
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const offset = pixel * 4;
+      source.set([230, 235, 240, 255], offset);
+      good.set([230, 235, 240, 255], offset);
+      bad.set([180, 185, 190, 255], offset);
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      if (x >= 3 && x <= 8 && y >= 3 && y <= 8) mask[pixel] = 255;
+    }
+
+    const goodQuality = analyzeRepairBoundaryQuality(source, good, alpha, mask, width, height);
+    const badQuality = analyzeRepairBoundaryQuality(source, bad, alpha, mask, width, height);
+    expect(goodQuality.meanError).toBe(0);
+    expect(badQuality.meanError).toBeGreaterThan(40);
+    expect(badQuality.strongErrorRatio).toBe(1);
   });
 });
