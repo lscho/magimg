@@ -2,10 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, shallowRef, watch } from "vue";
 import {
   Check,
-  Cloud,
   Clipboard,
   Download,
-  HardDrive,
   LoaderCircle,
   PackageOpen,
   Sparkles,
@@ -18,7 +16,7 @@ import type {
   CutoutResourceProgress,
   CutoutResourceStatus
 } from "@/composables/useCutoutInference";
-import type { CutoutRepairMode, CutoutResult } from "@/types";
+import type { CutoutResult } from "@/types";
 
 const props = defineProps<{
   results: CutoutResult[];
@@ -33,8 +31,6 @@ const props = defineProps<{
   hasImage: boolean;
   selectionCount: number;
   hasBackgroundSelections: boolean;
-  repairMode: CutoutRepairMode;
-  cloudRepairEnabled: boolean;
   repairResourceStatus: CutoutResourceStatus;
   repairProgress: CutoutResourceProgress | null;
   localModelsSupported: boolean;
@@ -47,7 +43,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   installResources: [];
   installRepairResource: [];
-  setRepairMode: [mode: CutoutRepairMode];
   segment: [];
   cancel: [];
   exportAll: [];
@@ -65,9 +60,7 @@ const canSegment = computed(
     props.hasImage &&
     props.selectionCount > 0 &&
     props.resourceStatus === "ready" &&
-    (!props.hasBackgroundSelections ||
-      props.repairMode === "cloud" ||
-      props.repairResourceStatus === "ready")
+    (!props.hasBackgroundSelections || props.repairResourceStatus === "ready")
 );
 const segmentPercent = computed(() => {
   const progress = props.progress;
@@ -261,37 +254,8 @@ onBeforeUnmount(() => {
         @install="emit('installResources')"
       />
 
-      <section
-        v-if="hasBackgroundSelections"
-        class="cutout-repair-mode"
-        aria-labelledby="cutout-repair-mode-heading"
-      >
-        <h3 id="cutout-repair-mode-heading">背景修复</h3>
-        <div class="cutout-repair-segmented">
-          <button
-            type="button"
-            :aria-pressed="repairMode === 'local'"
-            :disabled="isWorking"
-            @click="emit('setRepairMode', 'local')"
-          >
-            <HardDrive :size="14" aria-hidden="true" />
-            本地
-          </button>
-          <button
-            v-if="cloudRepairEnabled"
-            type="button"
-            :aria-pressed="repairMode === 'cloud'"
-            :disabled="isWorking"
-            @click="emit('setRepairMode', 'cloud')"
-          >
-            <Cloud :size="14" aria-hidden="true" />
-            云端
-          </button>
-        </div>
-      </section>
-
       <CutoutResourceNotice
-        v-if="hasBackgroundSelections && repairMode === 'local' &&
+        v-if="hasBackgroundSelections &&
           repairResourceStatus !== 'checking' && repairResourceStatus !== 'ready'"
         :status="repairResourceStatus"
         :phase="phase"
@@ -492,58 +456,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.cutout-repair-mode {
-  display: grid;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
-
-  h3 {
-    margin: 0;
-    color: var(--text);
-    font-size: 11px;
-    font-weight: 660;
-  }
-}
-
-.cutout-repair-segmented {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-
-  button {
-    min-width: 0;
-    height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    border: 0;
-    border-right: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--muted);
-    background: var(--field);
-    font-size: 10px;
-    font-weight: 650;
-
-    &:last-child { border-right: 0; }
-    &[aria-pressed="true"] {
-      color: var(--accent-strong);
-      background: var(--accent-soft);
-    }
-    &:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: -2px;
-    }
-    &:disabled {
-      cursor: not-allowed;
-      opacity: 0.5;
-    }
-  }
 }
 
 .cutout-result-header {

@@ -173,8 +173,7 @@ function updatePointerState(event: PointerEvent) {
   const activeSelection = canvas.activeSelection.value;
   if (canvas.activeTool.value === "erase" && canvas.draftStroke.value) {
     hoveredSelectionId.value = activeSelection?.id ?? null;
-    brushCursor.value = activeSelection?.behavior === "background" &&
-      selectionContainsPoint(activeSelection, point)
+    brushCursor.value = activeSelection && selectionContainsPoint(activeSelection, point)
       ? { x: point.x, y: point.y }
       : null;
     return;
@@ -198,8 +197,7 @@ function updatePointerState(event: PointerEvent) {
     (event.target as Element | null)?.closest("[data-selection-action]")
   );
   brushCursor.value = !overSelectionControl &&
-    hoveredSelection?.id === activeSelection?.id &&
-    activeSelection?.behavior === "background"
+    hoveredSelection
     ? { x: point.x, y: point.y }
     : null;
 }
@@ -243,14 +241,6 @@ function handleCanvasPointerDown(event: PointerEvent) {
       started = canvas.addPolygonPointFromClient(event.clientX, event.clientY);
     }
   } else if (canvas.activeTool.value === "erase") {
-    const selection = selectionFromPointer(event);
-    if (!selection) return;
-    if (selection.id !== canvas.activeSelectionId.value) {
-      canvas.selectSelection(selection.id);
-      hoveredSelectionId.value = selection.id;
-      brushCursor.value = null;
-      return;
-    }
     started = canvas.beginStrokeFromClient(event.clientX, event.clientY);
   } else {
     started = canvas.beginBoxFromClient(event.clientX, event.clientY);
@@ -416,8 +406,6 @@ function handleContextMenu(event: MouseEvent) {
         :zoom-percent="canvas.zoomPercent.value"
         :importing="importing"
         :clearing="clearing"
-        :active-selection="canvas.activeSelection.value"
-        :brush-operation="canvas.brushOperation.value"
         :brush-radius="canvas.brushRadius.value"
         :smart-brush="canvas.smartBrush.value"
         :smart-selecting="smartSelecting"
@@ -435,9 +423,6 @@ function handleContextMenu(event: MouseEvent) {
         @zoom-in="canvas.zoomIn"
         @zoom-out="canvas.zoomOut"
         @fit-preview="canvas.fitPreview"
-        @make-independent="canvas.makeSelectionIndependent"
-        @make-background="canvas.makeSelectionBackground"
-        @set-brush-operation="canvas.setBrushOperation"
         @set-brush-radius="canvas.setBrushRadius"
         @set-smart-brush="canvas.setSmartBrush"
       />
@@ -452,7 +437,6 @@ function handleContextMenu(event: MouseEvent) {
           'is-box-tool': canvas.ready.value && ['box', 'text-box'].includes(canvas.activeTool.value),
           'is-polygon-tool': canvas.ready.value && canvas.activeTool.value === 'polygon',
           'is-erase-tool': canvas.ready.value && canvas.activeTool.value === 'erase',
-          'is-erase-target': canvas.activeTool.value === 'erase' && hoveredSelectionId && !brushCursor,
           'is-erase-brush-ready': canvas.activeTool.value === 'erase' && brushCursor,
           'is-panning': canvas.panning.value,
           'is-locked': locked
@@ -563,7 +547,7 @@ function handleContextMenu(event: MouseEvent) {
                 'is-text': selection.layerKind === 'text',
                 'is-polygon': Boolean(selection.polygon?.length),
                 'is-hovered': hoveredSelectionId === selection.id,
-                'is-erase-switch-target': canvas.activeTool.value === 'erase' && hoveredSelectionId === selection.id && canvas.activeSelectionId.value !== selection.id,
+                'is-erase-target': canvas.activeTool.value === 'erase' && hoveredSelectionId === selection.id,
                 'is-moving': canvas.movingSelectionId.value === selection.id
               }"
               :style="selectionStyle(selection)"
@@ -669,7 +653,6 @@ function handleContextMenu(event: MouseEvent) {
   &.is-box-tool { cursor: crosshair; }
   &.is-polygon-tool { cursor: crosshair; }
   &.is-erase-tool { cursor: default; }
-  &.is-erase-target { cursor: pointer; }
   &.is-erase-brush-ready { cursor: none; }
   &.is-panning { cursor: grabbing; }
   &.is-locked { cursor: progress; }
@@ -821,6 +804,10 @@ function handleContextMenu(event: MouseEvent) {
   cursor: move;
 }
 
+.cutout-canvas-viewport.is-erase-tool .cutout-selection-edge {
+  pointer-events: none;
+}
+
 .cutout-selection-box.is-moving .cutout-selection-edge {
   cursor: grabbing;
 }
@@ -856,12 +843,12 @@ function handleContextMenu(event: MouseEvent) {
     box-shadow: inset 0 0 0 1px var(--text);
   }
 
-  &.is-erase-switch-target {
+  &.is-erase-target {
     background: rgba(120, 152, 245, 0.22);
     box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 1px rgba(120, 152, 245, 0.5);
   }
 
-  &.is-background.is-erase-switch-target {
+  &.is-background.is-erase-target {
     background: rgba(228, 160, 107, 0.2);
     box-shadow: inset 0 0 0 1px var(--warm), 0 0 0 1px rgba(228, 160, 107, 0.5);
   }
@@ -881,8 +868,8 @@ function handleContextMenu(event: MouseEvent) {
       border-color: transparent;
     }
 
-    &.is-erase-switch-target,
-    &.is-background.is-erase-switch-target {
+    &.is-erase-target,
+    &.is-background.is-erase-target {
       background: transparent;
       box-shadow: none;
     }
@@ -996,8 +983,8 @@ function handleContextMenu(event: MouseEvent) {
     }
 
     &.is-hovered,
-    &.is-erase-switch-target,
-    &.is-background.is-erase-switch-target {
+    &.is-erase-target,
+    &.is-background.is-erase-target {
       background: transparent;
       box-shadow: none;
     }

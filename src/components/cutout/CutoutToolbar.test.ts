@@ -15,20 +15,41 @@ function mountToolbar(overrides: Record<string, unknown> = {}) {
       zoomPercent: 100,
       importing: false,
       clearing: false,
-      activeSelection: null,
-      brushOperation: "add",
       brushRadius: 24,
-      smartBrush: true,
+      smartBrush: false,
       ...overrides
     }
   });
 }
 
 describe("CutoutToolbar smart selection", () => {
+  it("uses the first toolbar icon to import an image directly", () => {
+    const wrapper = mountToolbar();
+    expect(wrapper.findAll('button')[0].attributes("aria-label")).toBe("导入图片");
+
+    const autoLayer = mountToolbar({ mode: "auto-layer" });
+    expect(autoLayer.findAll('button')[0].attributes("aria-label")).toBe("导入图片");
+  });
+
   it("emits smartSelect from the desktop toolbar button", async () => {
     const wrapper = mountToolbar();
     await wrapper.get('button[aria-label="智能框选"]').trigger("click");
     expect(wrapper.emitted("smartSelect")).toHaveLength(1);
+  });
+
+  it("shows one background-repair brush with smart snap disabled", async () => {
+    const wrapper = mountToolbar({ activeTool: "erase" });
+    const panel = wrapper.get('[aria-label="背景修复属性"]');
+    const smartBrush = panel.get('input[type="checkbox"]');
+
+    expect(panel.text()).toContain("背景修复");
+    expect(panel.text()).not.toContain("添加");
+    expect(panel.text()).not.toContain("恢复");
+    expect(panel.text()).not.toContain("独立提取");
+    expect((smartBrush.element as HTMLInputElement).checked).toBe(false);
+
+    await smartBrush.setValue(true);
+    expect(wrapper.emitted("setSmartBrush")).toEqual([[true]]);
   });
 
   it("shows a disabled browser boundary and a stable loading state", () => {

@@ -13,16 +13,11 @@ import {
   selectedImageFileFromFile
 } from "@/services/desktop";
 import { consumeCutoutHandoff } from "@/services/cutoutHandoff";
-import {
-  imageBlobSource,
-  maskToPngBlob
-} from "@/services/cutoutBackgroundRepair";
 import { cloneCutoutSelections } from "@/services/cutoutSelectionModel";
 import { useAppStore } from "@/stores/app";
 import { ApiError } from "@/services/apiClient";
 import type {
   CutoutResult,
-  CutoutRepairMode,
   CutoutSelection,
   CutoutSelectionBox,
   CutoutSelectionCommand,
@@ -41,7 +36,6 @@ const clearing = shallowRef(false);
 const selections = shallowRef<CutoutSelection[]>([]);
 const selectionCommand = shallowRef<CutoutSelectionCommand | null>(null);
 const results = shallowRef<CutoutResult[]>([]);
-const repairMode = shallowRef<CutoutRepairMode>("local");
 const cloudInputAssetId = shallowRef<string | null>(null);
 const imageSource = shallowRef<{ source: CanvasImageSource; width: number; height: number } | null>(null);
 const copyingId = shallowRef<string | null>(null);
@@ -68,14 +62,7 @@ const fileBaseName = computed(() => {
 const hasBackgroundSelections = computed(() =>
   selections.value.some((selection) => selection.behavior === "background")
 );
-const cloudRepairEnabled = computed(() =>
-  app.capabilities.backgroundRepairEnabled === true
-);
-const mattingCost = computed(() =>
-  hasBackgroundSelections.value && repairMode.value === "cloud"
-    ? app.capabilities.backgroundRepairCost ?? app.capabilities.mattingCost
-    : app.capabilities.mattingCost
-);
+const mattingCost = computed(() => app.capabilities.mattingCost);
 const insufficientCredits = computed(
   () =>
     app.isAuthenticated &&
@@ -91,10 +78,6 @@ watch(
     }
   }
 );
-
-watch(cloudRepairEnabled, (enabled) => {
-  if (!enabled && repairMode.value === "cloud") repairMode.value = "local";
-});
 
 function showMessage(message: string) {
   actionMessage.value = message;
@@ -207,11 +190,6 @@ async function installRepairResource() {
   if (installed) showMessage("本地背景修复模型已就绪");
 }
 
-function setRepairMode(mode: CutoutRepairMode) {
-  if (mode === "cloud" && !cloudRepairEnabled.value) return;
-  repairMode.value = mode;
-}
-
 async function segment() {
   if (!app.isAuthenticated) {
     showLogin.value = true;
@@ -222,27 +200,7 @@ async function segment() {
     actionError.value = "请先在画布上框选要抠取的元素。";
     return;
   }
-  const requestedMode: CutoutRepairMode = hasBackgroundSelections.value
-    ? repairMode.value
-    : "local";
-  if (requestedMode === "cloud") {
-    if (!cloudRepairEnabled.value) {
-      actionError.value = "云端背景修复当前不可用。";
-      return;
-    }
-    const maxBytes = app.capabilities.backgroundRepairMaxBytes;
-    const maxPixels = app.capabilities.backgroundRepairMaxPixels;
-    if (maxBytes && !cloudInputAssetId.value && selectedFile.value && selectedFile.value.file.size > maxBytes) {
-      actionError.value = "图片大小超过云端背景修复限制。";
-      return;
-    }
-    if (maxPixels && imageSource.value.width * imageSource.value.height > maxPixels) {
-      actionError.value = "图片像素超过云端背景修复限制。";
-      return;
-    }
-  }
   if (
-    requestedMode === "local" &&
     hasBackgroundSelections.value &&
     inference.repairResourceStatus.value !== "ready"
   ) {
@@ -255,11 +213,10 @@ async function segment() {
   let requestedSelections = cloneCutoutSelections(selections.value);
   let resolvedSelections = requestedSelections;
   const produced: CutoutResult[] = [];
-  let cloudSubmitted = false;
 
   let charge: MattingChargeResult | null = null;
   try {
-    charge = await app.chargeMatting(requestedMode);
+    charge = await app.chargeMatting("local");
   } catch (exception) {
     if (exception instanceof ApiError && exception.statusCode === 409) {
       mattingInsufficient.value = true;
@@ -283,53 +240,10 @@ async function segment() {
       results.value = [...produced];
     },
     {
-      repairMode: requestedMode,
+      repairMode: "local",
       onSelectionsResolved: (next) => {
         resolvedSelections = cloneCutoutSelections(next);
-      },
-      cloudRepair: requestedMode === "cloud" && selectedFile.value && charge
-        ? async (mask, selectionBoxes, context) => {
-          context.setStage("uploading");
-          const maskBlob = await maskToPngBlob(
-            mask,
-            imageSource.value!.width,
-            imageSource.value!.height
-          );
-          const submit = (inputAssetId?: string) => app.createBackgroundRepair({
-            ...(inputAssetId
-              ? { inputAssetId }
-              : { image: selectedFile.value!.file }),
-            mask: maskBlob,
-            mattingId: charge!.mattingId,
-            selectionBoxes: selectionBoxes.map((box) => ({ ...box }))
-          });
-          let task;
-          try {
-            task = await submit(cloudInputAssetId.value ?? undefined);
-          } catch (exception) {
-            const reusableAssetUnavailable = Boolean(cloudInputAssetId.value) &&
-              exception instanceof ApiError &&
-              (exception.statusCode === 400 || exception.statusCode === 404);
-            if (!reusableAssetUnavailable) throw exception;
-            cloudInputAssetId.value = null;
-            task = await submit();
-          }
-          if (task.inputAssetId) cloudInputAssetId.value = task.inputAssetId;
-          cloudSubmitted = true;
-          context.setStage("waiting");
-          const completed = await app.waitForBackgroundRepair(task, context.signal);
-          const blob = await app.downloadBackgroundRepairOutput(completed);
-          const bitmap = await imageBlobSource(blob);
-          if (
-            bitmap.width !== imageSource.value!.width ||
-            bitmap.height !== imageSource.value!.height
-          ) {
-            bitmap.close();
-            throw new Error("云端背景修复返回的图片尺寸与原图不一致。");
-          }
-          return bitmap;
-        }
-        : undefined
+      }
     }
   );
 
@@ -341,11 +255,7 @@ async function segment() {
 
   if (inference.error.value && charge) {
     try {
-      if (requestedMode === "cloud" && cloudSubmitted) {
-        await app.refreshBalance();
-      } else {
-        await app.refundMatting(charge.mattingId);
-      }
+      await app.refundMatting(charge.mattingId);
     } catch (exception) {
       console.warn("抠图退款失败", exception);
       actionError.value = "抠图失败且退款异常，请联系客服处理。";
@@ -488,8 +398,6 @@ onBeforeUnmount(() => {
         :has-image="Boolean(imageSource)"
         :selection-count="selections.length"
         :has-background-selections="hasBackgroundSelections"
-        :repair-mode="repairMode"
-        :cloud-repair-enabled="cloudRepairEnabled"
         :repair-resource-status="inference.repairResourceStatus.value"
         :repair-progress="inference.repairProgress.value"
         :local-models-supported="inference.localModelsSupported"
@@ -499,7 +407,6 @@ onBeforeUnmount(() => {
         :insufficient-credits="insufficientCredits"
         @install-resources="installResources"
         @install-repair-resource="installRepairResource"
-        @set-repair-mode="setRepairMode"
         @segment="segment"
         @cancel="inference.cancel"
         @export-all="exportAll"

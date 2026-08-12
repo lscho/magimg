@@ -22,10 +22,6 @@ import {
   SMART_SELECTION_THRESHOLD_MAX,
   SMART_SELECTION_THRESHOLD_MIN
 } from "@/services/smartSelection";
-import type {
-  CutoutBrushOperation,
-  CutoutSelection
-} from "@/types";
 
 const props = withDefaults(defineProps<{
   activeTool: CutoutTool;
@@ -37,8 +33,6 @@ const props = withDefaults(defineProps<{
   zoomPercent: number;
   importing: boolean;
   clearing: boolean;
-  activeSelection: CutoutSelection | null;
-  brushOperation: CutoutBrushOperation;
   brushRadius: number;
   smartBrush: boolean;
   smartSelecting?: boolean;
@@ -61,7 +55,7 @@ const primaryTools = props.mode === "auto-layer"
   : [
       { id: "box", label: "框选", icon: SquareDashed },
       { id: "polygon", label: "点选轮廓", icon: Spline },
-      { id: "erase", label: "消除修复", icon: Eraser },
+      { id: "erase", label: "背景修复", icon: Eraser },
       { id: "pan", label: "拖动", icon: Hand }
     ];
 
@@ -75,9 +69,6 @@ const emit = defineEmits<{
   zoomIn: [];
   zoomOut: [];
   fitPreview: [];
-  makeIndependent: [id: string];
-  makeBackground: [id: string];
-  setBrushOperation: [operation: CutoutBrushOperation];
   setBrushRadius: [radius: number];
   setSmartBrush: [enabled: boolean];
   smartSelect: [];
@@ -87,6 +78,20 @@ const emit = defineEmits<{
 
 <template>
   <aside class="cutout-toolbar" role="toolbar" aria-label="抠图工具">
+    <div class="cutout-tool-group cutout-image-group is-import-group" aria-label="图片导入">
+      <button
+        class="cutout-tool-button"
+        type="button"
+        data-tooltip="导入图片"
+        aria-label="导入图片"
+        :disabled="busy || importing || clearing"
+        @click="emit('importImage')"
+      >
+        <ImageDown v-if="!importing" :size="18" aria-hidden="true" />
+        <LoaderCircle v-else class="cutout-tool-spinner" :size="18" aria-hidden="true" />
+      </button>
+    </div>
+
     <div class="cutout-tool-group smart-selection-tool">
       <button
         class="cutout-tool-button smart-selection-button"
@@ -150,79 +155,33 @@ const emit = defineEmits<{
     <section
       v-if="activeTool === 'erase'"
       class="cutout-brush-options"
-      aria-label="消除修复属性"
+      aria-label="背景修复属性"
     >
       <div class="cutout-option-row">
-        <span>当前选区</span>
-        <strong>{{ activeSelection ? (activeSelection.behavior === 'background' ? '背景' : '素材') : '未选择' }}</strong>
+        <strong>背景修复</strong>
       </div>
-      <div v-if="activeSelection" class="cutout-segmented" aria-label="选区用途">
-        <button
-          type="button"
-          :aria-pressed="activeSelection.behavior === 'extract'"
-          @click="emit('makeIndependent', activeSelection.id)"
-        >
-          独立提取
-        </button>
-        <button
-          type="button"
-          :aria-pressed="activeSelection.behavior === 'background'"
-          @click="emit('makeBackground', activeSelection.id)"
-        >
-          背景修复
-        </button>
-      </div>
-      <template v-if="activeSelection?.behavior === 'background'">
-        <label class="cutout-smart-option">
-          <input
-            type="checkbox"
-            :checked="smartBrush"
-            @change="emit('setSmartBrush', ($event.target as HTMLInputElement).checked)"
-          />
-          <span>智能吸附</span>
-        </label>
-        <div class="cutout-segmented" aria-label="笔刷操作">
-          <button
-            type="button"
-            :aria-pressed="brushOperation === 'add'"
-            @click="emit('setBrushOperation', 'add')"
-          >
-            添加
-          </button>
-          <button
-            type="button"
-            :aria-pressed="brushOperation === 'restore'"
-            @click="emit('setBrushOperation', 'restore')"
-          >
-            恢复
-          </button>
-        </div>
-        <label class="cutout-size-option">
-          <span>大小 {{ brushRadius }} px</span>
-          <input
-            type="range"
-            min="4"
-            max="160"
-            step="2"
-            :value="brushRadius"
-            @input="emit('setBrushRadius', Number(($event.target as HTMLInputElement).value))"
-          />
-        </label>
-      </template>
+      <label class="cutout-smart-option">
+        <input
+          type="checkbox"
+          :checked="smartBrush"
+          @change="emit('setSmartBrush', ($event.target as HTMLInputElement).checked)"
+        />
+        <span>智能吸附</span>
+      </label>
+      <label class="cutout-size-option">
+        <span>大小 {{ brushRadius }} px</span>
+        <input
+          type="range"
+          min="4"
+          max="160"
+          step="2"
+          :value="brushRadius"
+          @input="emit('setBrushRadius', Number(($event.target as HTMLInputElement).value))"
+        />
+      </label>
     </section>
 
     <div class="cutout-tool-group cutout-image-group" aria-label="图片操作">
-      <button
-        class="cutout-tool-button"
-        type="button"
-        data-tooltip="导入图片"
-        aria-label="导入图片"
-        :disabled="busy || importing || clearing"
-        @click="emit('importImage')"
-      >
-        <ImageDown v-if="!importing" :size="18" aria-hidden="true" />
-        <LoaderCircle v-else :size="18" aria-hidden="true" />
-      </button>
       <button
         class="cutout-tool-button cutout-clear-button"
         type="button"
@@ -355,6 +314,7 @@ const emit = defineEmits<{
 
 .cutout-option-row strong {
   color: var(--text);
+  font-size: 11px;
 }
 
 .cutout-smart-option {
@@ -397,35 +357,6 @@ const emit = defineEmits<{
     &:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
-    }
-  }
-}
-
-.cutout-segmented {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-
-  button {
-    min-width: 0;
-    height: 30px;
-    border: 0;
-    border-right: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--muted);
-    background: var(--field);
-    font-size: 10px;
-
-    &:last-child { border-right: 0; }
-    &[aria-pressed="true"] {
-      color: var(--accent-strong);
-      background: var(--accent-soft);
-    }
-    &:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: -2px;
     }
   }
 }
@@ -546,7 +477,8 @@ const emit = defineEmits<{
   border-top: 1px solid var(--line);
 }
 
-.cutout-image-group {
+.is-import-group + .smart-selection-tool,
+.cutout-image-group:not(.is-import-group) {
   border-top: 1px solid var(--line);
 }
 

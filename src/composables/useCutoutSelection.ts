@@ -7,8 +7,6 @@ import {
 import {
   applyAutomaticNesting,
   cloneCutoutSelections,
-  setSelectionBackground,
-  setSelectionIndependent,
   translateCutoutSelection
 } from "@/services/cutoutSelectionModel";
 import {
@@ -16,7 +14,6 @@ import {
   pointInCutoutPolygon
 } from "@/services/cutoutSelectionShape";
 import type {
-  CutoutBrushOperation,
   CutoutBrushPoint,
   CutoutRemovalStroke,
   CutoutSelection,
@@ -81,9 +78,8 @@ export function useCutoutSelection(
   const panning = shallowRef(false);
   const movingSelectionId = shallowRef<string | null>(null);
   const activeSelectionId = shallowRef<string | null>(null);
-  const brushOperation = shallowRef<CutoutBrushOperation>("add");
   const brushRadius = shallowRef(24);
-  const smartBrush = shallowRef(true);
+  const smartBrush = shallowRef(false);
   const initialSelectionSnapshot = applyAutomaticNesting(initialSelections);
   const selections = shallowRef<CutoutSelection[]>(initialSelectionSnapshot);
   const draftBox = shallowRef<CutoutSelectionBox | null>(null);
@@ -100,6 +96,7 @@ export function useCutoutSelection(
   let sourceBitmap: ImageBitmap | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let drawingOrigin: { x: number; y: number } | null = null;
+  let drawingStrokeSelectionId: string | null = null;
   let selectionMove: SelectionMoveState | null = null;
   let panStartX = 0;
   let panStartY = 0;
@@ -382,15 +379,17 @@ export function useCutoutSelection(
 
   function beginStrokeFromClient(clientX: number, clientY: number): boolean {
     if (activeTool.value !== "erase" || !ready.value || busy.value) return false;
-    const selection = activeSelection.value;
-    if (!selection || selection.behavior !== "background") return false;
+    const selection = selectionAtClientPoint(clientX, clientY);
+    if (!selection) return false;
     const imagePoint = pointInsideSelection(selection, clientX, clientY);
     if (!imagePoint) return false;
+    activeSelectionId.value = selection.id;
+    drawingStrokeSelectionId = selection.id;
     draftStroke.value = {
       id: `cutout-stroke-${Date.now()}-${crypto.randomUUID()}`,
-      operation: brushOperation.value,
+      operation: "add",
       radius: brushRadius.value,
-      smart: smartBrush.value && brushOperation.value === "add",
+      smart: smartBrush.value,
       points: [{ x: imagePoint.x, y: imagePoint.y }]
     };
     return true;
@@ -398,7 +397,7 @@ export function useCutoutSelection(
 
   function updateStrokeFromClient(clientX: number, clientY: number) {
     const stroke = draftStroke.value;
-    const selection = activeSelection.value;
+    const selection = selections.value.find(({ id }) => id === drawingStrokeSelectionId);
     if (!stroke || !selection) return;
     const point = pointInsideSelection(selection, clientX, clientY);
     if (!point) return;
@@ -539,12 +538,18 @@ export function useCutoutSelection(
 
   function finishStroke() {
     const stroke = draftStroke.value;
-    const selectionId = activeSelectionId.value;
+    const selectionId = drawingStrokeSelectionId;
     draftStroke.value = null;
+    drawingStrokeSelectionId = null;
     if (!stroke || !stroke.points.length || !selectionId) return;
     commitSelections(
       selections.value.map((selection) => selection.id === selectionId
-        ? { ...selection, removalStrokes: [...selection.removalStrokes, stroke] }
+        ? {
+            ...selection,
+            behavior: "background",
+            relationSource: "manual",
+            removalStrokes: [...selection.removalStrokes, stroke]
+          }
         : selection),
       false
     );
@@ -552,26 +557,13 @@ export function useCutoutSelection(
 
   function cancelStroke() {
     draftStroke.value = null;
+    drawingStrokeSelectionId = null;
   }
 
   function selectSelection(id: string) {
     if (selections.value.some((selection) => selection.id === id)) {
       activeSelectionId.value = id;
     }
-  }
-
-  function makeSelectionIndependent(id: string) {
-    commitSelections(setSelectionIndependent(selections.value, id), false);
-    activeSelectionId.value = id;
-  }
-
-  function makeSelectionBackground(id: string) {
-    commitSelections(setSelectionBackground(selections.value, id), false);
-    activeSelectionId.value = id;
-  }
-
-  function setBrushOperation(operation: CutoutBrushOperation) {
-    brushOperation.value = operation;
   }
 
   function setBrushRadius(radius: number) {
@@ -660,7 +652,6 @@ export function useCutoutSelection(
     movingSelectionId: readonly(movingSelectionId),
     activeSelectionId: readonly(activeSelectionId),
     activeSelection,
-    brushOperation: readonly(brushOperation),
     brushRadius: readonly(brushRadius),
     smartBrush: readonly(smartBrush),
     selections: readonly(selections),
@@ -703,9 +694,6 @@ export function useCutoutSelection(
     finishStroke,
     cancelStroke,
     selectSelection,
-    makeSelectionIndependent,
-    makeSelectionBackground,
-    setBrushOperation,
     setBrushRadius,
     setSmartBrush,
     removeSelection,
