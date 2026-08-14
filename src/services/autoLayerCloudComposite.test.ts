@@ -42,4 +42,71 @@ describe("auto layer cloud output compositing", () => {
     expect(mask[10 * 40 + 20]).toBe(0);
     expect(mask[10 * 40 + 33]).toBe(255);
   });
+
+  it("feathers only the outside of overlapping boxes", () => {
+    const mask = createAutoLayerCloudCompositeMask(30, 20, [
+      { id: "left", x: 2, y: 2, width: 18, height: 16 },
+      { id: "right", x: 10, y: 2, width: 18, height: 16 }
+    ]);
+
+    expect(mask[10 * 30 + 10]).toBe(255);
+    expect(mask[10 * 30 + 19]).toBe(255);
+  });
+
+  it("preserves source pixels in gaps between generated repair regions", () => {
+    const width = 40;
+    const height = 20;
+    const source = new Uint8ClampedArray(width * height * 4);
+    const repaired = new Uint8ClampedArray(width * height * 4);
+    for (let offset = 0; offset < source.length; offset += 4) {
+      source.set([80, 90, 100, 255], offset);
+      repaired.set([65, 75, 85, 255], offset);
+    }
+    const output = compositeAutoLayerCloudRgba(source, repaired, width, height, [
+      { id: "left", x: 2, y: 2, width: 10, height: 16 },
+      { id: "right", x: 28, y: 2, width: 10, height: 16 }
+    ]);
+    const left = (10 * width + 7) * 4;
+    const gap = (10 * width + 20) * 4;
+    const right = (10 * width + 33) * 4;
+
+    expect([...output.slice(left, left + 4)]).toEqual([65, 75, 85, 255]);
+    expect([...output.slice(gap, gap + 4)]).toEqual([80, 90, 100, 255]);
+    expect([...output.slice(right, right + 4)]).toEqual([65, 75, 85, 255]);
+  });
+
+  it("matches the generated page color cast from pixels outside every repair box", () => {
+    const width = 60;
+    const height = 40;
+    const source = new Uint8ClampedArray(width * height * 4);
+    const repaired = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = (y * width + x) * 4;
+        const generated = [40 + x * 2, 50 + y * 3, 60 + x + y];
+        repaired.set([...generated, 255], offset);
+        source.set([
+          Math.round(generated[0] * 1.02 + 1),
+          Math.round(generated[1] * 1.04 + 0.5),
+          Math.round(generated[2] * 1.06 - 0.5),
+          255
+        ], offset);
+      }
+    }
+    const box = { id: "subject", x: 20, y: 10, width: 20, height: 20 };
+    for (let y = box.y; y < box.y + box.height; y += 1) {
+      for (let x = box.x; x < box.x + box.width; x += 1) {
+        const offset = (y * width + x) * 4;
+        source.set([240, 20, 20, 255], offset);
+        repaired.set([120, 140, 160, 255], offset);
+      }
+    }
+    const output = compositeAutoLayerCloudRgba(source, repaired, width, height, [box]);
+    const inside = (20 * width + 30) * 4;
+    const outside = (5 * width + 5) * 4;
+
+    expect([...output.slice(inside, inside + 3)]).toEqual([123, 146, 169]);
+    expect([...output.slice(outside, outside + 4)])
+      .toEqual([...source.slice(outside, outside + 4)]);
+  });
 });

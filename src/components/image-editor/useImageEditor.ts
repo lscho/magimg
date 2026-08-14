@@ -11,7 +11,6 @@ import type {
   IText as FabricIText,
   Path,
   PencilBrush,
-  Rect as FabricRect,
   TSimplePathData
 } from "fabric/es";
 import {
@@ -29,24 +28,15 @@ import {
 import {
   DEFAULT_IMAGE_ADJUSTMENTS,
   drawAdjustedImage,
-  hasImageAdjustments,
   normalizeImageAdjustments
 } from "./imageAdjustments";
+import { createImageEditorCropController } from "./imageEditorCrop";
+import { renderImageGeometry } from "./imageEditorGeometry";
+import { preloadImageEditorRuntime } from "./imageEditorRuntime";
+import { createImageEditorViewportController } from "./imageEditorViewport";
 import type { FabricRuntime } from "./fabricRuntime";
 
-let fabricRuntimePromise: Promise<FabricRuntime> | null = null;
-
-export function preloadImageEditorRuntime(): Promise<FabricRuntime> {
-  if (!fabricRuntimePromise) {
-    fabricRuntimePromise = import("./fabricRuntime")
-      .then(({ fabricRuntime }) => fabricRuntime)
-      .catch((exception) => {
-        fabricRuntimePromise = null;
-        throw exception;
-      });
-  }
-  return fabricRuntimePromise;
-}
+export { preloadImageEditorRuntime } from "./imageEditorRuntime";
 
 interface EditorElements {
   annotationCanvas: HTMLCanvasElement;
@@ -66,14 +56,6 @@ interface ContextMenuPosition {
 
 const MAX_HISTORY = 30;
 const EMPTY_ANNOTATIONS = { objects: [] };
-const CROP_EDGE_TOLERANCE_PX = 4;
-const CROP_HANDLE_INSET_PX = 7;
-const CROP_OUTLINE_WIDTH_PX = 2;
-const MIN_ZOOM_PERCENT = 25;
-const MAX_ZOOM_PERCENT = 400;
-const ZOOM_BUTTON_STEP = 25;
-const PAN_VIEWPORT_PADDING_PX = 16;
-const PAN_MIN_VISIBLE_PX = 48;
 
 function cloneDocument(document: ImageEditorDocument): ImageEditorDocument {
   return JSON.parse(JSON.stringify(document)) as ImageEditorDocument;
@@ -131,25 +113,65 @@ export function useImageEditor(source: ImageEditorSource) {
   let viewport: HTMLElement | null = null;
   let sourceBitmap: ImageBitmap | null = null;
   let geometryCanvas: HTMLCanvasElement | null = null;
-  let previewAdjustmentCanvas: HTMLCanvasElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
-  let cropBox: FabricRect | null = null;
-  let cropShade: FabricRect | null = null;
-  let cropShadeClip: FabricRect | null = null;
-  let cropOutline: FabricRect | null = null;
   let contextTextObject: FabricIText | null = null;
   let operations: ImageGeometryOperation[] = [];
   let history: EditorSnapshot[] = [];
   let historyIndex = -1;
   let initialSignature = "";
   let restoring = false;
-  let panStartX = 0;
-  let panStartY = 0;
-  let panOriginX = 0;
-  let panOriginY = 0;
-  let canvasOffsetFrame: number | null = null;
   const transientObjects = new Set<FabricObject>();
   const textListeners = new WeakSet<FabricIText>();
+  const cropController = createImageEditorCropController({
+    canvas: () => canvas,
+    runtime: () => fabricModule,
+    transientObjects,
+    outputWidth,
+    outputHeight,
+    previewScale,
+    cropRatio,
+    cropWidth,
+    cropHeight,
+    isActive: () => activeTool.value === "crop"
+  });
+  const clearCropOverlay = cropController.clearOverlay;
+  const createCropOverlay = cropController.createOverlay;
+  const viewportController = createImageEditorViewportController({
+    canvas: () => canvas,
+    baseCanvas: () => baseCanvas,
+    viewport: () => viewport,
+    imageSource: () => geometrySource(),
+    outputWidth,
+    outputHeight,
+    previewWidth,
+    previewHeight,
+    previewScale,
+    zoomPercent,
+    panX,
+    panY,
+    panning,
+    ready,
+    busy,
+    activeTool,
+    adjustments,
+    annotationObjects,
+    prepareAnnotationObject,
+    createBrush,
+    updateDrawingCursor,
+    updateCropControlScale: cropController.updateControlScale
+  });
+  const {
+    endPan,
+    fitPreview,
+    movePan,
+    renderBasePreview,
+    resizePreview,
+    setZoom,
+    startPan,
+    zoomFromWheel,
+    zoomIn,
+    zoomOut
+  } = viewportController;
 
   const outputLabel = computed(() => `${outputWidth.value} × ${outputHeight.value}`);
 
@@ -276,6 +298,7 @@ export function useImageEditor(source: ImageEditorSource) {
   function currentDocument(): ImageEditorDocument {
     return {
       version: 1,
+      // 历史快照只保存可持久化文档；裁剪遮罩、选中框等临时 Fabric 对象必须排除。
       operations: JSON.parse(JSON.stringify(operations)) as ImageGeometryOperation[],
       adjustments: { ...adjustments },
       annotations: annotationJson()
@@ -376,232 +399,19 @@ export function useImageEditor(source: ImageEditorSource) {
 
   async function rebuildGeometryCanvas() {
     if (!sourceBitmap) return;
-
-    if (!operations.length) {
-      if (geometryCanvas) {
-        geometryCanvas.width = 0;
-        geometryCanvas.height = 0;
-      }
-      geometryCanvas = null;
-      outputWidth.value = sourceBitmap.width;
-      outputHeight.value = sourceBitmap.height;
-      return;
+    const previousCanvas = geometryCanvas;
+    const result = renderImageGeometry(sourceBitmap, operations);
+    if (previousCanvas && previousCanvas !== result.canvas) {
+      previousCanvas.width = 0;
+      previousCanvas.height = 0;
     }
-
-    let current: CanvasImageSource = sourceBitmap;
-    let currentWidth = sourceBitmap.width;
-    let currentHeight = sourceBitmap.height;
-
-    for (const operation of operations) {
-      const next = document.createElement("canvas");
-      const context = next.getContext("2d");
-      if (!context) throw new Error("当前设备无法处理该图片。");
-
-      if (operation.type === "rotate") {
-        next.width = currentHeight;
-        next.height = currentWidth;
-        if (operation.direction === "clockwise") {
-          context.translate(next.width, 0);
-          context.rotate(Math.PI / 2);
-        } else {
-          context.translate(0, next.height);
-          context.rotate(-Math.PI / 2);
-        }
-        context.drawImage(current, 0, 0);
-      } else if (operation.type === "flip") {
-        next.width = currentWidth;
-        next.height = currentHeight;
-        if (operation.axis === "horizontal") {
-          context.translate(next.width, 0);
-          context.scale(-1, 1);
-        } else {
-          context.translate(0, next.height);
-          context.scale(1, -1);
-        }
-        context.drawImage(current, 0, 0);
-      } else {
-        const x = Math.max(0, Math.round(operation.x * currentWidth));
-        const y = Math.max(0, Math.round(operation.y * currentHeight));
-        const width = Math.max(
-          1,
-          Math.min(currentWidth - x, Math.round(operation.width * currentWidth))
-        );
-        const height = Math.max(
-          1,
-          Math.min(currentHeight - y, Math.round(operation.height * currentHeight))
-        );
-        next.width = width;
-        next.height = height;
-        context.drawImage(current, x, y, width, height, 0, 0, width, height);
-      }
-      current = next;
-      currentWidth = next.width;
-      currentHeight = next.height;
-    }
-
-    geometryCanvas = current as HTMLCanvasElement;
-    outputWidth.value = currentWidth;
-    outputHeight.value = currentHeight;
+    geometryCanvas = result.canvas;
+    outputWidth.value = result.width;
+    outputHeight.value = result.height;
   }
 
   function geometrySource(): CanvasImageSource | null {
     return geometryCanvas ?? sourceBitmap;
-  }
-
-  function panLimit(previewSize: number, viewportSize: number) {
-    const innerSize = Math.max(1, viewportSize - PAN_VIEWPORT_PADDING_PX * 2);
-    if (previewSize <= innerSize) {
-      return Math.max(0, (viewportSize - previewSize) / 2 - PAN_VIEWPORT_PADDING_PX);
-    }
-    return Math.max(0, (previewSize - viewportSize) / 2 + PAN_MIN_VISIBLE_PX);
-  }
-
-  function constrainPan() {
-    if (!viewport) return;
-    const limitX = panLimit(previewWidth.value, viewport.clientWidth);
-    const limitY = panLimit(previewHeight.value, viewport.clientHeight);
-    panX.value = clamp(panX.value, -limitX, limitX);
-    panY.value = clamp(panY.value, -limitY, limitY);
-  }
-
-  function scheduleCanvasOffset() {
-    if (canvasOffsetFrame !== null) cancelAnimationFrame(canvasOffsetFrame);
-    canvasOffsetFrame = requestAnimationFrame(() => {
-      canvasOffsetFrame = null;
-      canvas?.calcOffset();
-    });
-  }
-
-  function resizePreview() {
-    if (!viewport || !canvas || !baseCanvas) return;
-    const availableWidth = Math.max(120, viewport.clientWidth - 32);
-    const availableHeight = Math.max(120, viewport.clientHeight - 32);
-    const fitScale = Math.max(
-      0.01,
-      Math.min(availableWidth / outputWidth.value, availableHeight / outputHeight.value)
-    );
-    const scale = fitScale * zoomPercent.value / 100;
-    previewScale.value = scale;
-    previewWidth.value = Math.max(1, Math.floor(outputWidth.value * scale));
-    previewHeight.value = Math.max(1, Math.floor(outputHeight.value * scale));
-
-    canvas.setDimensions({ width: previewWidth.value, height: previewHeight.value });
-    canvas.setViewportTransform([scale, 0, 0, scale, 0, 0]);
-    constrainPan();
-    annotationObjects().forEach(prepareAnnotationObject);
-    if (activeTool.value === "draw" || activeTool.value === "erase") {
-      canvas.freeDrawingBrush = createBrush(activeTool.value === "erase");
-      updateDrawingCursor();
-    }
-    updateCropControlScale();
-    renderBasePreview();
-    canvas.requestRenderAll();
-    scheduleCanvasOffset();
-  }
-
-  function setZoom(nextPercent: number, anchor?: { clientX: number; clientY: number }) {
-    if (!viewport || !Number.isFinite(nextPercent)) return;
-    const normalized = clamp(Math.round(nextPercent), MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
-    const previous = zoomPercent.value;
-    if (normalized === previous) return;
-
-    if (anchor) {
-      const bounds = viewport.getBoundingClientRect();
-      const anchorX = anchor.clientX - bounds.left - viewport.clientWidth / 2;
-      const anchorY = anchor.clientY - bounds.top - viewport.clientHeight / 2;
-      const ratio = normalized / previous;
-      panX.value = anchorX - (anchorX - panX.value) * ratio;
-      panY.value = anchorY - (anchorY - panY.value) * ratio;
-    }
-
-    zoomPercent.value = normalized;
-    resizePreview();
-  }
-
-  function zoomIn() {
-    setZoom(zoomPercent.value + ZOOM_BUTTON_STEP);
-  }
-
-  function zoomOut() {
-    setZoom(zoomPercent.value - ZOOM_BUTTON_STEP);
-  }
-
-  function fitPreview() {
-    zoomPercent.value = 100;
-    panX.value = 0;
-    panY.value = 0;
-    resizePreview();
-  }
-
-  function zoomFromWheel(event: WheelEvent) {
-    if (!ready.value || busy.value || !event.deltaY) return;
-    const direction = event.deltaY < 0 ? 1 : -1;
-    setZoom(zoomPercent.value + direction * 10, {
-      clientX: event.clientX,
-      clientY: event.clientY
-    });
-  }
-
-  function startPan(clientX: number, clientY: number) {
-    if (activeTool.value !== "pan" || !ready.value || busy.value) return false;
-    panning.value = true;
-    panStartX = clientX;
-    panStartY = clientY;
-    panOriginX = panX.value;
-    panOriginY = panY.value;
-    updateDrawingCursor();
-    return true;
-  }
-
-  function movePan(clientX: number, clientY: number) {
-    if (!panning.value) return;
-    panX.value = panOriginX + clientX - panStartX;
-    panY.value = panOriginY + clientY - panStartY;
-    constrainPan();
-    scheduleCanvasOffset();
-  }
-
-  function endPan() {
-    if (!panning.value) return;
-    panning.value = false;
-    updateDrawingCursor();
-    scheduleCanvasOffset();
-  }
-
-  function renderBasePreview() {
-    const imageSource = geometrySource();
-    if (!baseCanvas || !imageSource) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    baseCanvas.width = Math.max(1, Math.floor(previewWidth.value * dpr));
-    baseCanvas.height = Math.max(1, Math.floor(previewHeight.value * dpr));
-    baseCanvas.style.width = `${previewWidth.value}px`;
-    baseCanvas.style.height = `${previewHeight.value}px`;
-    const context = baseCanvas.getContext("2d");
-    if (!context) return;
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, baseCanvas.width, baseCanvas.height);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    if (!hasImageAdjustments(adjustments)) {
-      context.drawImage(imageSource, 0, 0, previewWidth.value, previewHeight.value);
-      return;
-    }
-
-    previewAdjustmentCanvas ??= document.createElement("canvas");
-    previewAdjustmentCanvas.width = previewWidth.value;
-    previewAdjustmentCanvas.height = previewHeight.value;
-    const adjustmentContext = previewAdjustmentCanvas.getContext("2d");
-    if (!adjustmentContext) return;
-    drawAdjustedImage(
-      adjustmentContext,
-      imageSource,
-      previewWidth.value,
-      previewHeight.value,
-      adjustments
-    );
-    context.drawImage(previewAdjustmentCanvas, 0, 0, previewWidth.value, previewHeight.value);
   }
 
   function setTool(tool: ImageEditorTool) {
@@ -799,328 +609,17 @@ export function useImageEditor(source: ImageEditorSource) {
     else dirty.value = captureSnapshot().signature !== initialSignature;
   }
 
-  function ratioValue(ratio: CropRatio) {
-    if (ratio === "free") return null;
-    if (ratio === "original") return outputWidth.value / outputHeight.value;
-    const [width, height] = ratio.split(":").map(Number);
-    return width / height;
-  }
-
   function setCropRatio(ratio: CropRatio) {
-    cropRatio.value = ratio;
-    if (activeTool.value === "crop") createCropOverlay();
-  }
-
-  function clearCropOverlay() {
-    if (!canvas) return;
-    const editorCanvas = canvas;
-    const overlayObjects = [cropShade, cropOutline, cropBox].filter(
-      (object): object is FabricRect => object !== null
-    );
-    const activeObject = editorCanvas.getActiveObject();
-    if (activeObject && overlayObjects.some((object) => object === activeObject)) {
-      editorCanvas.discardActiveObject();
-    }
-    overlayObjects.forEach((object) => {
-      editorCanvas.remove(object);
-      transientObjects.delete(object);
-    });
-    if (cropShade) cropShade.clipPath = undefined;
-    cropShade = null;
-    cropShadeClip = null;
-    cropOutline = null;
-    cropBox = null;
-    cropWidth.value = 0;
-    cropHeight.value = 0;
-    editorCanvas.uniformScaling = false;
-    editorCanvas.requestRenderAll();
-  }
-
-  function createCropOverlay() {
-    if (!canvas || !fabricModule) return;
-    clearCropOverlay();
-    canvas.discardActiveObject();
-    canvas.uniformScaling = cropRatio.value !== "free";
-
-    const inset = 0.06;
-    const maxWidth = outputWidth.value * (1 - inset * 2);
-    const maxHeight = outputHeight.value * (1 - inset * 2);
-    const ratio = ratioValue(cropRatio.value);
-    let width = maxWidth;
-    let height = maxHeight;
-    if (ratio) {
-      if (width / height > ratio) width = height * ratio;
-      else height = width / ratio;
-    }
-
-    const left = (outputWidth.value - width) / 2;
-    const top = (outputHeight.value - height) / 2;
-    cropShadeClip = new fabricModule.Rect({
-      absolutePositioned: true,
-      evented: false,
-      excludeFromExport: true,
-      fill: "#000000",
-      height,
-      inverted: true,
-      left,
-      originX: "left",
-      originY: "top",
-      selectable: false,
-      strokeWidth: 0,
-      top,
-      width
-    });
-    cropShade = new fabricModule.Rect({
-      evented: false,
-      excludeFromExport: true,
-      fill: "rgba(4, 7, 11, 0.62)",
-      height: outputHeight.value,
-      left: 0,
-      originX: "left",
-      originY: "top",
-      selectable: false,
-      strokeWidth: 0,
-      top: 0,
-      width: outputWidth.value,
-      clipPath: cropShadeClip
-    });
-    cropOutline = new fabricModule.Rect({
-      evented: false,
-      excludeFromExport: true,
-      fill: "transparent",
-      height,
-      left,
-      objectCaching: false,
-      originX: "left",
-      originY: "top",
-      selectable: false,
-      stroke: "rgba(241, 244, 248, 0.94)",
-      strokeWidth: 0,
-      top,
-      width
-    });
-    cropBox = new fabricModule.Rect({
-      borderColor: "transparent",
-      cornerColor: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
-      cornerSize: 11,
-      cornerStrokeColor: "rgba(4, 7, 11, 0.82)",
-      cornerStyle: "rect",
-      evented: true,
-      excludeFromExport: true,
-      fill: "rgba(255, 255, 255, 0.001)",
-      hasBorders: false,
-      hasRotatingPoint: false,
-      left,
-      lockRotation: true,
-      lockScalingFlip: true,
-      originX: "left",
-      originY: "top",
-      padding: 0,
-      selectable: true,
-      strokeWidth: 0,
-      top,
-      transparentCorners: false,
-      width,
-      height
-    });
-    cropBox.setControlsVisibility({ mtr: false });
-    if (ratio) cropBox.setControlsVisibility({ ml: false, mr: false, mt: false, mb: false });
-    cropBox.on("moving", constrainCropBoxDuringTransform);
-    cropBox.on("scaling", constrainCropBoxDuringTransform);
-    cropBox.on("modified", finalizeCropBoxTransform);
-    [cropShade, cropOutline, cropBox].forEach((object) => transientObjects.add(object));
-    canvas.add(cropShade, cropOutline, cropBox);
-    canvas.setActiveObject(cropBox);
-    updateCropControlScale();
-    syncCropOverlay();
-    canvas.requestRenderAll();
-  }
-
-  function clamp(value: number, minimum: number, maximum: number) {
-    return Math.min(maximum, Math.max(minimum, value));
-  }
-
-  function constrainCropBox(tolerance: number) {
-    if (!cropBox) return;
-
-    const ratio = ratioValue(cropRatio.value);
-    const maxWidth = outputWidth.value + tolerance * 2;
-    const maxHeight = outputHeight.value + tolerance * 2;
-    let { width: scaledWidth, height: scaledHeight } = cropSelectionBounds();
-    if (ratio && (scaledWidth > maxWidth || scaledHeight > maxHeight)) {
-      const factor = Math.min(
-        maxWidth / scaledWidth,
-        maxHeight / scaledHeight
-      );
-      cropBox.scaleX *= factor;
-      cropBox.scaleY *= factor;
-      ({ width: scaledWidth, height: scaledHeight } = cropSelectionBounds());
-    } else if (!ratio) {
-      if (scaledWidth > maxWidth) cropBox.scaleX *= maxWidth / scaledWidth;
-      if (scaledHeight > maxHeight) cropBox.scaleY *= maxHeight / scaledHeight;
-      ({ width: scaledWidth, height: scaledHeight } = cropSelectionBounds());
-    }
-
-    cropBox.left = clamp(
-      cropBox.left,
-      -tolerance,
-      outputWidth.value - scaledWidth + tolerance
-    );
-    cropBox.top = clamp(
-      cropBox.top,
-      -tolerance,
-      outputHeight.value - scaledHeight + tolerance
-    );
-  }
-
-  function constrainCropBoxDuringTransform() {
-    const tolerance = CROP_EDGE_TOLERANCE_PX / Math.max(previewScale.value, 0.01);
-    constrainCropBox(tolerance);
-    syncCropOverlay();
-  }
-
-  function finalizeCropBoxTransform() {
-    if (!cropBox) return;
-    constrainCropBox(0);
-    cropBox.setCoords();
-    syncCropOverlay();
-  }
-
-  function cropSelectionBounds() {
-    if (!cropBox) return { left: 0, top: 0, width: 0, height: 0 };
-    return {
-      left: cropBox.left,
-      top: cropBox.top,
-      width: Math.abs(cropBox.width * cropBox.scaleX),
-      height: Math.abs(cropBox.height * cropBox.scaleY)
-    };
-  }
-
-  function normalizedCropSelection() {
-    const bounds = cropSelectionBounds();
-    const left = clamp(Math.round(bounds.left), 0, Math.max(0, outputWidth.value - 1));
-    const top = clamp(Math.round(bounds.top), 0, Math.max(0, outputHeight.value - 1));
-    return {
-      left,
-      top,
-      width: clamp(Math.round(bounds.width), 1, outputWidth.value - left),
-      height: clamp(Math.round(bounds.height), 1, outputHeight.value - top)
-    };
-  }
-
-  function syncCropSelectionSize() {
-    if (!cropBox) {
-      cropWidth.value = 0;
-      cropHeight.value = 0;
-      return;
-    }
-    const bounds = normalizedCropSelection();
-    cropWidth.value = bounds.width;
-    cropHeight.value = bounds.height;
+    cropController.setRatio(ratio);
   }
 
   function setCropDimension(dimension: CropDimension, value: number) {
-    if (!cropBox || !canvas || !Number.isFinite(value)) return;
-
-    const bounds = cropSelectionBounds();
-    const width = dimension === "width"
-      ? clamp(Math.round(value), 1, outputWidth.value)
-      : clamp(bounds.width, 1, outputWidth.value);
-    const height = dimension === "height"
-      ? clamp(Math.round(value), 1, outputHeight.value)
-      : clamp(bounds.height, 1, outputHeight.value);
-    const centerX = bounds.left + bounds.width / 2;
-    const centerY = bounds.top + bounds.height / 2;
-
-    cropRatio.value = "free";
-    canvas.uniformScaling = false;
-    cropBox.setControlsVisibility({
-      ml: true,
-      mr: true,
-      mt: true,
-      mb: true,
-      mtr: false
-    });
-    cropBox.set({
-      left: centerX - width / 2,
-      top: centerY - height / 2,
-      scaleX: width / Math.max(cropBox.width, 1),
-      scaleY: height / Math.max(cropBox.height, 1)
-    });
-    constrainCropBox(0);
-    updateCropControlScale();
-    syncCropOverlay();
-  }
-
-  function updateCropControlScale() {
-    if (!cropBox) return;
-    cropBox.set({
-      cornerSize: 11,
-      padding: 0
-    });
-
-    const inset = CROP_HANDLE_INSET_PX;
-    const controlOffsets: Record<string, readonly [number, number]> = {
-      tl: [inset, inset],
-      mt: [0, inset],
-      tr: [-inset, inset],
-      ml: [inset, 0],
-      mr: [-inset, 0],
-      bl: [inset, -inset],
-      mb: [0, -inset],
-      br: [-inset, -inset]
-    };
-    Object.entries(controlOffsets).forEach(([key, [offsetX, offsetY]]) => {
-      const control = cropBox?.controls[key];
-      if (!control) return;
-      control.offsetX = offsetX;
-      control.offsetY = offsetY;
-    });
-    cropBox.setCoords();
-    syncCropOverlay();
-  }
-
-  function syncCropOverlay() {
-    if (!cropBox || !cropShade || !cropShadeClip || !cropOutline) return;
-    const bounds = cropSelectionBounds();
-    const left = clamp(bounds.left, 0, outputWidth.value);
-    const top = clamp(bounds.top, 0, outputHeight.value);
-    const right = clamp(bounds.left + bounds.width, 0, outputWidth.value);
-    const bottom = clamp(bounds.top + bounds.height, 0, outputHeight.value);
-    cropShadeClip.set({
-      height: Math.max(1, bottom - top),
-      left,
-      scaleX: 1,
-      scaleY: 1,
-      top,
-      width: Math.max(1, right - left)
-    });
-    cropShadeClip.dirty = true;
-    cropShade.dirty = true;
-
-    const scale = Math.max(previewScale.value, 0.01);
-    const strokeWidth = CROP_OUTLINE_WIDTH_PX / scale;
-    const inset = (CROP_OUTLINE_WIDTH_PX / 2 + 0.5) / scale;
-    cropOutline.set({
-      height: Math.max(0, bottom - top - inset * 2),
-      left: left + inset,
-      scaleX: 1,
-      scaleY: 1,
-      strokeWidth,
-      top: top + inset,
-      width: Math.max(0, right - left - inset * 2)
-    });
-    cropOutline.dirty = true;
-    syncCropSelectionSize();
-    canvas?.requestRenderAll();
+    cropController.setDimension(dimension, value);
   }
 
   async function applyCrop() {
-    if (!cropBox) return;
-    constrainCropBox(0);
-    cropBox.setCoords();
-    syncCropOverlay();
-    const bounds = normalizedCropSelection();
+    const bounds = cropController.prepareSelection();
+    if (!bounds) return;
     const oldWidth = outputWidth.value;
     const oldHeight = outputHeight.value;
     const x = bounds.left;
@@ -1360,8 +859,7 @@ export function useImageEditor(source: ImageEditorSource) {
     closeTextContextMenu();
     resizeObserver?.disconnect();
     resizeObserver = null;
-    if (canvasOffsetFrame !== null) cancelAnimationFrame(canvasOffsetFrame);
-    canvasOffsetFrame = null;
+    viewportController.dispose();
     if (canvas) void canvas.dispose();
     canvas = null;
     sourceBitmap?.close();
@@ -1371,11 +869,6 @@ export function useImageEditor(source: ImageEditorSource) {
       geometryCanvas.height = 0;
     }
     geometryCanvas = null;
-    if (previewAdjustmentCanvas) {
-      previewAdjustmentCanvas.width = 0;
-      previewAdjustmentCanvas.height = 0;
-    }
-    previewAdjustmentCanvas = null;
   }
 
   onBeforeUnmount(dispose);

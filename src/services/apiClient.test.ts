@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchHttp = vi.hoisted(() => vi.fn());
-vi.mock("@/services/desktop", () => ({ fetchHttp }));
+const downloadRemoteImageBlob = vi.hoisted(() => vi.fn());
+vi.mock("@/services/desktop", () => ({ downloadRemoteImageBlob, fetchHttp }));
 
 import {
   apiClient,
@@ -19,6 +20,7 @@ function jsonResponse(value: unknown, status = 200) {
 describe("background repair API contract", () => {
   beforeEach(() => {
     fetchHttp.mockReset();
+    downloadRemoteImageBlob.mockReset();
     setAccessToken(null);
     setUnauthorizedHandler(null);
   });
@@ -50,6 +52,23 @@ describe("background repair API contract", () => {
     expect(JSON.parse(fetchHttp.mock.calls[1][1].body.get("selectionBoxes"))).toEqual([
       { x: 10, y: 20, width: 80, height: 100 }
     ]);
+  });
+
+  it("bypasses caches when polling an automatic-layer task", async () => {
+    fetchHttp.mockResolvedValue(jsonResponse({
+      id: "auto-1",
+      status: "succeeded",
+      outputUrl: "/uploads/auto-layer.png",
+      cost: 20,
+      balance: 80
+    }));
+
+    await apiClient.autoLayerTask("auto/1");
+
+    expect(fetchHttp).toHaveBeenCalledWith(
+      "/api/client/v1/auto-layer-tasks/auto%2F1",
+      expect.objectContaining({ cache: "no-store" })
+    );
   });
 
   it("submits one multipart image and grayscale mask task", async () => {
@@ -110,6 +129,17 @@ describe("background repair API contract", () => {
     expect(fetchHttp.mock.calls[0][0]).toBe("/api/client/v1/background-repairs/r%2F1");
     expect(fetchHttp.mock.calls[1][0]).toBe("/api/client/v1/background-repairs/r%2F1/cancel");
     expect(fetchHttp.mock.calls[1][1].method).toBe("POST");
+  });
+
+  it("bypasses caches when downloading a cloud repair output", async () => {
+    downloadRemoteImageBlob.mockResolvedValue(new Blob([new Uint8Array([1])], { type: "image/png" }));
+
+    await apiClient.downloadBackgroundRepairOutput("http://127.0.0.1:23000/uploads/repair.png");
+
+    expect(downloadRemoteImageBlob).toHaveBeenCalledWith(
+      "http://127.0.0.1:23000/uploads/repair.png",
+      null
+    );
   });
 
   it("surfaces 409 and invokes unauthorized handling for the current token's 401", async () => {

@@ -26,7 +26,7 @@ import type {
 } from "@/types";
 
 const app = useAppStore();
-const inference = useCutoutInference({ segmentationModel: "birefnet" });
+const inference = useCutoutInference();
 const smartSelection = useSmartSelection();
 
 const selectedFile = shallowRef<SelectedImageFile | null>(null);

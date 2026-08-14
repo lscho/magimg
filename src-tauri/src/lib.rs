@@ -1,6 +1,7 @@
 mod auto_layer;
 mod compression;
 mod cutout;
+mod remote_image;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,7 +51,8 @@ pub fn run() {
             compression::compression_save,
             compression::compression_auto_layer_upload,
             compression::compression_cancel,
-            compression::compression_release
+            compression::compression_release,
+            remote_image::download_remote_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running huanhua ai");

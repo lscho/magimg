@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AutoLayerFontCategory } from "@/components/auto-layer/types";
 import type { CutoutSelectionBox } from "@/types";
 
@@ -30,6 +30,17 @@ interface NativeOcrLine {
 }
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function invokeRecognitionWithChannel(command: string, bytes: Uint8Array): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const responseChannel = new Channel<ArrayBuffer>(resolve);
+    void invoke(command, bytes, {
+      headers: {
+        "x-auto-layer-response-channel": responseChannel.toJSON()
+      }
+    }).catch(reject);
+  });
+}
 
 export const autoLayerFontFamilies: Record<AutoLayerFontCategory, string> = {
   sans: "ui-sans-serif, system-ui, sans-serif",
@@ -279,7 +290,7 @@ export function inferAutoLayerFontStyleFromPixels(
   const isHan = /\p{Script=Han}/u.test(text);
   const isShortNumericLabel = /^\d{1,2}$/u.test(text.trim());
   const unmistakablyHeavy = isHan
-    ? relativeThickness >= 0.3 && coreRatio >= 0.7
+    ? relativeThickness >= 0.5 && coreRatio >= 0.78
     : relativeThickness >= 0.28 && coreRatio >= 0.68;
   // Raster OCR crops cannot reliably distinguish a heavy font from outlines and shadows.
   // Short numeric UI labels are especially ambiguous, so keep them editable at regular weight.
@@ -292,7 +303,10 @@ export function inferAutoLayerFontStyleFromPixels(
 }
 
 export function normalizeAutoLayerOcrText(value: string) {
-  let text = value.replace(/\s+/gu, " ").trim();
+  let text = value
+    .replace(/\s+/gu, " ")
+    .replace(/(\d)[：﹕](\d)/gu, "$1:$2")
+    .trim();
   if (/\p{Script=Han}/u.test(text)) {
     text = text
       .replace(/^[a-z\[\](){}<>]+(?=\p{Script=Han})/u, "")
@@ -345,9 +359,9 @@ export async function recognizeAutoLayerText(
   const crop = cropCanvas(source, selection);
   const blob = await canvasBlob(crop);
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  const response = await invoke<ArrayBuffer>("auto_layer_ocr", bytes);
+  const response = await invokeRecognitionWithChannel("auto_layer_ocr", bytes);
   onDiagnosticStage?.("detected");
-  const directResponse = await invoke<ArrayBuffer>("auto_layer_ocr_line", bytes.slice());
+  const directResponse = await invokeRecognitionWithChannel("auto_layer_ocr_line", bytes.slice());
   onDiagnosticStage?.("whole-line");
   const detected = JSON.parse(new TextDecoder().decode(new Uint8Array(response))) as NativeOcrLine[];
   const direct = JSON.parse(new TextDecoder().decode(new Uint8Array(directResponse))) as NativeOcrLine[];
@@ -442,7 +456,7 @@ export async function classifyAutoLayerElements(
     offset += buffer.byteLength;
   }
   if (signal?.aborted) throw new DOMException("元素识别已取消。", "AbortError");
-  const response = await invoke<ArrayBuffer>("auto_layer_classify", payload);
+  const response = await invokeRecognitionWithChannel("auto_layer_classify", payload);
   return JSON.parse(new TextDecoder().decode(new Uint8Array(response))) as AutoLayerClassification[];
 }
 

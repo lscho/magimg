@@ -7,12 +7,15 @@ import { parseAutoLayerRegressionCase } from "@/services/autoLayerRegressionQual
 import { useAppStore } from "@/stores/app";
 
 const app = useAppStore();
-const inference = useCutoutInference();
+const inference = useCutoutInference({
+  includeRepairResource: true
+});
 const status = shallowRef("准备自动分层回归测试");
 const failure = shallowRef("");
 const collectorUrl = import.meta.env.VITE_AUTO_LAYER_REGRESSION_URL?.replace(/\/+$/u, "") ?? "";
 const recordId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RECORD_ID?.trim() || undefined;
 const cloud = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CLOUD === "true";
+const cloudTaskId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_CLOUD_TASK_ID?.trim() || undefined;
 const forceCloudInput = import.meta.env.VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT === "true";
 const skipQualityGate = import.meta.env.VITE_AUTO_LAYER_REGRESSION_SKIP_QUALITY_GATE === "true";
 const runId = import.meta.env.VITE_AUTO_LAYER_REGRESSION_RUN_ID?.trim() || "";
@@ -42,6 +45,7 @@ onMounted(async () => {
       runId,
       qualityCase,
       cloud,
+      cloudTaskId,
       forceCloudInput,
       skipQualityGate,
       inference,

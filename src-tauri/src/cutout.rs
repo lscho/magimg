@@ -18,8 +18,8 @@ use ort::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
-    ipc::{InvokeBody, Request, Response},
-    AppHandle, Manager, State,
+    ipc::{InvokeBody, JavaScriptChannelId, Request, Response},
+    AppHandle, Manager, State, Webview,
 };
 
 const MODELS_DIRECTORY: &str = "models";
@@ -41,6 +41,21 @@ const AUTO_PROPOSAL_MAX_AREA_RATIO: f32 = 0.92;
 const POINT_LABEL_PADDING: i64 = -10;
 const REFINER_INPUT_MULTIPLE: usize = 32;
 const REFINER_MAX_INPUT_EDGE: usize = 1024;
+const RESPONSE_CHANNEL_HEADER: &str = "x-cutout-response-channel";
+
+fn response_channel(
+    request: &Request<'_>,
+    webview: Webview,
+) -> Result<tauri::ipc::Channel<Response>, String> {
+    let channel_id = request
+        .headers()
+        .get(RESPONSE_CHANNEL_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "原生抠图响应通道不存在。".to_string())?
+        .parse::<JavaScriptChannelId>()
+        .map_err(|_| "原生抠图响应通道无效。".to_string())?;
+    Ok(channel_id.channel_on(webview))
+}
 
 #[derive(Clone, Copy)]
 struct ModelFileSpec {
@@ -1646,6 +1661,11 @@ fn segmenter_output_alpha(
 /// BiRefNet Swin-T 单次前向：输入裁剪区域 1024x1024 NCHW 归一化 float，
 /// 输出 1024x1024 alpha。用于 /cutout 链路替代 SAM encoder+decoder。
 fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Response, String> {
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[cutout:birefnet] segment:start model={model_id} bytes={}",
+        bytes.len()
+    );
     let state = app.state::<CutoutState>();
     let epoch = state.cancel_epoch.load(Ordering::SeqCst);
     let spec = find_segmenter(&model_id)?;
@@ -1671,6 +1691,8 @@ fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Re
         let session = create_session(&path, "抠图分割模型")?;
         validate_segmenter_contract(&session)?;
         inference.segmenter = Some(LoadedSegmenter { spec, session });
+        #[cfg(debug_assertions)]
+        eprintln!("[cutout:birefnet] session:ready");
     }
     if state.is_cancelled(epoch) {
         return Err(cancelled_error());
@@ -1689,6 +1711,8 @@ fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Re
         run_options.as_ref(),
     );
     state.finish_run(&run_options);
+    #[cfg(debug_assertions)]
+    eprintln!("[cutout:birefnet] inference:complete");
     let outputs = outputs.map_err(|error| {
         if state.is_cancelled(epoch) {
             cancelled_error()
@@ -1706,7 +1730,10 @@ fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Re
     let (shape, values) = masks
         .try_extract_tensor::<f32>()
         .map_err(|error| format!("抠图分割模型遮罩无效：{error}"))?;
-    Ok(Response::new(segmenter_output_alpha(shape, values, spec)?))
+    let alpha = segmenter_output_alpha(shape, values, spec)?;
+    #[cfg(debug_assertions)]
+    eprintln!("[cutout:birefnet] response:ready bytes={}", alpha.len());
+    Ok(Response::new(alpha))
 }
 
 #[tauri::command]
@@ -1738,35 +1765,65 @@ pub async fn cutout_auto_propose(
 }
 
 #[tauri::command]
-pub async fn cutout_refine(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+pub async fn cutout_refine(
+    app: AppHandle,
+    webview: Webview,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let (model_id, width, height, bytes) = parse_refine_request(request)?;
     let task_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let response = tauri::async_runtime::spawn_blocking(move || {
         refine_mask(&task_app, model_id, width, height, bytes)
     })
     .await
-    .map_err(|error| format!("原生精修任务异常结束：{error}"))?
+    .map_err(|error| format!("原生精修任务异常结束：{error}"))??;
+    response_channel
+        .send(response)
+        .map_err(|error| format!("原生精修结果返回失败：{error}"))
 }
 
 #[tauri::command]
-pub async fn cutout_repair(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+pub async fn cutout_repair(
+    app: AppHandle,
+    webview: Webview,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let (model_id, bytes) = parse_repair_request(request)?;
     let task_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || repair_image(&task_app, model_id, bytes))
-        .await
-        .map_err(|error| format!("原生背景修复任务异常结束：{error}"))?
+    let response =
+        tauri::async_runtime::spawn_blocking(move || repair_image(&task_app, model_id, bytes))
+            .await
+            .map_err(|error| format!("原生背景修复任务异常结束：{error}"))??;
+    response_channel
+        .send(response)
+        .map_err(|error| format!("原生背景修复结果返回失败：{error}"))
 }
 
 #[tauri::command]
 pub async fn cutout_birefnet_segment(
     app: AppHandle,
+    webview: Webview,
     request: Request<'_>,
-) -> Result<Response, String> {
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let (model_id, bytes) = parse_segment_request(request)?;
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[cutout:birefnet] command:parsed model={model_id} bytes={}",
+        bytes.len()
+    );
     let task_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || segment_image(&task_app, model_id, bytes))
-        .await
-        .map_err(|error| format!("原生抠图分割任务异常结束：{error}"))?
+    let response =
+        tauri::async_runtime::spawn_blocking(move || segment_image(&task_app, model_id, bytes))
+            .await
+            .map_err(|error| format!("原生抠图分割任务异常结束：{error}"))??;
+    #[cfg(debug_assertions)]
+    eprintln!("[cutout:birefnet] command:complete");
+    response_channel
+        .send(response)
+        .map_err(|error| format!("原生抠图分割结果返回失败：{error}"))
 }
 
 #[tauri::command]

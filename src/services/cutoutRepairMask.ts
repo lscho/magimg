@@ -233,7 +233,7 @@ export function expandTextRepairMask(
 }
 
 /**
- * 背景移除优先保证召回率：保留精修 Alpha，并吸收其附近的 SAM 弱响应，
+ * 背景移除优先保证召回率：保留精修 Alpha，并吸收其附近的粗分割弱响应，
  * 再按子元素尺寸扩张。结果仍限制在子框附近，避免粗蒙版污染父级边框。
  */
 export function buildHighRecallChildMask(options: {

@@ -13,8 +13,8 @@ use ort::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{
-    ipc::{InvokeBody, Request, Response},
-    AppHandle, Manager, State,
+    ipc::{InvokeBody, JavaScriptChannelId, Request, Response},
+    AppHandle, Manager, State, Webview,
 };
 
 const DET_FILE: &str = "auto-layer-ocr-det.onnx";
@@ -33,6 +33,7 @@ const SIGLIP_SIZE: u64 = 94_553_333;
 const SIGLIP_SHA256: &str = "5f2b401c1a4fc095702a5d45348e17ad46c4f87064085365b43c6e8eaa5c0070";
 const SIGLIP_SIZE_PX: u32 = 224;
 const SELECTION_SOURCE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const RESPONSE_CHANNEL_HEADER: &str = "x-auto-layer-response-channel";
 const SIGLIP_LABELS: [&str; 12] = [
     "card",
     "btn",
@@ -47,6 +48,20 @@ const SIGLIP_LABELS: [&str; 12] = [
     "decoration",
     "element",
 ];
+
+fn response_channel(
+    request: &Request<'_>,
+    webview: Webview,
+) -> Result<tauri::ipc::Channel<Response>, String> {
+    let channel_id = request
+        .headers()
+        .get(RESPONSE_CHANNEL_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "自动分层响应通道不存在。".to_string())?
+        .parse::<JavaScriptChannelId>()
+        .map_err(|_| "自动分层响应通道无效。".to_string())?;
+    Ok(channel_id.channel_on(webview))
+}
 
 #[derive(Default)]
 pub struct AutoLayerState {
@@ -753,27 +768,51 @@ fn recognize_whole_line(app: &AppHandle, bytes: Vec<u8>) -> Result<Response, Str
 }
 
 #[tauri::command]
-pub async fn auto_layer_ocr(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+pub async fn auto_layer_ocr(
+    app: AppHandle,
+    webview: Webview,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let bytes = raw_body(request)?;
-    tauri::async_runtime::spawn_blocking(move || recognize(&app, bytes))
+    let response = tauri::async_runtime::spawn_blocking(move || recognize(&app, bytes))
         .await
-        .map_err(|error| format!("OCR 任务执行失败：{error}"))?
+        .map_err(|error| format!("OCR 任务执行失败：{error}"))??;
+    response_channel
+        .send(response)
+        .map_err(|error| format!("OCR 结果返回失败：{error}"))
 }
 
 #[tauri::command]
-pub async fn auto_layer_ocr_line(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+pub async fn auto_layer_ocr_line(
+    app: AppHandle,
+    webview: Webview,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let bytes = raw_body(request)?;
-    tauri::async_runtime::spawn_blocking(move || recognize_whole_line(&app, bytes))
+    let response = tauri::async_runtime::spawn_blocking(move || recognize_whole_line(&app, bytes))
         .await
-        .map_err(|error| format!("OCR 单行复核任务执行失败：{error}"))?
+        .map_err(|error| format!("OCR 单行复核任务执行失败：{error}"))??;
+    response_channel
+        .send(response)
+        .map_err(|error| format!("OCR 单行复核结果返回失败：{error}"))
 }
 
 #[tauri::command]
-pub async fn auto_layer_classify(app: AppHandle, request: Request<'_>) -> Result<Response, String> {
+pub async fn auto_layer_classify(
+    app: AppHandle,
+    webview: Webview,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let response_channel = response_channel(&request, webview)?;
     let bytes = raw_body(request)?;
-    tauri::async_runtime::spawn_blocking(move || classify(&app, bytes))
+    let response = tauri::async_runtime::spawn_blocking(move || classify(&app, bytes))
         .await
-        .map_err(|error| format!("元素分类任务执行失败：{error}"))?
+        .map_err(|error| format!("元素分类任务执行失败：{error}"))??;
+    response_channel
+        .send(response)
+        .map_err(|error| format!("元素分类结果返回失败：{error}"))
 }
 
 #[tauri::command]

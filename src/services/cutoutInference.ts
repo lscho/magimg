@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { cutoutSelectionBounds, type CutoutPixelBounds } from "@/services/cutoutGeometry";
 import {
   createInterpolationAxis,
@@ -39,6 +39,22 @@ const REFINER_MAX_LONG_EDGE = 1024;
 const REFINER_INPUT_MULTIPLE = 32;
 const TRIMAP_FOREGROUND_THRESHOLD = 128;
 const TRIMAP_DETAIL_THRESHOLD = 32;
+
+function invokeRawWithChannel(
+  command: string,
+  bytes: Uint8Array,
+  headers: Record<string, string>
+): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const responseChannel = new Channel<ArrayBuffer>(resolve);
+    void invoke(command, bytes, {
+      headers: {
+        ...headers,
+        "x-cutout-response-channel": responseChannel.toJSON()
+      }
+    }).catch(reject);
+  });
+}
 
 function abortError() {
   return new DOMException("抠图已取消。", "AbortError");
@@ -443,8 +459,8 @@ export async function segmentBirefnetBox(
   try {
     response = await invokeWithCancellation(
       () =>
-        invoke<ArrayBuffer>("cutout_birefnet_segment", bytes, {
-          headers: { "x-cutout-segmenter-id": descriptor.id }
+        invokeRawWithChannel("cutout_birefnet_segment", bytes, {
+          "x-cutout-segmenter-id": descriptor.id
         }),
       signal
     );
@@ -764,12 +780,10 @@ export async function refineCutoutMask(
   try {
     response = await invokeWithCancellation(
       () =>
-        invoke<ArrayBuffer>("cutout_refine", bytes, {
-          headers: {
-            "x-cutout-refiner-id": descriptor.id,
-            "x-cutout-refiner-width": String(prepared.inputWidth),
-            "x-cutout-refiner-height": String(prepared.inputHeight)
-          }
+        invokeRawWithChannel("cutout_refine", bytes, {
+          "x-cutout-refiner-id": descriptor.id,
+          "x-cutout-refiner-width": String(prepared.inputWidth),
+          "x-cutout-refiner-height": String(prepared.inputHeight)
         }),
       signal
     );

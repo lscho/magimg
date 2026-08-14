@@ -7,7 +7,6 @@ import type {
   CutoutSelectionBox
 } from "@/types";
 import {
-  CUTOUT_MODEL,
   BIRENET_MODEL,
   downloadModel,
   getModelStatus,
@@ -27,8 +26,6 @@ import {
 } from "@/services/cutoutRepairModelManager";
 import {
   cancelInferenceRun,
-  decodeCutoutCandidates,
-  encodeCutoutImage,
   refineCutoutMask,
   releaseInferenceSession,
   segmentBirefnetBox
@@ -48,12 +45,6 @@ import {
 } from "@/services/cutoutBackgroundRepair";
 import { maskArea, unionMasks } from "@/services/cutoutLayering";
 import {
-  chooseAutoLayerElementMaskCandidate,
-  createCandidateConsensusAlpha,
-  expandAutoLayerSegmentationBox,
-  restoreRefinedAlphaFromCandidateSupport
-} from "@/services/cutoutMaskCandidate";
-import {
   cloneCutoutSelections,
   resolveAutoLayerHierarchy,
   selectionChildren
@@ -61,8 +52,6 @@ import {
 import { constrainAlphaToSelection } from "@/services/cutoutSelectionShape";
 import {
   applyOpaquePanelPrior,
-  constrainAlphaToPanelOuter,
-  createCompoundPanelGuidance,
   createCompoundPanelPrior
 } from "@/services/cutoutCompoundPanel";
 import {
@@ -173,16 +162,22 @@ export interface AutoLayerCreationOptions {
 
 export interface AutoLayerElementDiagnostic {
   selection: CutoutSelection;
-  candidateScores: number[];
-  candidateAlphas: Uint8Array[];
-  selectedCandidateIndex: number;
+  segmenter: "birefnet";
   coarseAlpha: Uint8Array;
   refinedAlpha: Uint8Array;
+}
+
+export interface AutoLayerTextMaskDiagnostic {
+  selectionId: string;
+  lineId: string;
+  box: CutoutSelectionBox;
+  alpha: Uint8Array;
 }
 
 export interface AutoLayerDiagnostics {
   selections: CutoutSelection[];
   elements: AutoLayerElementDiagnostic[];
+  textRepairMasks: AutoLayerTextMaskDiagnostic[];
   repairRegions: AutoLayerRepairRegion[];
   backgroundMask: Uint8Array;
   backgroundBoxes: CutoutSelectionBox[];
@@ -196,6 +191,49 @@ function abortError() {
 
 function hasMask(mask: Uint8Array) {
   return maskArea(mask) > 0;
+}
+
+function compactTextRepairMask(
+  selectionId: string,
+  lineId: string,
+  mask: Uint8Array,
+  width: number,
+  height: number
+): AutoLayerTextMaskDiagnostic {
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+  for (let pixel = 0; pixel < mask.length; pixel += 1) {
+    if (!mask[pixel]) continue;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    left = Math.min(left, x);
+    top = Math.min(top, y);
+    right = Math.max(right, x);
+    bottom = Math.max(bottom, y);
+  }
+  if (right < left || bottom < top) {
+    return {
+      selectionId,
+      lineId,
+      box: { id: lineId, x: 0, y: 0, width: 0, height: 0 },
+      alpha: new Uint8Array()
+    };
+  }
+  const box = {
+    id: lineId,
+    x: left,
+    y: top,
+    width: right - left + 1,
+    height: bottom - top + 1
+  };
+  const alpha = new Uint8Array(box.width * box.height);
+  for (let y = 0; y < box.height; y += 1) {
+    const sourceOffset = (box.y + y) * width + box.x;
+    alpha.set(mask.subarray(sourceOffset, sourceOffset + box.width), y * box.width);
+  }
+  return { selectionId, lineId, box, alpha };
 }
 
 function canvasToPngBlob(canvas: HTMLCanvasElement) {
@@ -276,15 +314,13 @@ function expandedRepairBox(
   };
 }
 
-/**
- * 管理 SAM、ViTMatte 与按需下载的 Big-LaMa。所有选区复用一次 encoder；
- * 矩形与点选轮廓都沿用 SAM -> ViTMatte，背景只在合并移除蒙版后进入修复模型。
- */
-export function useCutoutInference(options?: { segmentationModel?: "sam" | "birefnet" }) {
-  const segmentationModel = options?.segmentationModel ?? "sam";
-  const requiresRepairResource = segmentationModel === "sam";
-  /** /cutout 使用的分割模型描述符（BiRefNet 或 SAM），/auto-layer 固定 SAM。 */
-  const activeSegmenterModel = segmentationModel === "birefnet" ? BIRENET_MODEL : CUTOUT_MODEL;
+interface UseCutoutInferenceOptions {
+  includeRepairResource?: boolean;
+}
+
+/** 管理分割、ViTMatte 精修与可选的 Big-LaMa 背景修复资源。 */
+export function useCutoutInference(options?: UseCutoutInferenceOptions) {
+  const requiresRepairResource = options?.includeRepairResource ?? false;
   const phase = shallowRef<CutoutPhase>("idle");
   const segmenterStatus = shallowRef<CutoutModelStatus>("missing");
   const refinerStatus = shallowRef<CutoutModelStatus>("missing");
@@ -327,7 +363,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
   async function refreshResourceStatus() {
     try {
       const [nextSegmenterStatus, nextRefinerStatus, nextRepairStatus] = await Promise.all([
-        getModelStatus(activeSegmenterModel),
+        getModelStatus(BIRENET_MODEL),
         getRefinerStatus(CUTOUT_REFINER),
         requiresRepairResource ? getRepairModelStatus() : Promise.resolve(repairStatus.value)
       ]);
@@ -390,8 +426,8 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
     if (segmenterStatus.value !== "ready") {
       pendingParts.push({
         id: "segmenter",
-        sizeBytes: activeSegmenterModel.sizeBytes,
-        install: (onProgress, signal) => downloadModel(activeSegmenterModel, onProgress, signal)
+        sizeBytes: BIRENET_MODEL.sizeBytes,
+        install: (onProgress, signal) => downloadModel(BIRENET_MODEL, onProgress, signal)
       });
     }
     if (refinerStatus.value !== "ready") {
@@ -518,6 +554,51 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
     return resolved;
   }
 
+  /**
+   * AI 抠图与自动分层共用的元素 Alpha 链路。任何一端调整粗分割、面板先验、
+   * ViTMatte 精修或选区约束时，另一端会自动获得完全相同的结果。
+   */
+  async function runBirefnetMattingSelection(
+    image: CanvasImageSource,
+    imageWidth: number,
+    imageHeight: number,
+    selection: CutoutSelection,
+    signal: AbortSignal,
+    onRefining?: () => void
+  ) {
+    const segmentedAlpha = await segmentBirefnetBox(
+      BIRENET_MODEL,
+      image,
+      imageWidth,
+      imageHeight,
+      selection,
+      signal
+    );
+    onRefining?.();
+    const panelPrior = createCompoundPanelPrior(
+      image,
+      imageWidth,
+      imageHeight,
+      selection
+    );
+    const coarseAlpha = applyOpaquePanelPrior(segmentedAlpha, panelPrior);
+    const refinedAlpha = constrainAlphaToSelection(
+      applyOpaquePanelPrior(await refineCutoutMask(
+        CUTOUT_REFINER,
+        image,
+        imageWidth,
+        imageHeight,
+        coarseAlpha,
+        selection,
+        signal
+      ), panelPrior),
+      imageWidth,
+      imageHeight,
+      selection
+    );
+    return { coarseAlpha, refinedAlpha, hasPanelPrior: Boolean(panelPrior) };
+  }
+
   async function segmentSelections(
     image: CanvasImageSource,
     imageWidth: number,
@@ -542,7 +623,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
 
     try {
       const [nextSegmenterStatus, nextRefinerStatus] = await Promise.all([
-        getModelStatus(activeSegmenterModel),
+        getModelStatus(BIRENET_MODEL),
         getRefinerStatus(CUTOUT_REFINER)
       ]);
       segmenterStatus.value = nextSegmenterStatus;
@@ -555,44 +636,24 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
       const selections = cloneCutoutSelections(inputSelections);
       const coarseMasks = new Map<string, Uint8Array>();
       const refinedMasks = new Map<string, Uint8Array>();
+      const deterministicPanelIds = new Set<string>();
       for (let index = 0; index < selections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = selections[index];
         progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
-        // BiRefNet 单次前向分割：选区 bbox 外扩上下文后推理，返回全分辨率 alpha。
-        // 多边形只提供更贴合物体的外接框提示，不做硬裁剪，最终 Alpha 由 ViTMatte 决定。
-        const segmentedAlpha = await segmentBirefnetBox(
-          activeSegmenterModel,
+        const segmented = await runBirefnetMattingSelection(
           image,
           imageWidth,
           imageHeight,
           selection,
-          controller.signal
+          controller.signal,
+          () => {
+            progress.value = { current: index + 1, total: selections.length, stage: "refining" };
+          }
         );
-        const panelPrior = createCompoundPanelPrior(
-          image,
-          imageWidth,
-          imageHeight,
-          selection
-        );
-        const mask = applyOpaquePanelPrior(segmentedAlpha, panelPrior);
-        coarseMasks.set(selection.id, mask);
-        progress.value = { current: index + 1, total: selections.length, stage: "refining" };
-        const refinedAlpha = constrainAlphaToSelection(
-          applyOpaquePanelPrior(await refineCutoutMask(
-            CUTOUT_REFINER,
-            image,
-            imageWidth,
-            imageHeight,
-            mask,
-            selection,
-            controller.signal
-          ), panelPrior),
-          imageWidth,
-          imageHeight,
-          selection
-        );
-        refinedMasks.set(selection.id, refinedAlpha);
+        if (segmented.hasPanelPrior) deterministicPanelIds.add(selection.id);
+        coarseMasks.set(selection.id, segmented.coarseAlpha);
+        refinedMasks.set(selection.id, segmented.refinedAlpha);
       }
 
       const resolvedSelections = validateAutomaticRelations(selections, refinedMasks);
@@ -675,7 +736,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
         .map((selection) => repairMasks.get(selection.id))
         .filter((mask): mask is Uint8Array => Boolean(mask));
       if (nonEmptyRepairMasks.length) {
-        await releaseInferenceSession(activeSegmenterModel.id);
+        await releaseInferenceSession(BIRENET_MODEL.id);
       }
       let cloudRepairedSource: CanvasImageSource | null = null;
       if (options.repairMode === "cloud" && nonEmptyRepairMasks.length) {
@@ -736,10 +797,11 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
               selection,
               {
                 signal: controller.signal,
-                forceDiffusion: shouldForceManualDiffusion(
-                  selection,
-                  selectionChildren(resolvedSelections, selection.id).length > 0
-                )
+                forceDiffusion: deterministicPanelIds.has(selection.id) ||
+                  shouldForceManualDiffusion(
+                    selection,
+                    selectionChildren(resolvedSelections, selection.id).length > 0
+                  )
               }
             );
           } else if (cloudRepairedSource) {
@@ -804,7 +866,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
 
     try {
       const [nextSegmenterStatus, nextRefinerStatus, nextRepairStatus] = await Promise.all([
-        getModelStatus(CUTOUT_MODEL),
+        getModelStatus(BIRENET_MODEL),
         getRefinerStatus(CUTOUT_REFINER),
         getRepairModelStatus()
       ]);
@@ -825,77 +887,40 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
       const classifications = new Map<string, { type: string; confidence: number }>();
       const deterministicPanelIds = new Set<string>();
       const elementDiagnostics: AutoLayerElementDiagnostic[] = [];
-      const embedding = elementSelections.length
-        ? await encodeCutoutImage(CUTOUT_MODEL, image, imageWidth, imageHeight, controller.signal)
-        : null;
-
+      options.onDiagnosticStage?.("resources:complete");
       for (let index = 0; index < elementSelections.length; index += 1) {
         if (controller.signal.aborted) throw abortError();
         const selection = elementSelections[index];
+        const diagnosticPrefix = `element:${index + 1}:${selection.id}`;
         progress.value = { current: index + 1, total: elementSelections.length, stage: "segmenting" };
-        // 提示框在选框基础上小幅外扩补充上下文，改善贴边元素的分割；
-        // 素材导出与选区覆盖仍按选框边界，不受提示范围影响。
-        const promptBox = expandAutoLayerSegmentationBox(selection, imageWidth, imageHeight);
-        const candidates = await decodeCutoutCandidates(
-          CUTOUT_MODEL,
-          embedding!,
-          { box: promptBox },
-          controller.signal
-        );
-        const candidate = chooseAutoLayerElementMaskCandidate(candidates, imageWidth, selection);
-        if (!candidate) throw new Error("SAM 2.1 未返回可用的分层遮罩。");
-        const panelGuidance = createCompoundPanelGuidance(image, imageWidth, imageHeight, selection);
-        if (panelGuidance) deterministicPanelIds.add(selection.id);
-        const panelPrior = panelGuidance?.interiorAlpha ?? null;
-        const coarseAlpha = applyOpaquePanelPrior(
-          constrainAlphaToPanelOuter(candidate.alpha, panelGuidance?.outerAlpha ?? null),
-          panelPrior
-        );
-        const candidateSupport = applyOpaquePanelPrior(
-          constrainAlphaToPanelOuter(
-            unionMasks(candidates.map(item => item.alpha)),
-            panelGuidance?.outerAlpha ?? null
-          ),
-          panelPrior
-        );
-        const candidateConsensus = createCandidateConsensusAlpha(candidates.map(item => item.alpha));
-
-        progress.value = { current: index + 1, total: elementSelections.length, stage: "refining" };
-        const refinedAlpha = restoreRefinedAlphaFromCandidateSupport(
-          await refineCutoutMask(
-            CUTOUT_REFINER,
-            image,
-            imageWidth,
-            imageHeight,
-            coarseAlpha,
-            selection,
-            controller.signal
-          ),
-          candidateSupport,
-          candidateConsensus,
+        options.onDiagnosticStage?.(`${diagnosticPrefix}:birefnet:start`);
+        const segmented = await runBirefnetMattingSelection(
+          image,
           imageWidth,
           imageHeight,
-          selection
+          selection,
+          controller.signal,
+          () => {
+            progress.value = { current: index + 1, total: elementSelections.length, stage: "refining" };
+            options.onDiagnosticStage?.(`${diagnosticPrefix}:birefnet:complete`);
+            options.onDiagnosticStage?.(`${diagnosticPrefix}:vitmatte:start`);
+          }
         );
-        const panelRefinedAlpha = applyOpaquePanelPrior(
-          constrainAlphaToPanelOuter(refinedAlpha, panelGuidance?.outerAlpha ?? null),
-          panelPrior
-        );
-        refinedMasks.set(selection.id, panelRefinedAlpha);
-        coarseMasks.set(selection.id, coarseAlpha);
+        options.onDiagnosticStage?.(`${diagnosticPrefix}:vitmatte:complete`);
+        if (segmented.hasPanelPrior) deterministicPanelIds.add(selection.id);
+        refinedMasks.set(selection.id, segmented.refinedAlpha);
+        coarseMasks.set(selection.id, segmented.coarseAlpha);
         if (options.collectDiagnostics) {
           elementDiagnostics.push({
             selection: cloneCutoutSelections([selection])[0],
-            candidateScores: candidates.map(item => item.score),
-            candidateAlphas: candidates.map(item => item.alpha),
-            selectedCandidateIndex: Math.max(0, candidates.indexOf(candidate)),
-            coarseAlpha,
-            refinedAlpha: panelRefinedAlpha
+            segmenter: "birefnet",
+            coarseAlpha: segmented.coarseAlpha,
+            refinedAlpha: segmented.refinedAlpha
           });
         }
       }
 
-      await releaseInferenceSession(CUTOUT_MODEL.id);
+      await releaseInferenceSession(BIRENET_MODEL.id);
       const selections = resolveAutoLayerHierarchy(
         requestedSelections,
         validateAutomaticRelations(elementSelections, refinedMasks)
@@ -955,6 +980,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
       const { textLines, textGlyphMasks } = textRecognition;
 
       const repairRegions: AutoLayerRepairRegion[] = [];
+      const textRepairMasks: AutoLayerTextMaskDiagnostic[] = [];
       const highRecallMasks = new Map<string, Uint8Array>();
       for (const selection of resolvedElementSelections) {
         const refinedAlpha = refinedMasks.get(selection.id);
@@ -970,14 +996,28 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
       }
       const textMasksForSelection = (selection: CutoutSelection) => {
         const recognizedLines = textLines.filter(line => line.sourceSelectionId === selection.id);
-        return recognizedLines.length
-          ? recognizedLines.map(line => textLayerMask(
-            line,
-            textGlyphMasks.get(line.id) ?? new Uint8Array(),
-            imageWidth,
-            imageHeight
-          ))
-          : [rectangleMask(selection, imageWidth, imageHeight)];
+        const masks = recognizedLines.length
+          ? recognizedLines.map(line => ({
+            lineId: line.id,
+            mask: textLayerMask(
+              line,
+              textGlyphMasks.get(line.id) ?? new Uint8Array(),
+              imageWidth,
+              imageHeight
+            )
+          }))
+          : [{
+            lineId: selection.id,
+            mask: rectangleMask(selection, imageWidth, imageHeight)
+          }];
+        textRepairMasks.push(...masks.map(item => compactTextRepairMask(
+          selection.id,
+          item.lineId,
+          item.mask,
+          imageWidth,
+          imageHeight
+        )));
+        return masks.map(item => item.mask);
       };
 
       for (let index = 0; index < resolvedElementSelections.length; index += 1) {
@@ -1149,6 +1189,7 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
           diagnostics: {
             selections: cloneCutoutSelections(selections),
             elements: elementDiagnostics,
+            textRepairMasks,
             repairRegions,
             backgroundMask,
             backgroundBoxes,
@@ -1166,7 +1207,10 @@ export function useCutoutInference(options?: { segmentationModel?: "sam" | "bire
             : "自动分层失败，请稍后重试。";
       return null;
     } finally {
-      await releaseAutoLayerRecognition().catch(() => undefined);
+      await Promise.all([
+        releaseAutoLayerRecognition().catch(() => undefined),
+        releaseInferenceSession().catch(() => undefined)
+      ]);
       phase.value = "idle";
       progress.value = null;
       abortController.value = null;

@@ -26,7 +26,6 @@ export interface AutoLayerRegressionCase {
     minimumBoundsWidthRatio?: number;
     minimumBoundsHeightRatio?: number;
   }>;
-  candidateSelections: Array<{ selectionId: string; selectedCandidateIndex: number }>;
   expectedTexts: Array<{
     sourceSelectionId: string;
     text: string;
@@ -96,10 +95,12 @@ interface LocalQualityOptions {
   diagnostics: AutoLayerDiagnostics;
   imageWidth: number;
   imageHeight: number;
+  onStatus?: (message: string) => void;
 }
 
 interface CloudQualityOptions {
   caseValue: AutoLayerRegressionCase;
+  sourceBlob: Blob;
   localDocument: AutoLayerDocument;
   completeDocument: AutoLayerDocument;
   diagnostics: AutoLayerDiagnostics;
@@ -154,7 +155,7 @@ export function parseAutoLayerRegressionCase(value: unknown): AutoLayerRegressio
     !finiteNumber(input.textCount) || !finiteNumber(input.minimumMaterialSolidRatio) ||
     !finiteNumber(input.minimumMaterialBoundsRatio) ||
     !validMaterialQualityOverrides(input.materialQualityOverrides) ||
-    !Array.isArray(input.candidateSelections) || !Array.isArray(input.expectedTexts) ||
+    !Array.isArray(input.expectedTexts) ||
     !stringArray(input.repairLayerIds) || !stringArray(input.topLevelSelectionIds) ||
     !cloud || !finiteNumber(cloud.minimumMaskedMeanDifference) ||
     !finiteNumber(cloud.minimumForegroundMeanDifference) ||
@@ -214,6 +215,29 @@ function maskCoverage(source: Uint8Array, target: Uint8Array, threshold = 32) {
     if (source[pixel] < threshold) continue;
     expected += 1;
     if (target[pixel] > 0) covered += 1;
+  }
+  return { expected, covered, ratio: covered / Math.max(1, expected) };
+}
+
+function compactMaskCoverage(
+  source: AutoLayerDiagnostics["textRepairMasks"][number],
+  target: Uint8Array,
+  imageWidth: number,
+  imageHeight: number,
+  threshold = 32
+) {
+  let expected = 0;
+  let covered = 0;
+  for (let y = 0; y < source.box.height; y += 1) {
+    const targetY = source.box.y + y;
+    if (targetY < 0 || targetY >= imageHeight) continue;
+    for (let x = 0; x < source.box.width; x += 1) {
+      if (source.alpha[y * source.box.width + x] < threshold) continue;
+      const targetX = source.box.x + x;
+      if (targetX < 0 || targetX >= imageWidth) continue;
+      expected += 1;
+      if (target[targetY * imageWidth + targetX] > 0) covered += 1;
+    }
   }
   return { expected, covered, ratio: covered / Math.max(1, expected) };
 }
@@ -439,6 +463,39 @@ async function compareTextForeground(
   };
 }
 
+function compareCompactTextForeground(
+  source: Uint8ClampedArray,
+  target: Uint8ClampedArray,
+  targetBox: CutoutSelectionBox,
+  targetWidth: number,
+  targetHeight: number,
+  mask: AutoLayerDiagnostics["textRepairMasks"][number]
+) {
+  const targetLeft = Math.round(targetBox.x);
+  const targetTop = Math.round(targetBox.y);
+  let pixels = 0;
+  let differenceTotal = 0;
+  let changed = 0;
+  for (let y = 0; y < mask.box.height; y += 1) {
+    const targetY = mask.box.y + y - targetTop;
+    if (targetY < 0 || targetY >= targetHeight) continue;
+    for (let x = 0; x < mask.box.width; x += 1) {
+      if (mask.alpha[y * mask.box.width + x] < 128) continue;
+      const targetX = mask.box.x + x - targetLeft;
+      if (targetX < 0 || targetX >= targetWidth) continue;
+      const difference = pixelDifference(source, target, targetY * targetWidth + targetX);
+      pixels += 1;
+      differenceTotal += difference;
+      if (difference >= 12) changed += 1;
+    }
+  }
+  return {
+    pixels,
+    meanDifference: differenceTotal / Math.max(1, pixels),
+    changedRatio: changed / Math.max(1, pixels)
+  };
+}
+
 async function compareLayerForeground(
   parent: { blob: Blob; width: number; height: number; sourceBox: CutoutSelectionBox },
   foreground: { blob: Blob; width: number; height: number; sourceBox: CutoutSelectionBox }
@@ -478,31 +535,6 @@ async function compareLayerForeground(
   };
 }
 
-async function textAlphaCoverage(
-  line: AutoLayerTextItem,
-  mask: Uint8Array,
-  imageWidth: number,
-  imageHeight: number
-) {
-  const pixels = await decodeBlobRgba(line.blob, line.width, line.height);
-  const left = Math.round(line.sourceBox.x);
-  const top = Math.round(line.sourceBox.y);
-  let expected = 0;
-  let covered = 0;
-  for (let y = 0; y < line.height; y += 1) {
-    const targetY = top + y;
-    if (targetY < 0 || targetY >= imageHeight) continue;
-    for (let x = 0; x < line.width; x += 1) {
-      if (pixels[(y * line.width + x) * 4 + 3] < 32) continue;
-      const targetX = left + x;
-      if (targetX < 0 || targetX >= imageWidth) continue;
-      expected += 1;
-      if (mask[targetY * imageWidth + targetX] > 0) covered += 1;
-    }
-  }
-  return { expected, covered, ratio: covered / Math.max(1, expected) };
-}
-
 async function validateRepairMasks(options: LocalQualityOptions, checks: AutoLayerQualityCheck[]) {
   const { diagnostics, imageWidth, imageHeight } = options;
   const diagnosticBySelection = new Map(diagnostics.elements.map(item => [item.selection.id, item]));
@@ -539,9 +571,9 @@ async function validateRepairMasks(options: LocalQualityOptions, checks: AutoLay
     const directChildren = diagnostics.selections.filter(selection => selection.parentId === region.layerId);
     for (const child of directChildren) {
       if (child.layerKind === "text") {
-        const lines = options.output.texts.filter(line => line.sourceSelectionId === child.id);
-        const coverages = lines.length
-          ? await Promise.all(lines.map(line => textAlphaCoverage(line, region.mask, imageWidth, imageHeight)))
+        const masks = diagnostics.textRepairMasks.filter(item => item.selectionId === child.id);
+        const coverages = masks.length
+          ? masks.map(item => compactMaskCoverage(item, region.mask, imageWidth, imageHeight))
           : [rectangleCoverage(region.mask, imageWidth, imageHeight, child)];
         const ratio = Math.min(...coverages.map(item => item.ratio));
         addCheck(
@@ -644,9 +676,18 @@ function validateBackgroundMask(options: LocalQualityOptions, checks: AutoLayerQ
   const diagnosticBySelection = new Map(diagnostics.elements.map(item => [item.selection.id, item]));
   for (const selection of topLevel) {
     if (selection.layerKind === "text") {
-      const coverage = rectangleCoverage(diagnostics.backgroundMask, options.imageWidth, options.imageHeight, selection);
-      addCheck(checks, `background-covers:${selection.id}`, coverage.ratio >= 0.98,
-        `顶层文字覆盖率 ${(coverage.ratio * 100).toFixed(2)}%。`, ">= 98%", coverage.ratio);
+      const masks = diagnostics.textRepairMasks.filter(item => item.selectionId === selection.id);
+      const coverages = masks.length
+        ? masks.map(item => compactMaskCoverage(
+          item,
+          diagnostics.backgroundMask,
+          options.imageWidth,
+          options.imageHeight
+        ))
+        : [rectangleCoverage(diagnostics.backgroundMask, options.imageWidth, options.imageHeight, selection)];
+      const ratio = Math.min(...coverages.map(item => item.ratio));
+      addCheck(checks, `background-covers:${selection.id}`, ratio >= 0.98,
+        `顶层文字修复蒙版覆盖率 ${(ratio * 100).toFixed(2)}%。`, ">= 98%", ratio);
       continue;
     }
     const diagnostic = diagnosticBySelection.get(selection.id);
@@ -682,7 +723,9 @@ export async function evaluateLocalAutoLayerQuality(
   ), "每个元素选区恰好生成一个素材。", sorted(elementSelectionIds),
   sorted(output.materials.map(material => material.sourceSelectionId ?? material.id)));
 
-  const materialAlpha = await Promise.all(output.materials.map(materialAlphaStats));
+  options.onStatus?.("质量门禁：检查透明素材 Alpha");
+  const materialAlpha = [] as AutoLayerLocalQualityReport["materialAlpha"];
+  for (const material of output.materials) materialAlpha.push(await materialAlphaStats(material));
   const materialQualityOverrides = new Map(
     (caseValue.materialQualityOverrides ?? []).map(override => [override.selectionId, override])
   );
@@ -703,14 +746,6 @@ export async function evaluateLocalAutoLayerQuality(
         width: stats.boundsWidthRatio,
         height: stats.boundsHeightRatio
       });
-  }
-
-  const elementDiagnostics = new Map(diagnostics.elements.map(item => [item.selection.id, item]));
-  for (const assertion of caseValue.candidateSelections) {
-    const actual = elementDiagnostics.get(assertion.selectionId)?.selectedCandidateIndex;
-    addCheck(checks, `candidate:${assertion.selectionId}`,
-      actual === assertion.selectedCandidateIndex,
-      `关键素材使用候选 ${actual ?? "缺失"}。`, assertion.selectedCandidateIndex, actual);
   }
 
   for (const expected of caseValue.expectedTexts) {
@@ -751,16 +786,20 @@ export async function evaluateLocalAutoLayerQuality(
       "纯色/渐变或低纹理背景本地提取，不创建云端任务。", "local-extraction", extracted);
   }
 
+  options.onStatus?.("质量门禁：检查父层修复蒙版");
   await validateRepairMasks(options, checks);
+  options.onStatus?.("质量门禁：检查父素材清除结果");
   await validateLocalParentRepairs(options, checks);
+  options.onStatus?.("质量门禁：检查整页背景蒙版");
   validateBackgroundMask(options, checks);
+  options.onStatus?.("质量门禁：汇总本地结果");
   return { stage: "local", passed: checks.every(check => check.passed), checks, materialAlpha };
 }
 
 export async function evaluateCloudAutoLayerQuality(
   options: CloudQualityOptions
 ): Promise<AutoLayerCloudQualityReport> {
-  const { caseValue, localDocument, completeDocument, diagnostics, imageWidth, imageHeight } = options;
+  const { caseValue, sourceBlob, localDocument, completeDocument, diagnostics, imageWidth, imageHeight } = options;
   const checks: AutoLayerQualityCheck[] = [];
   const targets: AutoLayerCloudQualityReport["targets"] = [];
   const foregroundRemovals: AutoLayerCloudQualityReport["foregroundRemovals"] = [];
@@ -788,7 +827,7 @@ export async function evaluateCloudAutoLayerQuality(
   }> = [{
     id: "background",
     box: { id: "background", x: 0, y: 0, width: imageWidth, height: imageHeight },
-    sourceBlob: localDocument.backgroundBlob,
+    sourceBlob,
     targetBlob: completeDocument.backgroundBlob,
     mask: boxesMask(diagnostics.backgroundBoxes, imageWidth, imageHeight),
     foregrounds: diagnostics.selections.filter(selection => !selection.parentId)
@@ -816,15 +855,27 @@ export async function evaluateCloudAutoLayerQuality(
 
     for (const foreground of targetInput.foregrounds) {
       if (foreground.layerKind === "text") {
-        for (const line of localTexts.filter(layer => layer.sourceSelectionId === foreground.id)) {
-          const metrics = await compareTextForeground(
-            sourcePixels,
-            targetPixels,
-            targetInput.box,
-            width,
-            height,
-            line
-          );
+        const masks = diagnostics.textRepairMasks.filter(mask => mask.selectionId === foreground.id);
+        const lines = localTexts.filter(layer => layer.sourceSelectionId === foreground.id);
+        for (const line of lines) {
+          const mask = masks.find(item => item.lineId === line.id);
+          const metrics = mask
+            ? compareCompactTextForeground(
+              sourcePixels,
+              targetPixels,
+              targetInput.box,
+              width,
+              height,
+              mask
+            )
+            : await compareTextForeground(
+              sourcePixels,
+              targetPixels,
+              targetInput.box,
+              width,
+              height,
+              line
+            );
           foregroundRemovals.push({
             targetId: targetInput.id,
             foregroundId: line.id,

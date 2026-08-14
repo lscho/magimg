@@ -20,16 +20,31 @@ import {
   type CreateCutoutHistoryInput
 } from "@/services/cutoutHistoryStorage";
 import { localDb } from "@/services/localStorage";
+import {
+  extensionForMime,
+  fallbackCapabilities,
+  generationErrorDetails,
+  isGenerationInProgress,
+  isPersistedSession,
+  isSupportedQuality,
+  mergeServerImage,
+  parseSize,
+  taskParams,
+  taskToRecord,
+  toClientMode,
+  toCreditTransaction,
+  toGenerationMode,
+  toSession,
+  toTaskStatus,
+  type GenerationErrorKind
+} from "./appMappers";
 import type {
   AppSettings,
   AutoLayerTask,
   BackgroundRepairTask,
-  ClientAuthResponse,
-  ClientGenerationMode,
   ClientUser,
   CreditBalance,
   CreditTransaction,
-  CreditTransactionKind,
   CreateBackgroundRepairInput,
   CreateAutoLayerTaskInput,
   CutoutHistoryAsset,
@@ -37,224 +52,17 @@ import type {
   GenerationMode,
   GenerationRecord,
   GenerationSettings,
-  GenerationStatus,
   GenerationTask,
-  GeneratedImage,
   ImageParams,
   MattingChargeResult,
   MattingMode,
-  PointLedgerEntry,
   PromptTemplate,
   SelectedImageFile,
-  SupportedQuality,
   TemplateCategory,
   UserSession
 } from "@/types";
 
-const fallbackCapabilities: GenerationSettings = {
-  textToImageCost: 10,
-  imageToImageCost: 15,
-  mattingCost: 5,
-  autoLayerEnabled: false,
-  autoLayerCost: 20,
-  maxAttempts: 3,
-  uploadMaxBytes: 5 * 1024 * 1024,
-  supportedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
-  supportedQualities: ["auto", "low", "medium", "high"],
-  sizeRules: {
-    edgeStep: 16,
-    maxEdge: 3840,
-    maxAspectRatio: 3,
-    minPixels: 655360,
-    maxPixels: 8294400
-  }
-};
-
-const pointKindMap: Record<PointLedgerEntry["type"], CreditTransactionKind> = {
-  cardRedeem: "recharge",
-  taskCharge: "generation",
-  taskRefund: "refund",
-  mattingCharge: "generation",
-  mattingRefund: "refund",
-  adminAdjustment: "adjustment"
-};
-
-const pointDescriptionMap: Record<PointLedgerEntry["type"], string> = {
-  cardRedeem: "卡密充值",
-  taskCharge: "图片生成",
-  taskRefund: "生成退款",
-  mattingCharge: "AI 抠图",
-  mattingRefund: "抠图退款",
-  adminAdjustment: "余额调整"
-};
-
-function toClientMode(mode: GenerationMode): ClientGenerationMode {
-  return mode === "image-to-image" ? "imageToImage" : "textToImage";
-}
-
-function toGenerationMode(mode: ClientGenerationMode): GenerationMode {
-  return mode === "imageToImage" ? "image-to-image" : "text-to-image";
-}
-
-function toGenerationStatus(status: GenerationTask["status"]): GenerationStatus {
-  return status === "pending" ? "queued" : status;
-}
-
-function isGenerationInProgress(record: GenerationRecord | null) {
-  return record?.status === "queued" || record?.status === "processing";
-}
-
-function toTaskStatus(status?: GenerationStatus): GenerationTask["status"] | null {
-  if (!status) return null;
-  return status === "queued" ? "pending" : status;
-}
-
-function toSession(response: ClientAuthResponse): UserSession {
-  return {
-    accessToken: response.token,
-    expiresAt: response.expiresAt,
-    user: {
-      id: response.user.id,
-      nickname: response.user.phone || response.user.username,
-      phone: response.user.phone,
-      email: response.user.email
-    }
-  };
-}
-
-function isPersistedSession(value: unknown): value is UserSession {
-  if (!value || typeof value !== "object") return false;
-
-  const candidate = value as Partial<UserSession>;
-  if (typeof candidate.accessToken !== "string" || !candidate.accessToken.trim()) return false;
-  if (!candidate.user || typeof candidate.user !== "object") return false;
-  if (typeof candidate.user.id !== "string" || !candidate.user.id) return false;
-  if (typeof candidate.user.nickname !== "string") return false;
-
-  if (candidate.expiresAt !== undefined) {
-    if (typeof candidate.expiresAt !== "string") return false;
-    const expiresAt = Date.parse(candidate.expiresAt);
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
-  }
-
-  return true;
-}
-
-function toCreditTransaction(entry: PointLedgerEntry): CreditTransaction {
-  return {
-    id: entry.id,
-    kind: pointKindMap[entry.type],
-    amount: entry.amount,
-    balanceAfter: entry.balanceAfter,
-    description: entry.note || pointDescriptionMap[entry.type],
-    createdAt: entry.createdAt,
-    referenceId: entry.referenceId
-  };
-}
-
-function taskParams(task: GenerationTask): ImageParams {
-  return {
-    ...defaultParams,
-    prompt: task.prompt,
-    size: `${task.width}x${task.height}`,
-    quality: task.quality,
-    templateId: task.templateId
-  };
-}
-
-function taskToRecord(task: GenerationTask, balanceAfter: number): GenerationRecord {
-  const input = task.inputAsset;
-  const output = task.outputAsset;
-  return {
-    id: `server_${task.id}`,
-    generationId: task.id,
-    mode: toGenerationMode(task.mode),
-    params: taskParams(task),
-    inputImage: input
-      ? {
-          id: input.id,
-          remoteUrl: resolveApiAssetUrl(input.url),
-          width: task.width,
-          height: task.height,
-          mimeType: input.mimeType
-        }
-      : undefined,
-    images: output
-      ? [
-          {
-            id: output.id,
-            remoteUrl: resolveApiAssetUrl(output.url),
-            width: task.width,
-            height: task.height,
-            mimeType: output.mimeType
-          }
-        ]
-      : [],
-    status: toGenerationStatus(task.status),
-    costCredits: task.pointsCost,
-    balanceAfter,
-    createdAt: task.createdAt,
-    startedAt: task.startedAt,
-    finishedAt: task.finishedAt,
-    errorMessage: task.errorMessage
-  };
-}
-
-function extensionForMime(mimeType?: string) {
-  if (mimeType === "image/jpeg") return "jpg";
-  if (mimeType === "image/webp") return "webp";
-  return "png";
-}
-
-// 以服务端图片为准，按 asset id 合并本地的 localPath（仅同一资源才保留下载副本路径）。
-function mergeServerImage(serverImage: GeneratedImage, localImages: GeneratedImage[]): GeneratedImage {
-  const localMatch = localImages.find((local) => local.id === serverImage.id);
-  return localMatch?.localPath ? { ...serverImage, localPath: localMatch.localPath } : serverImage;
-}
-
-function parseSize(size: ImageParams["size"]) {
-  if (size === "auto") return {};
-  const match = /^(\d+)x(\d+)$/u.exec(size);
-  if (!match) return {};
-  return { width: Number(match[1]), height: Number(match[2]) };
-}
-
-function isSupportedQuality(quality: ImageParams["quality"]): quality is SupportedQuality {
-  return quality === "auto" || quality === "low" || quality === "medium" || quality === "high";
-}
-
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-
-type GenerationErrorKind = "none" | "insufficientCredits" | "authentication" | "general";
-
-function generationErrorDetails(exception: unknown): {
-  kind: Exclude<GenerationErrorKind, "none">;
-  message: string;
-} {
-  const message = exception instanceof Error ? exception.message.trim() : "";
-  const isInsufficientCredits =
-    /(?:积分|余额).*(?:不足|不够)|(?:不足|不够).*(?:积分|余额)/u.test(message);
-
-  if ((exception instanceof ApiError && exception.statusCode === 409 && isInsufficientCredits) || isInsufficientCredits) {
-    return {
-      kind: "insufficientCredits",
-      message: "积分不足，请充值后继续生成。"
-    };
-  }
-  if (
-    (exception instanceof ApiError && exception.statusCode === 401) ||
-    /请先登录|登录已过期/u.test(message)
-  ) {
-    return {
-      kind: "authentication",
-      message: message || "请先登录或重新登录后再生成。"
-    };
-  }
-  return {
-    kind: "general",
-    message: message || "生成失败，请稍后重试。"
-  };
-}
 
 export const useAppStore = defineStore("app", () => {
   const initialized = shallowRef(false);

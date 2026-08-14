@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import qualityCase from "../../tests/auto-layer.case.json";
+import test1QualityCase from "../../tests/auto-layer-test1.case.json";
 import { parseAutoLayerRegressionCase } from "@/services/autoLayerRegressionQuality";
 
 describe("automatic-layer regression quality case", () => {
@@ -27,6 +28,22 @@ describe("automatic-layer regression quality case", () => {
       "修行奖励",
       "(0/3)"
     ]);
+  });
+
+  it("accepts the test1 shared matting-chain regression case", () => {
+    const parsed = parseAutoLayerRegressionCase(test1QualityCase);
+    expect(parsed.selectionCount).toBe(11);
+    expect(parsed.materialCount).toBe(6);
+    expect(parsed.textCount).toBe(5);
+    expect(parsed.expectedTexts.map(item => item.text)).toEqual([
+      "进入下一关",
+      "查看排行榜",
+      "返回主页面",
+      "01:44",
+      "通关时间"
+    ]);
+    expect(parsed.repairLayerIds).toHaveLength(3);
+    expect(parsed.topLevelSelectionIds).toHaveLength(8);
   });
 
   it("rejects an incomplete quality case", () => {

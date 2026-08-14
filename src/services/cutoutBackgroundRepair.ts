@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { CUTOUT_REPAIR_MODEL } from "@/services/cutoutRepairModelManager";
 import {
   compositeLocalRepairRgba,
@@ -6,6 +6,7 @@ import {
 } from "@/services/cutoutRepairCompositing";
 import {
   buildCutoutRepairLayoutFromBounds,
+  buildCutoutRepairModelMapping,
   type CutoutRepairInputRect,
   type CutoutRepairLayout
 } from "@/services/cutoutRepairLayout";
@@ -27,6 +28,18 @@ import {
 import type { CutoutSelectionBox } from "@/types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function invokeRepairWithChannel(bytes: Uint8Array): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const responseChannel = new Channel<ArrayBuffer>(resolve);
+    void invoke("cutout_repair", bytes, {
+      headers: {
+        "x-cutout-repair-id": CUTOUT_REPAIR_MODEL.id,
+        "x-cutout-response-channel": responseChannel.toJSON()
+      }
+    }).catch(reject);
+  });
+}
 
 function abortError() {
   return new DOMException("背景修复已取消。", "AbortError");
@@ -148,12 +161,14 @@ function prepareRepairContext(
 
 /**
  * 用修复上下文中的 rect 区域构建 512×512 模型输入并调用 Big-LaMa，
- * 返回模型输出画布。rect 为修复上下文坐标，用于单次整框与分块两种路径。
+ * 返回模型输出画布。sourceRect 使用修复上下文坐标，targetRect 使用 512x512
+ * 模型输入坐标；单次整框需要等比居中，分块路径则一一映射。
  */
 async function runRepairModel(
   repairContext: LocalRepairContext,
   bounds: CutoutRepairLayout["bounds"],
-  rect: CutoutRepairInputRect,
+  sourceRect: CutoutRepairInputRect,
+  targetRect: CutoutRepairInputRect,
   signal?: AbortSignal
 ): Promise<HTMLCanvasElement> {
   const { inputWidth, inputHeight } = CUTOUT_REPAIR_MODEL;
@@ -168,14 +183,14 @@ async function runRepairModel(
   imageContext.fillRect(0, 0, inputWidth, inputHeight);
   imageContext.drawImage(
     repairContext.canvas,
-    rect.x,
-    rect.y,
-    rect.width,
-    rect.height,
-    0,
-    0,
-    inputWidth,
-    inputHeight
+    sourceRect.x,
+    sourceRect.y,
+    sourceRect.width,
+    sourceRect.height,
+    targetRect.x,
+    targetRect.y,
+    targetRect.width,
+    targetRect.height
   );
 
   const scaledMaskCanvas = document.createElement("canvas");
@@ -185,9 +200,11 @@ async function runRepairModel(
   if (!maskContext) throw new Error("当前设备无法准备背景修复蒙版。");
   maskContext.imageSmoothingEnabled = false;
   maskContext.drawImage(
-    maskCropCanvas(repairContext.repairMask, bounds.width, bounds.height, rect),
-    0,
-    0
+    maskCropCanvas(repairContext.repairMask, bounds.width, bounds.height, sourceRect),
+    targetRect.x,
+    targetRect.y,
+    targetRect.width,
+    targetRect.height
   );
 
   const rgba = imageContext.getImageData(0, 0, inputWidth, inputHeight).data;
@@ -206,9 +223,7 @@ async function runRepairModel(
   signal?.addEventListener("abort", handleAbort, { once: true });
   let response: unknown;
   try {
-    response = await invoke<ArrayBuffer>("cutout_repair", bytes, {
-      headers: { "x-cutout-repair-id": CUTOUT_REPAIR_MODEL.id }
-    });
+    response = await invokeRepairWithChannel(bytes);
   } catch (exception) {
     if (signal?.aborted) throw abortError();
     throw normalizeNativeError(exception);
@@ -229,8 +244,15 @@ async function repairBackgroundSingle(
   layout: CutoutRepairLayout,
   signal?: AbortSignal
 ): Promise<Uint8ClampedArray> {
-  const { bounds, inputRect } = layout;
-  const repaired = await runRepairModel(repairContext, bounds, inputRect, signal);
+  const { bounds } = layout;
+  const mapping = buildCutoutRepairModelMapping(layout);
+  const repaired = await runRepairModel(
+    repairContext,
+    bounds,
+    mapping.sourceRect,
+    mapping.targetRect,
+    signal
+  );
   const repairedCrop = document.createElement("canvas");
   repairedCrop.width = bounds.width;
   repairedCrop.height = bounds.height;
@@ -240,10 +262,10 @@ async function repairBackgroundSingle(
   repairedContext.imageSmoothingQuality = "high";
   repairedContext.drawImage(
     repaired,
-    inputRect.x,
-    inputRect.y,
-    inputRect.width,
-    inputRect.height,
+    mapping.targetRect.x,
+    mapping.targetRect.y,
+    mapping.targetRect.width,
+    mapping.targetRect.height,
     0,
     0,
     bounds.width,
@@ -296,6 +318,7 @@ async function repairBackgroundTiled(
       repairContext,
       bounds,
       { x: tile.x, y: tile.y, width: inputWidth, height: inputHeight },
+      { x: 0, y: 0, width: inputWidth, height: inputHeight },
       signal
     );
     const repairedContext = repaired.getContext("2d", { willReadFrequently: true });

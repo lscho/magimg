@@ -3,7 +3,10 @@ import {
   compositeLocalRepairRgba,
   compositeMaskedRgba
 } from "@/services/cutoutRepairCompositing";
-import { buildCutoutRepairLayout } from "@/services/cutoutRepairLayout";
+import {
+  buildCutoutRepairLayout,
+  buildCutoutRepairModelMapping
+} from "@/services/cutoutRepairLayout";
 import {
   analyzeMaterialContext,
   alphaContentBounds,
@@ -105,6 +108,10 @@ describe("background repair compositing", () => {
     expect(layout.bounds).toEqual({ x: 12, y: 20, width: 240, height: 80 });
     expect(layout.inputRect).toEqual({ x: 0, y: 170, width: 512, height: 171 });
     expect(layout.inputRect.width / layout.inputRect.height).toBeCloseTo(3, 1);
+    expect(buildCutoutRepairModelMapping(layout)).toEqual({
+      sourceRect: { x: 0, y: 0, width: 240, height: 80 },
+      targetRect: { x: 0, y: 170, width: 512, height: 171 }
+    });
   });
 
   it("tightens model context to the refined parent alpha", () => {

@@ -24,7 +24,8 @@ import {
   readAutoLayerSelectionRecords,
   restoreAutoLayerSelectionRecord
 } from "@/services/autoLayerSelectionHistory";
-import type { CutoutSelectionBox } from "@/types";
+import { apiClient } from "@/services/apiClient";
+import type { AutoLayerTask, CutoutSelectionBox } from "@/types";
 
 type CutoutInference = ReturnType<typeof useCutoutInference>;
 type AppStore = ReturnType<typeof useAppStore>;
@@ -35,6 +36,7 @@ export interface AutoLayerRegressionOptions {
   runId: string;
   qualityCase: AutoLayerRegressionCase;
   cloud: boolean;
+  cloudTaskId?: string;
   forceCloudInput: boolean;
   skipQualityGate?: boolean;
   inference: CutoutInference;
@@ -127,7 +129,8 @@ function maskStats(mask: Uint8Array) {
   let nonZero = 0;
   let solid = 0;
   let total = 0;
-  for (const value of mask) {
+  for (let index = 0; index < mask.length; index += 1) {
+    const value = mask[index];
     if (value) nonZero += 1;
     if (value >= 224) solid += 1;
     total += value;
@@ -258,11 +261,15 @@ function diagnosticsMetadata(diagnostics: AutoLayerDiagnostics, layers: readonly
     selections: diagnostics.selections,
     elements: diagnostics.elements.map(item => ({
       selection: item.selection,
-      candidateScores: item.candidateScores,
-      candidateMasks: item.candidateAlphas.map(maskStats),
-      selectedCandidateIndex: item.selectedCandidateIndex,
+      segmenter: item.segmenter,
       coarseMask: maskStats(item.coarseAlpha),
       refinedMask: maskStats(item.refinedAlpha)
+    })),
+    textRepairMasks: diagnostics.textRepairMasks.map(item => ({
+      selectionId: item.selectionId,
+      lineId: item.lineId,
+      box: item.box,
+      mask: maskStats(item.alpha)
     })),
     repairRegions: diagnostics.repairRegions.map(region => ({
       layerId: region.layerId,
@@ -391,6 +398,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         }));
       }
 
+      options.onStatus?.("导出素材与文字层");
       for (let index = 0; index < output.materials.length; index += 1) {
         const material = output.materials[index];
         await upload(
@@ -404,18 +412,10 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
       }
       await upload("texts/texts.json", jsonBlob(output.texts.map(textMetadata)));
 
+      options.onStatus?.("导出元素诊断蒙版");
       for (let index = 0; index < output.diagnostics.elements.length; index += 1) {
         const item = output.diagnostics.elements[index];
         const stem = `${String(index + 1).padStart(2, "0")}-${safeName(item.selection.id)}`;
-        for (let candidateIndex = 0; candidateIndex < item.candidateAlphas.length; candidateIndex += 1) {
-          const candidate = item.candidateAlphas[candidateIndex];
-          await upload(`masks/elements/${stem}-candidate-${candidateIndex + 1}.png`, await renderMask(
-            candidate, bitmap.width, bitmap.height, bitmap, item.selection, false
-          ));
-          await upload(`masks/elements/${stem}-candidate-${candidateIndex + 1}-overlay.png`, await renderMask(
-            candidate, bitmap.width, bitmap.height, bitmap, item.selection, true
-          ));
-        }
         await upload(`masks/elements/${stem}-coarse.png`, await renderMask(
           item.coarseAlpha, bitmap.width, bitmap.height, bitmap, item.selection, false
         ));
@@ -429,6 +429,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
           item.refinedAlpha, bitmap.width, bitmap.height, bitmap, item.selection, true
         ));
       }
+      options.onStatus?.("导出父层修复蒙版");
       for (let index = 0; index < output.diagnostics.repairRegions.length; index += 1) {
         const region = output.diagnostics.repairRegions[index];
         const stem = `${String(index + 1).padStart(2, "0")}-${safeName(region.layerId)}`;
@@ -439,6 +440,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
           region.mask, bitmap.width, bitmap.height, bitmap, region.contextBox, true
         ));
       }
+      options.onStatus?.("导出整页背景蒙版");
       await upload("masks/background.png", await renderMask(
         output.diagnostics.backgroundMask,
         bitmap.width,
@@ -455,6 +457,7 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         allImageBox(bitmap.width, bitmap.height),
         true
       ));
+      options.onStatus?.("导出本地诊断元数据");
       await upload("local/diagnostics.json", jsonBlob(diagnosticsMetadata(
         output.diagnostics,
         documentValue.layers
@@ -466,7 +469,8 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
         output,
         diagnostics: output.diagnostics,
         imageWidth: bitmap.width,
-        imageHeight: bitmap.height
+        imageHeight: bitmap.height,
+        onStatus: options.onStatus
       });
       await upload("quality/local.json", jsonBlob(localQuality));
       if (!localQuality.passed && !options.skipQualityGate) {
@@ -481,72 +485,85 @@ export async function runAutoLayerRegression(options: AutoLayerRegressionOptions
       let cloudQuality: AutoLayerCloudQualityReport | undefined;
       if (options.cloud && output.cloudBackground) {
         if (!preparedCloudUpload) throw new Error("云端上传传输副本不存在。");
-        options.onStatus?.("提交一次无蒙版整页背景修复（20 积分）");
-        const charge = await options.app.chargeMatting("autoLayer");
-        let accepted = false;
-        try {
-          const task = await options.app.createAutoLayerTask({
-            image: new File(
-              [preparedCloudUpload.blob],
-              autoLayerUploadFileName(preparedCloudUpload.blob),
-              {
-                type: preparedCloudUpload.blob.type || "image/png"
-              }
-            ),
-            selectionBoxes: output.cloudBackground.selectionBoxes,
-            mattingId: charge.mattingId,
-            idempotencyKey: `auto-layer-test:${record.id.slice(-12)}:${options.runId}`
-          });
-          accepted = true;
-          cloudTaskId = task.id;
-          const complete = await options.app.waitForAutoLayerTask(task, new AbortController().signal);
-          const serverBackground = await options.app.downloadAutoLayerOutput(complete);
-          const repairedBackground = await compositeAutoLayerCloudOutput(
-            output.cloudBackground.imageBlob,
-            serverBackground,
-            bitmap.width,
-            bitmap.height,
-            output.cloudBackground.compositeBoxes
-          );
-          const completeDocument: AutoLayerDocument = {
-            ...documentValue,
-            backgroundBlob: repairedBackground,
-            status: "complete",
-            cloudInputAssetId: complete.inputAssetId
-          };
-          await upload("cloud/background-server.png", serverBackground);
-          await upload("cloud/background.png", repairedBackground);
-          await upload("cloud/preview.png", await renderAutoLayerPreview(completeDocument));
-          await upload("cloud/layers-only.png", await renderLayersOnly(completeDocument));
-          const assetNames = new Map(completeDocument.layers.map((layer, index) => [
-            layer.id,
-            `${String(index + 1).padStart(2, "0")}-${safeName(layer.name)}`
-          ]));
-          await upload("cloud/manifest.json", jsonBlob(buildAutoLayerManifest(completeDocument, assetNames)));
-          await upload("cloud/texts.json", jsonBlob(completeDocument.layers
-            .filter((layer): layer is AutoLayerTextItem => layer.kind === "text")
-            .map(textMetadata)));
-          for (const layer of completeDocument.layers) {
-            if (layer.kind !== "material" || !layer.cleanedChildren) continue;
-            await upload(`cloud/repaired-materials/${safeName(layer.name)}.png`, layer.blob);
+        let task: AutoLayerTask;
+        if (options.cloudTaskId) {
+          options.onStatus?.(`复用已成功的云端背景任务 ${options.cloudTaskId}`);
+          task = await apiClient.autoLayerTask(options.cloudTaskId);
+          if (task.status !== "succeeded" || !task.outputUrl) {
+            throw new Error(`云端背景任务 ${options.cloudTaskId} 尚未成功。`);
           }
-          options.onStatus?.(options.skipQualityGate ? "生成云端背景质量报告" : "执行云端背景质量门禁");
-          cloudQuality = await evaluateCloudAutoLayerQuality({
-            caseValue: options.qualityCase,
-            localDocument: documentValue,
-            completeDocument,
-            diagnostics: output.diagnostics,
-            imageWidth: bitmap.width,
-            imageHeight: bitmap.height
-          });
-          await upload("quality/cloud.json", jsonBlob(cloudQuality));
-          if (!cloudQuality.passed && !options.skipQualityGate) {
-            const failed = cloudQuality.checks.filter(check => !check.passed).map(check => check.id);
-            throw new Error(`云端背景质量门禁未通过：${failed.join("、")}`);
+        } else {
+          options.onStatus?.("提交一次无蒙版整页背景修复（20 积分）");
+          const charge = await options.app.chargeMatting("autoLayer");
+          let accepted = false;
+          try {
+            task = await options.app.createAutoLayerTask({
+              image: new File(
+                [preparedCloudUpload.blob],
+                autoLayerUploadFileName(preparedCloudUpload.blob),
+                {
+                  type: preparedCloudUpload.blob.type || "image/png"
+                }
+              ),
+              selectionBoxes: output.cloudBackground.selectionBoxes,
+              mattingId: charge.mattingId,
+              idempotencyKey: `auto-layer-test:${record.id.slice(-12)}:${options.runId}`
+            });
+            accepted = true;
+            task = await options.app.waitForAutoLayerTask(task, new AbortController().signal);
+          } catch (error) {
+            if (!accepted) await options.app.refundMatting(charge.mattingId).catch(() => undefined);
+            throw error;
           }
-        } catch (error) {
-          if (!accepted) await options.app.refundMatting(charge.mattingId).catch(() => undefined);
-          throw error;
+        }
+        cloudTaskId = task.id;
+        options.onStatus?.("下载服务端背景");
+        const serverBackground = await options.app.downloadAutoLayerOutput(task);
+        options.onStatus?.("合成云端背景");
+        const repairedBackground = await compositeAutoLayerCloudOutput(
+          output.cloudBackground.imageBlob,
+          serverBackground,
+          bitmap.width,
+          bitmap.height,
+          output.cloudBackground.compositeBoxes
+        );
+        const completeDocument: AutoLayerDocument = {
+          ...documentValue,
+          backgroundBlob: repairedBackground,
+          status: "complete",
+          cloudInputAssetId: task.inputAssetId
+        };
+        options.onStatus?.("导出云端背景与预览");
+        await upload("cloud/background-server.png", serverBackground);
+        await upload("cloud/background.png", repairedBackground);
+        await upload("cloud/preview.png", await renderAutoLayerPreview(completeDocument));
+        await upload("cloud/layers-only.png", await renderLayersOnly(completeDocument));
+        const assetNames = new Map(completeDocument.layers.map((layer, index) => [
+          layer.id,
+          `${String(index + 1).padStart(2, "0")}-${safeName(layer.name)}`
+        ]));
+        await upload("cloud/manifest.json", jsonBlob(buildAutoLayerManifest(completeDocument, assetNames)));
+        await upload("cloud/texts.json", jsonBlob(completeDocument.layers
+          .filter((layer): layer is AutoLayerTextItem => layer.kind === "text")
+          .map(textMetadata)));
+        for (const layer of completeDocument.layers) {
+          if (layer.kind !== "material" || !layer.cleanedChildren) continue;
+          await upload(`cloud/repaired-materials/${safeName(layer.name)}.png`, layer.blob);
+        }
+        options.onStatus?.(options.skipQualityGate ? "生成云端背景质量报告" : "执行云端背景质量门禁");
+        cloudQuality = await evaluateCloudAutoLayerQuality({
+          caseValue: options.qualityCase,
+          sourceBlob: output.cloudBackground.imageBlob,
+          localDocument: documentValue,
+          completeDocument,
+          diagnostics: output.diagnostics,
+          imageWidth: bitmap.width,
+          imageHeight: bitmap.height
+        });
+        await upload("quality/cloud.json", jsonBlob(cloudQuality));
+        if (!cloudQuality.passed && !options.skipQualityGate) {
+          const failed = cloudQuality.checks.filter(check => !check.passed).map(check => check.id);
+          throw new Error(`云端背景质量门禁未通过：${failed.join("、")}`);
         }
       }
 

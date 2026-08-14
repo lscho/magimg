@@ -1,6 +1,20 @@
 import { compositeMaskedRgba } from "@/services/cutoutRepairCompositing";
 import type { CutoutSelectionBox } from "@/types";
 
+const MAX_COLOR_SAMPLES = 100_000;
+const MAX_MATCHED_CHANNEL_DIFFERENCE = 32;
+const MIN_COLOR_SAMPLES = 256;
+
+interface CloudCompositeGeometry {
+  covered: Uint8Array;
+  mask: Uint8Array;
+}
+
+interface ChannelMapping {
+  scale: number;
+  offset: number;
+}
+
 function clampedBounds(box: CutoutSelectionBox, width: number, height: number) {
   const left = Math.max(0, Math.floor(box.x));
   const top = Math.max(0, Math.floor(box.y));
@@ -9,15 +23,16 @@ function clampedBounds(box: CutoutSelectionBox, width: number, height: number) {
   return { left, top, right, bottom };
 }
 
-export function createAutoLayerCloudCompositeMask(
+function createAutoLayerCloudCompositeGeometry(
   width: number,
   height: number,
   boxes: readonly CutoutSelectionBox[]
-) {
+): CloudCompositeGeometry {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new Error("自动分层云背景尺寸无效。");
   }
-  const mask = new Uint8Array(width * height);
+  const covered = new Uint8Array(width * height);
+  const featherWidths = new Uint8Array(width * height);
   for (const box of boxes) {
     const bounds = clampedBounds(box, width, height);
     const boxWidth = bounds.right - bounds.left;
@@ -32,19 +47,160 @@ export function createAutoLayerCloudCompositeMask(
     );
     for (let y = bounds.top; y < bounds.bottom; y += 1) {
       for (let x = bounds.left; x < bounds.right; x += 1) {
-        const distance = Math.min(
-          x - bounds.left,
-          bounds.right - 1 - x,
-          y - bounds.top,
-          bounds.bottom - 1 - y
-        );
-        const alpha = feather > 0 ? Math.min(255, Math.round(distance / feather * 255)) : 255;
         const index = y * width + x;
-        if (alpha > mask[index]) mask[index] = alpha;
+        covered[index] = 1;
+        if (feather > featherWidths[index]) featherWidths[index] = feather;
       }
     }
   }
-  return mask;
+  const distances = unionInteriorDistances(covered, width, height);
+  const mask = new Uint8Array(width * height);
+  for (let index = 0; index < mask.length; index += 1) {
+    if (!covered[index]) continue;
+    const feather = featherWidths[index];
+    mask[index] = feather > 0
+      ? Math.min(255, Math.round(Math.max(0, distances[index] - 1) / feather * 255))
+      : 255;
+  }
+  return { covered, mask };
+}
+
+export function createAutoLayerCloudCompositeMask(
+  width: number,
+  height: number,
+  boxes: readonly CutoutSelectionBox[]
+) {
+  return createAutoLayerCloudCompositeGeometry(width, height, boxes).mask;
+}
+
+function unionInteriorDistances(covered: Uint8Array, width: number, height: number) {
+  const distances = new Uint16Array(covered.length);
+  distances.fill(0xffff);
+  for (let index = 0; index < covered.length; index += 1) {
+    if (!covered[index]) distances[index] = 0;
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (!covered[index]) continue;
+      let distance = distances[index];
+      if (x === 0 || y === 0) distance = 1;
+      if (x > 0) distance = Math.min(distance, distances[index - 1] + 1);
+      if (y > 0) {
+        distance = Math.min(distance, distances[index - width] + 1);
+        if (x > 0) distance = Math.min(distance, distances[index - width - 1] + 1);
+        if (x + 1 < width) distance = Math.min(distance, distances[index - width + 1] + 1);
+      }
+      distances[index] = distance;
+    }
+  }
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      if (!covered[index]) continue;
+      let distance = distances[index];
+      if (x + 1 === width || y + 1 === height) distance = 1;
+      if (x + 1 < width) distance = Math.min(distance, distances[index + 1] + 1);
+      if (y + 1 < height) {
+        distance = Math.min(distance, distances[index + width] + 1);
+        if (x > 0) distance = Math.min(distance, distances[index + width - 1] + 1);
+        if (x + 1 < width) distance = Math.min(distance, distances[index + width + 1] + 1);
+      }
+      distances[index] = distance;
+    }
+  }
+  return distances;
+}
+
+function fitChannelMapping(
+  source: Uint8ClampedArray,
+  repaired: Uint8ClampedArray,
+  covered: Uint8Array,
+  channel: number,
+  sampleStride: number
+): ChannelMapping {
+  let scale = 1;
+  let offset = 0;
+  let residualLimit = Number.POSITIVE_INFINITY;
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    let count = 0;
+    let sourceTotal = 0;
+    let repairedTotal = 0;
+    let repairedSquaredTotal = 0;
+    let pairedTotal = 0;
+    const residualHistogram = new Uint32Array(256);
+    for (let pixel = 0; pixel < covered.length; pixel += sampleStride) {
+      if (covered[pixel]) continue;
+      const pixelOffset = pixel * 4;
+      let matched = true;
+      for (let currentChannel = 0; currentChannel < 3; currentChannel += 1) {
+        if (Math.abs(source[pixelOffset + currentChannel] - repaired[pixelOffset + currentChannel]) >
+          MAX_MATCHED_CHANNEL_DIFFERENCE) {
+          matched = false;
+          break;
+        }
+      }
+      if (!matched) continue;
+      const sourceValue = source[pixelOffset + channel];
+      const repairedValue = repaired[pixelOffset + channel];
+      const residual = Math.abs(sourceValue - (scale * repairedValue + offset));
+      if (residual > residualLimit) continue;
+      count += 1;
+      sourceTotal += sourceValue;
+      repairedTotal += repairedValue;
+      repairedSquaredTotal += repairedValue * repairedValue;
+      pairedTotal += repairedValue * sourceValue;
+      residualHistogram[Math.min(255, Math.round(residual))] += 1;
+    }
+    if (count < MIN_COLOR_SAMPLES) return { scale: 1, offset: 0 };
+    const denominator = count * repairedSquaredTotal - repairedTotal * repairedTotal;
+    if (denominator <= count * 64) return { scale: 1, offset: 0 };
+    scale = (count * pairedTotal - repairedTotal * sourceTotal) / denominator;
+    offset = (sourceTotal - scale * repairedTotal) / count;
+    if (!Number.isFinite(scale) || !Number.isFinite(offset) ||
+      scale < 0.85 || scale > 1.15 || offset < -24 || offset > 24) {
+      return { scale: 1, offset: 0 };
+    }
+    const target = Math.ceil(count * 0.8);
+    let accumulated = 0;
+    let quantile = 0;
+    for (; quantile < residualHistogram.length; quantile += 1) {
+      accumulated += residualHistogram[quantile];
+      if (accumulated >= target) break;
+    }
+    residualLimit = Math.max(2, quantile);
+  }
+  return { scale, offset };
+}
+
+function matchGeneratedPageColors(
+  source: Uint8ClampedArray,
+  repaired: Uint8ClampedArray,
+  covered: Uint8Array
+) {
+  const sampleStride = Math.max(1, Math.ceil(covered.length / MAX_COLOR_SAMPLES));
+  const mappings = [0, 1, 2].map(channel => fitChannelMapping(
+    source,
+    repaired,
+    covered,
+    channel,
+    sampleStride
+  ));
+  if (mappings.every(mapping =>
+    Math.abs(mapping.scale - 1) < 0.002 && Math.abs(mapping.offset) < 0.5
+  )) return repaired;
+  const corrected = repaired.slice();
+  for (let pixel = 0; pixel < covered.length; pixel += 1) {
+    if (!covered[pixel]) continue;
+    const pixelOffset = pixel * 4;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const mapping = mappings[channel];
+      corrected[pixelOffset + channel] = Math.round(
+        repaired[pixelOffset + channel] * mapping.scale + mapping.offset
+      );
+    }
+  }
+  return corrected;
 }
 
 export function compositeAutoLayerCloudRgba(
@@ -54,10 +210,14 @@ export function compositeAutoLayerCloudRgba(
   height: number,
   boxes: readonly CutoutSelectionBox[]
 ) {
+  if (source.length !== repaired.length || source.length !== width * height * 4) {
+    throw new Error("自动分层云背景合成数据尺寸不匹配。");
+  }
+  const geometry = createAutoLayerCloudCompositeGeometry(width, height, boxes);
   return compositeMaskedRgba(
     source,
-    repaired,
-    createAutoLayerCloudCompositeMask(width, height, boxes)
+    matchGeneratedPageColors(source, repaired, geometry.covered),
+    geometry.mask
   );
 }
 

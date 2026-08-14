@@ -58,7 +58,9 @@ function cloudTaskErrorMessage(task: AutoLayerTask | null) {
 
 export function useAutoLayerWorkflow() {
   const app = useAppStore();
-  const inference = useCutoutInference();
+  const inference = useCutoutInference({
+    includeRepairResource: true
+  });
   const smartSelection = useSmartSelection();
   const selectedFile = shallowRef<SelectedImageFile | null>(null);
   const imageSource = shallowRef<{ source: CanvasImageSource; width: number; height: number } | null>(null);

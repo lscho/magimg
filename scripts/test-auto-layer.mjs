@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import process from "node:process";
@@ -22,6 +22,8 @@ function appDataDirectory() {
 const APP_DATA = appDataDirectory();
 const STORE_PATH = join(APP_DATA, "auto-layer-selections.json");
 const cloud = process.argv.includes("--cloud");
+const cloudTaskArgument = process.argv.find(argument => argument.startsWith("--cloud-task="));
+const cloudTaskId = cloudTaskArgument?.slice("--cloud-task=".length).trim() || undefined;
 const forceCloudInput = cloud || process.argv.includes("--cloud-input");
 const skipQualityGate = process.argv.includes("--skip-quality-gate");
 const caseArgument = process.argv.find(argument => argument.startsWith("--case="));
@@ -100,7 +102,13 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/status") {
       const status = JSON.parse((await requestBody(request)).toString("utf8"));
-      console.log(`[自动分层回归] ${status.message ?? "运行中"}`);
+      const message = status.message ?? "运行中";
+      console.log(`[自动分层回归] ${message}`);
+      await appendFile(
+        join(outputDirectory, "status.log"),
+        `${new Date().toISOString()} ${message}\n`,
+        "utf8"
+      );
       response.writeHead(204, corsHeaders());
       response.end();
       return;
@@ -139,7 +147,9 @@ console.log(`质量用例：${casePath}`);
 console.log(`运行 ID：${runId}`);
 console.log(`产物目录：${outputDirectory}`);
 console.log(cloud
-  ? "模式：本地推理 + 一次云端修复（20 积分）"
+  ? cloudTaskId
+    ? `模式：本地推理 + 复用云端任务 ${cloudTaskId}（不重复扣积分）`
+    : "模式：本地推理 + 一次云端修复（20 积分）"
   : forceCloudInput
     ? "模式：生成真实云端输入，不提交任务、不扣积分"
     : "模式：仅本地推理，不扣积分");
@@ -160,6 +170,7 @@ const child = spawn("npm", [
     VITE_AUTO_LAYER_REGRESSION_URL: collectorUrl,
     VITE_AUTO_LAYER_REGRESSION_RECORD_ID: recordId,
     VITE_AUTO_LAYER_REGRESSION_CLOUD: String(cloud),
+    VITE_AUTO_LAYER_REGRESSION_CLOUD_TASK_ID: cloudTaskId ?? "",
     VITE_AUTO_LAYER_REGRESSION_FORCE_CLOUD_INPUT: String(forceCloudInput),
     VITE_AUTO_LAYER_REGRESSION_SKIP_QUALITY_GATE: String(skipQualityGate),
     VITE_AUTO_LAYER_REGRESSION_RUN_ID: runId,

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "recordId": "auto-layer-selection-1786544550278-94c66445-a2e3-4e76-b77b-792e7f745bee",
+  "source": {
+    "name": "test1.png",
+    "width": 941,
+    "height": 1672
+  },
+  "selectionCount": 11,
+  "materialCount": 6,
+  "textCount": 5,
+  "minimumMaterialSolidRatio": 0.3,
+  "minimumMaterialBoundsRatio": 0.7,
+  "materialQualityOverrides": [],
+  "expectedTexts": [
+    {
+      "sourceSelectionId": "cutout-sel-1786544529769-4",
+      "text": "进入下一关",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1786544532370-5",
+      "text": "查看排行榜",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1786544534211-6",
+      "text": "返回主页面",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1786544538168-7",
+      "text": "01:44",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    },
+    {
+      "sourceSelectionId": "cutout-sel-1786544540388-8",
+      "text": "通关时间",
+      "fontWeight": 400,
+      "minimumConfidence": 0.5
+    }
+  ],
+  "repairLayerIds": [
+    "cutout-sel-1786544512700-1",
+    "cutout-sel-1786544515635-2",
+    "cutout-sel-1786544522169-3"
+  ],
+  "topLevelSelectionIds": [
+    "cutout-sel-1786544512700-1",
+    "cutout-sel-1786544515635-2",
+    "cutout-sel-1786544522169-3",
+    "cutout-sel-1786544538168-7",
+    "cutout-sel-1786544540388-8",
+    "cutout-sel-1786544544284-9",
+    "cutout-sel-1786544546654-10",
+    "cutout-sel-1786544548438-11"
+  ],
+  "cloud": {
+    "minimumMaskedMeanDifference": 4,
+    "minimumForegroundMeanDifference": 10,
+    "minimumForegroundChangedRatio": 0.35
+  }
+}

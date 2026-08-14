@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-remote-image-download"
+description = "Allow the main window to download validated HTTP(S) image results through the native client."
+commands.allow = ["download_remote_image"]

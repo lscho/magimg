@@ -88,7 +88,7 @@ export const CUTOUT_MODEL: CutoutModelDescriptor = {
 /**
  * BiRefNet Swin-T 通用分割模型（/cutout 链路的分割档位，替代 SAM encoder+decoder）。
  * 输入 1x3x1024x1024 NCHW 归一化 float，输出 1x1x1024x1024 logits。
- * 保留 /auto-layer 使用的 SAM 模型（CUTOUT_MODEL）不变。
+ * /cutout 与 /auto-layer 的正式元素抠图链路统一使用该模型。
  */
 export const BIRENET_MODEL: CutoutModelDescriptor = {
   id: "birefnet-swin-tiny-general",

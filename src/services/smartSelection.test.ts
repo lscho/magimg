@@ -16,7 +16,7 @@ function proposal(overrides: Partial<{
 }> = {}) {
   return {
     confidence: 0.85,
-    predictedIou: 0.9,
+    predictedIou: 0.96,
     stability: 0.95,
     x: 10,
     y: 10,

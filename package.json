@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "build:desktop": "node scripts/prepare-windows-runtime.mjs && npm run build",
     "preview": "vite preview",
+    "audit:structure": "node scripts/audit-structure.mjs",
     "test": "vitest run",
     "test:repair": "vite-node scripts/test-background-repair.ts",
     "test:auto-layer": "node scripts/test-auto-layer.mjs",

@@ -13,6 +13,11 @@ export interface CutoutRepairLayout {
   inputRect: CutoutRepairInputRect;
 }
 
+export interface CutoutRepairModelMapping {
+  sourceRect: CutoutRepairInputRect;
+  targetRect: CutoutRepairInputRect;
+}
+
 export function buildCutoutRepairLayoutFromBounds(
   bounds: CutoutPixelBounds,
   inputWidth: number,
@@ -42,4 +47,19 @@ export function buildCutoutRepairLayout(
 ): CutoutRepairLayout {
   const bounds = cutoutSelectionBounds(imageWidth, imageHeight, box);
   return buildCutoutRepairLayoutFromBounds(bounds, inputWidth, inputHeight);
+}
+
+/** 单框修复从完整素材上下文取样，再等比放入模型输入的居中目标区。 */
+export function buildCutoutRepairModelMapping(
+  layout: CutoutRepairLayout
+): CutoutRepairModelMapping {
+  return {
+    sourceRect: {
+      x: 0,
+      y: 0,
+      width: layout.bounds.width,
+      height: layout.bounds.height
+    },
+    targetRect: { ...layout.inputRect }
+  };
 }

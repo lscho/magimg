@@ -23,12 +23,6 @@
       "minimumBoundsHeightRatio": 0.65
     }
   ],
-  "candidateSelections": [
-    {
-      "selectionId": "cutout-sel-1785735507067-8",
-      "selectedCandidateIndex": 2
-    }
-  ],
   "expectedTexts": [
     {
       "sourceSelectionId": "cutout-sel-1785735529366-13",

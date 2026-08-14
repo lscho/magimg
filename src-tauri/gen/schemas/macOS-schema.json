@@ -2325,6 +2325,12 @@
           "markdownDescription": "Allow the main window to run local image compression sessions and encode auto-layer upload copies."
         },
         {
+          "description": "Allow the main window to download validated HTTP(S) image results through the native client.",
+          "type": "string",
+          "const": "allow-remote-image-download",
+          "markdownDescription": "Allow the main window to download validated HTTP(S) image results through the native client."
+        },
+        {
           "description": "Allow the frontend to toggle the DevTools panel (debug builds only).",
           "type": "string",
           "const": "allow-toggle-devtools",

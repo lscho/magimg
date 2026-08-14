@@ -63,7 +63,7 @@ describe("automatic-layer font style inference", () => {
   });
 
   it("only promotes unmistakably heavy strokes to semibold", () => {
-    const crop = textCrop(10);
+    const crop = textCrop(14);
     expect(inferAutoLayerFontStyleFromPixels(
       crop.pixels,
       crop.width,
@@ -73,7 +73,7 @@ describe("automatic-layer font style inference", () => {
   });
 
   it("keeps short numeric UI labels regular despite heavy outline evidence", () => {
-    const crop = textCrop(10);
+    const crop = textCrop(14);
     expect(inferAutoLayerFontStyleFromPixels(
       crop.pixels,
       crop.width,
@@ -86,6 +86,13 @@ describe("automatic-layer font style inference", () => {
       crop.height,
       "10"
     ).fontWeight).toBe(400);
+  });
+});
+
+describe("automatic-layer OCR text normalization", () => {
+  it("normalizes a full-width time separator without altering Chinese text", () => {
+    expect(normalizeAutoLayerOcrText("01：44")).toBe("01:44");
+    expect(normalizeAutoLayerOcrText("通关时间")).toBe("通关时间");
   });
 });
 

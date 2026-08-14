@@ -13,6 +13,7 @@
     "allow-cutout-inference",
     "allow-auto-layer-recognition",
     "allow-image-compression",
+    "allow-remote-image-download",
     "dialog:default",
     "os:allow-arch",
     "os:allow-platform",

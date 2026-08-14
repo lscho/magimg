@@ -1,4 +1,4 @@
-import { fetchHttp } from "@/services/desktop";
+import { downloadRemoteImageBlob, fetchHttp } from "@/services/desktop";
 import type {
   CardRedeemResult,
   BackgroundRepairTask,
@@ -341,13 +341,11 @@ export const apiClient = {
   },
 
   async downloadBackgroundRepairOutput(outputUrl: string) {
-    const response = await fetchHttp(resolveApiAssetUrl(outputUrl), {
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
-    });
-    if (!response.ok) {
-      throw new ApiError(defaultErrorMessage(response.status), response.status);
-    }
-    return response.blob();
+    const resolvedUrl = resolveApiAssetUrl(outputUrl);
+    // Object-storage output URLs are public download URLs. Never forward the
+    // application bearer token to an absolute third-party host.
+    const requestToken = /^https?:\/\//u.test(outputUrl) ? null : token;
+    return downloadRemoteImageBlob(resolvedUrl, requestToken);
   },
 
   createAutoLayerTask(input: CreateAutoLayerTaskInput) {
@@ -375,7 +373,9 @@ export const apiClient = {
   },
 
   autoLayerTask(id: string) {
-    return request<AutoLayerTask>(`/auto-layer-tasks/${encodeURIComponent(id)}`);
+    return request<AutoLayerTask>(`/auto-layer-tasks/${encodeURIComponent(id)}`, {
+      cache: "no-store"
+    });
   },
 
   cancelAutoLayerTask(id: string) {
