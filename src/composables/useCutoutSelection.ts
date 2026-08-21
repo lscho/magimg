@@ -72,6 +72,8 @@ export function useCutoutSelection(
   const previewWidth = shallowRef(1);
   const previewHeight = shallowRef(1);
   const previewScale = shallowRef(1);
+  const fitScale = shallowRef(0);
+  const fitScaleLimit = shallowRef<number | null>(null);
   const zoomPercent = shallowRef(100);
   const panX = shallowRef(0);
   const panY = shallowRef(0);
@@ -152,11 +154,15 @@ export function useCutoutSelection(
     if (!viewport || !baseCanvas || !sourceBitmap || !ready.value) return;
     const availableWidth = Math.max(120, viewport.clientWidth - 32);
     const availableHeight = Math.max(120, viewport.clientHeight - 32);
-    const fitScale = Math.max(
+    const naturalFitScale = Math.max(
       0.01,
       Math.min(availableWidth / imageWidth.value, availableHeight / imageHeight.value)
     );
-    const scale = fitScale * zoomPercent.value / 100;
+    fitScale.value = naturalFitScale;
+    const sharedFitScale = fitScaleLimit.value && fitScaleLimit.value > 0
+      ? Math.min(naturalFitScale, fitScaleLimit.value)
+      : naturalFitScale;
+    const scale = sharedFitScale * zoomPercent.value / 100;
     previewScale.value = scale;
     previewWidth.value = Math.max(1, Math.round(imageWidth.value * scale));
     previewHeight.value = Math.max(1, Math.round(imageHeight.value * scale));
@@ -219,6 +225,13 @@ export function useCutoutSelection(
     zoomPercent.value = 100;
     panX.value = 0;
     panY.value = 0;
+    resizePreview();
+  }
+
+  function setFitScaleLimit(scale: number | null | undefined) {
+    fitScaleLimit.value = typeof scale === "number" && Number.isFinite(scale) && scale > 0
+      ? scale
+      : null;
     resizePreview();
   }
 
@@ -645,6 +658,7 @@ export function useCutoutSelection(
     previewWidth: readonly(previewWidth),
     previewHeight: readonly(previewHeight),
     previewScale: readonly(previewScale),
+    fitScale: readonly(fitScale),
     zoomPercent: readonly(zoomPercent),
     panX: readonly(panX),
     panY: readonly(panY),
@@ -668,6 +682,7 @@ export function useCutoutSelection(
     zoomIn,
     zoomOut,
     fitPreview,
+    setFitScaleLimit,
     zoomFromWheel,
     clientToImage,
     selectionAtClientPoint,

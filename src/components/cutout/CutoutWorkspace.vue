@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
   smartSelecting?: boolean;
   smartSelectionAvailable?: boolean;
   smartSelectionThreshold?: number;
+  previewScaleLimit?: number | null;
 }>(), {
   initialSelections: () => [],
   importing: false,
@@ -33,7 +34,8 @@ const props = withDefaults(defineProps<{
   selectionCommand: null,
   smartSelecting: false,
   smartSelectionAvailable: true,
-  smartSelectionThreshold: 0.95
+  smartSelectionThreshold: 0.95,
+  previewScaleLimit: null
 });
 
 const emit = defineEmits<{
@@ -44,6 +46,7 @@ const emit = defineEmits<{
   dropFile: [file: File];
   smartSelect: [];
   updateSmartSelectionThreshold: [value: number];
+  fitScaleChange: [value: number];
 }>();
 
 const viewport = useTemplateRef<HTMLElement>("viewport");
@@ -92,6 +95,11 @@ watch(
     if (props.selectionCommand) canvas.replaceSelections(props.selectionCommand.selections);
   }
 );
+
+watch(() => props.previewScaleLimit, value => canvas.setFitScaleLimit(value), { immediate: true });
+watch(() => canvas.fitScale.value, value => {
+  if (value > 0) emit("fitScaleChange", value);
+});
 
 onMounted(async () => {
   await nextTick();

@@ -42,6 +42,7 @@ export interface ImageParams {
   strength?: number;
   preserveComposition?: boolean;
   referenceImagePath?: string;
+  referenceImagePaths?: string[];
   templateId?: string;
 }
 
@@ -60,6 +61,7 @@ export interface GenerationRecord {
   mode: GenerationMode;
   params: ImageParams;
   inputImage?: GeneratedImage;
+  inputImages?: GeneratedImage[];
   images: GeneratedImage[];
   status: GenerationStatus;
   costCredits: number;
@@ -281,6 +283,7 @@ export interface GenerationTask {
   prompt: string;
   templateId?: string;
   inputAsset?: ClientAsset;
+  inputAssets?: ClientAsset[];
   outputAsset?: ClientAsset;
   width: number;
   height: number;
@@ -326,6 +329,7 @@ export interface CreateGenerationTaskInput {
   prompt?: string;
   templateId?: string;
   inputAssetId?: string;
+  inputAssetIds?: string[];
   width?: number;
   height?: number;
   quality?: SupportedQuality;

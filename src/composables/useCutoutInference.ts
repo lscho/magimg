@@ -25,7 +25,6 @@ import {
   getRepairModelStatus
 } from "@/services/cutoutRepairModelManager";
 import {
-  cancelInferenceRun,
   refineCutoutMask,
   releaseInferenceSession,
   segmentBirefnetBox
@@ -38,7 +37,6 @@ import {
   maskContainment,
   prepareRepairMask
 } from "@/services/cutoutRepairMask";
-import { shouldForceManualDiffusion } from "@/services/cutoutRepairContext";
 import {
   compositeRepairedImage,
   repairBackgroundLocally
@@ -54,6 +52,10 @@ import {
   applyOpaquePanelPrior,
   createCompoundPanelPrior
 } from "@/services/cutoutCompoundPanel";
+import {
+  runTwoStagePipeline,
+  shouldOverlapCutoutMatting
+} from "@/services/cutoutMattingPipeline";
 import {
   classifyAutoLayerElements,
   recognizeAutoLayerText,
@@ -525,7 +527,6 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
 
   function cancel() {
     abortController.value?.abort();
-    void cancelInferenceRun().catch(() => undefined);
   }
 
   function validateAutomaticRelations(
@@ -558,15 +559,14 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
    * AI 抠图与自动分层共用的元素 Alpha 链路。任何一端调整粗分割、面板先验、
    * ViTMatte 精修或选区约束时，另一端会自动获得完全相同的结果。
    */
-  async function runBirefnetMattingSelection(
+  async function segmentBirefnetMattingSelection(
     image: CanvasImageSource,
     imageWidth: number,
     imageHeight: number,
     selection: CutoutSelection,
-    signal: AbortSignal,
-    onRefining?: () => void
+    signal: AbortSignal
   ) {
-    const segmentedAlpha = await segmentBirefnetBox(
+    const segmentedAlphaPromise = segmentBirefnetBox(
       BIRENET_MODEL,
       image,
       imageWidth,
@@ -574,29 +574,85 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
       selection,
       signal
     );
-    onRefining?.();
     const panelPrior = createCompoundPanelPrior(
       image,
       imageWidth,
       imageHeight,
       selection
     );
+    const segmentedAlpha = await segmentedAlphaPromise;
     const coarseAlpha = applyOpaquePanelPrior(segmentedAlpha, panelPrior);
+    return { coarseAlpha, panelPrior };
+  }
+
+  async function refineBirefnetMattingSelection(
+    image: CanvasImageSource,
+    imageWidth: number,
+    imageHeight: number,
+    selection: CutoutSelection,
+    signal: AbortSignal,
+    segmented: Awaited<ReturnType<typeof segmentBirefnetMattingSelection>>
+  ) {
     const refinedAlpha = constrainAlphaToSelection(
       applyOpaquePanelPrior(await refineCutoutMask(
         CUTOUT_REFINER,
         image,
         imageWidth,
         imageHeight,
-        coarseAlpha,
+        segmented.coarseAlpha,
         selection,
         signal
-      ), panelPrior),
+      ), segmented.panelPrior),
       imageWidth,
       imageHeight,
       selection
     );
-    return { coarseAlpha, refinedAlpha, hasPanelPrior: Boolean(panelPrior) };
+    return { coarseAlpha: segmented.coarseAlpha, refinedAlpha };
+  }
+
+  async function runBirefnetMattingSelections(
+    image: CanvasImageSource,
+    imageWidth: number,
+    imageHeight: number,
+    selections: readonly CutoutSelection[],
+    signal: AbortSignal,
+    hooks: {
+      onSegmenting?: (selection: CutoutSelection, index: number) => void;
+      onRefining?: (selection: CutoutSelection, index: number) => void;
+      onRefined?: (selection: CutoutSelection, index: number) => void;
+    } = {}
+  ) {
+    return runTwoStagePipeline(
+      selections,
+      {
+        first: async (selection, index) => {
+          if (signal.aborted) throw abortError();
+          hooks.onSegmenting?.(selection, index);
+          return segmentBirefnetMattingSelection(
+            image,
+            imageWidth,
+            imageHeight,
+            selection,
+            signal
+          );
+        },
+        second: async (segmented, selection, index) => {
+          if (signal.aborted) throw abortError();
+          hooks.onRefining?.(selection, index);
+          const refined = await refineBirefnetMattingSelection(
+            image,
+            imageWidth,
+            imageHeight,
+            selection,
+            signal,
+            segmented
+          );
+          hooks.onRefined?.(selection, index);
+          return refined;
+        }
+      },
+      shouldOverlapCutoutMatting(selections.length)
+    );
   }
 
   async function segmentSelections(
@@ -636,25 +692,26 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
       const selections = cloneCutoutSelections(inputSelections);
       const coarseMasks = new Map<string, Uint8Array>();
       const refinedMasks = new Map<string, Uint8Array>();
-      const deterministicPanelIds = new Set<string>();
-      for (let index = 0; index < selections.length; index += 1) {
-        if (controller.signal.aborted) throw abortError();
-        const selection = selections[index];
-        progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
-        const segmented = await runBirefnetMattingSelection(
-          image,
-          imageWidth,
-          imageHeight,
-          selection,
-          controller.signal,
-          () => {
+      const segmentedSelections = await runBirefnetMattingSelections(
+        image,
+        imageWidth,
+        imageHeight,
+        selections,
+        controller.signal,
+        {
+          onSegmenting: (_selection, index) => {
+            progress.value = { current: index + 1, total: selections.length, stage: "segmenting" };
+          },
+          onRefining: (_selection, index) => {
             progress.value = { current: index + 1, total: selections.length, stage: "refining" };
           }
-        );
-        if (segmented.hasPanelPrior) deterministicPanelIds.add(selection.id);
+        }
+      );
+      segmentedSelections.forEach((segmented, index) => {
+        const selection = selections[index];
         coarseMasks.set(selection.id, segmented.coarseAlpha);
         refinedMasks.set(selection.id, segmented.refinedAlpha);
-      }
+      });
 
       const resolvedSelections = validateAutomaticRelations(selections, refinedMasks);
       options.onSelectionsResolved?.(cloneCutoutSelections(resolvedSelections));
@@ -797,11 +854,7 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
               selection,
               {
                 signal: controller.signal,
-                forceDiffusion: deterministicPanelIds.has(selection.id) ||
-                  shouldForceManualDiffusion(
-                    selection,
-                    selectionChildren(resolvedSelections, selection.id).length > 0
-                  )
+                forceModel: true
               }
             );
           } else if (cloudRepairedSource) {
@@ -885,29 +938,33 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
       const refinedMasks = new Map<string, Uint8Array>();
       const coarseMasks = new Map<string, Uint8Array>();
       const classifications = new Map<string, { type: string; confidence: number }>();
-      const deterministicPanelIds = new Set<string>();
       const elementDiagnostics: AutoLayerElementDiagnostic[] = [];
       options.onDiagnosticStage?.("resources:complete");
-      for (let index = 0; index < elementSelections.length; index += 1) {
-        if (controller.signal.aborted) throw abortError();
-        const selection = elementSelections[index];
-        const diagnosticPrefix = `element:${index + 1}:${selection.id}`;
-        progress.value = { current: index + 1, total: elementSelections.length, stage: "segmenting" };
-        options.onDiagnosticStage?.(`${diagnosticPrefix}:birefnet:start`);
-        const segmented = await runBirefnetMattingSelection(
-          image,
-          imageWidth,
-          imageHeight,
-          selection,
-          controller.signal,
-          () => {
+      const segmentedElements = await runBirefnetMattingSelections(
+        image,
+        imageWidth,
+        imageHeight,
+        elementSelections,
+        controller.signal,
+        {
+          onSegmenting: (selection, index) => {
+            const diagnosticPrefix = `element:${index + 1}:${selection.id}`;
+            progress.value = { current: index + 1, total: elementSelections.length, stage: "segmenting" };
+            options.onDiagnosticStage?.(`${diagnosticPrefix}:birefnet:start`);
+          },
+          onRefining: (selection, index) => {
+            const diagnosticPrefix = `element:${index + 1}:${selection.id}`;
             progress.value = { current: index + 1, total: elementSelections.length, stage: "refining" };
             options.onDiagnosticStage?.(`${diagnosticPrefix}:birefnet:complete`);
             options.onDiagnosticStage?.(`${diagnosticPrefix}:vitmatte:start`);
+          },
+          onRefined: (selection, index) => {
+            options.onDiagnosticStage?.(`element:${index + 1}:${selection.id}:vitmatte:complete`);
           }
-        );
-        options.onDiagnosticStage?.(`${diagnosticPrefix}:vitmatte:complete`);
-        if (segmented.hasPanelPrior) deterministicPanelIds.add(selection.id);
+        }
+      );
+      segmentedElements.forEach((segmented, index) => {
+        const selection = elementSelections[index];
         refinedMasks.set(selection.id, segmented.refinedAlpha);
         coarseMasks.set(selection.id, segmented.coarseAlpha);
         if (options.collectDiagnostics) {
@@ -918,7 +975,7 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
             refinedAlpha: segmented.refinedAlpha
           });
         }
-      }
+      });
 
       await releaseInferenceSession(BIRENET_MODEL.id);
       const selections = resolveAutoLayerHierarchy(
@@ -1060,7 +1117,7 @@ export function useCutoutInference(options?: UseCutoutInferenceOptions) {
             selection,
             {
               signal: controller.signal,
-              forceDiffusion: deterministicPanelIds.has(selection.id)
+              forceModel: true
             }
           );
           repairRegions.push({

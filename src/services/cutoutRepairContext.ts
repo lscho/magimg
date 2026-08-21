@@ -3,7 +3,7 @@ import {
   analyzeRepairSurface,
   reconstructRepairSurface
 } from "@/services/cutoutRepairSurface";
-import type { CutoutSelection, CutoutSelectionBox } from "@/types";
+import type { CutoutSelectionBox } from "@/types";
 
 const DEFAULT_ALPHA_THRESHOLD = 16;
 const SURFACE_MAX_FIT_ERROR = 6;
@@ -78,16 +78,6 @@ export interface MaterialContextAnalysis {
   spatialCoverage: number;
   repairStrategy: LocalRepairStrategy;
   useDiffusion: boolean;
-}
-
-/** 纯手动添加笔画与命令行脚本保持一致，固定使用确定性曲面/扩散修复。 */
-export function shouldForceManualDiffusion(
-  selection: CutoutSelection,
-  hasDirectChildren: boolean
-) {
-  if (hasDirectChildren) return false;
-  const additions = selection.removalStrokes.filter((stroke) => stroke.operation === "add");
-  return additions.length > 0 && additions.every((stroke) => !stroke.smart);
 }
 
 function assertContextDimensions(

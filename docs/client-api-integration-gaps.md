@@ -13,7 +13,7 @@
 | 平台能力 | `GET /capabilities` | 使用服务端计费、卡密购买地址、上传大小、MIME 和质量档位配置 |
 | 模板 | `GET /template-categories`、`GET /templates`、`GET /templates/:id` | 模板广场和生成页模板弹窗使用服务端数据；详情接口已封装 |
 | 积分 | `GET /points`、`POST /cards/redeem` | 积分日志使用服务端分页数据，充值弹窗改为卡密兑换 |
-| 上传 | `POST /uploads/images` | 图生图先读取本地文件并 multipart 上传，再使用 `inputAssetId` 创建任务 |
+| 上传 | `POST /uploads/images` | 图生图读取最多 3 张本地图片并分别 multipart 上传，再按选择顺序使用 `inputAssetIds` 创建任务；`inputAssetId` 仅兼容旧客户端 |
 | 任务 | `POST /tasks`、`GET /tasks`、`GET /tasks/:id`、`POST /tasks/:id/cancel` | 创建任务携带幂等键、`outputFormat`，并仅为 JPEG/WebP 携带 `output_compression`；store 每 2 秒查询状态并重试临时失败；恢复会话时找回最新进行中任务；排队任务可取消；服务端任务合并到历史记录 |
 | 更新 | `GET /version/latest/tauri` | 正式 Tauri 构建启动时按平台检查签名更新；普通更新确认后安装，强制更新阻断使用，安装完成自动重启 |
 | AI 抠图计费 | `POST /matting`、`POST /matting/:id/refund` | 本地档按 `mattingCost` 预扣；云端档按 `backgroundRepairCost` 一次预扣；本地失败由客户端退款，云端失败/取消由服务端幂等退款 |

@@ -34,6 +34,25 @@ describe("background repair API contract", () => {
     expect(options.headers["Idempotency-Key"]).toMatch(/^huanhua:/u);
   });
 
+  it("creates an image-to-image task with three ordered input assets", async () => {
+    fetchHttp.mockResolvedValue(jsonResponse({ id: "task-1", status: "pending" }));
+    await apiClient.createTask({
+      mode: "imageToImage",
+      prompt: "融合三张参考图",
+      inputAssetIds: ["11", "12", "13"],
+      outputFormat: "webp",
+      outputCompression: 88
+    });
+
+    const [url, options] = fetchHttp.mock.calls[0];
+    expect(url).toBe("/api/client/v1/tasks");
+    expect(JSON.parse(options.body)).toMatchObject({
+      inputAssetIds: ["11", "12", "13"],
+      outputFormat: "webp",
+      output_compression: 88
+    });
+  });
+
   it("charges and submits one automatic-layer cloud background task", async () => {
     fetchHttp
       .mockResolvedValueOnce(jsonResponse({ mattingId: "m-auto", cost: 20, balance: 80 }))

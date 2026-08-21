@@ -11,9 +11,20 @@ describe("auto layer cloud output compositing", () => {
     const mask = createAutoLayerCloudCompositeMask(30, 30, [box]);
     expect(mask[4 * 30 + 10]).toBe(0);
     expect(mask[5 * 30 + 10]).toBe(0);
-    expect(mask[6 * 30 + 10]).toBe(255);
+    expect(mask[6 * 30 + 10]).toBe(60);
     expect(mask[15 * 30 + 15]).toBe(255);
     expect(mask[25 * 30 + 10]).toBe(0);
+  });
+
+  it("does not feather against the outside of the image canvas", () => {
+    const mask = createAutoLayerCloudCompositeMask(30, 20, [
+      { id: "edge", x: 0, y: 0, width: 10, height: 20 }
+    ]);
+
+    expect(mask[0]).toBe(255);
+    expect(mask[10 * 30]).toBe(255);
+    expect(mask[10 * 30 + 9]).toBe(0);
+    expect(mask[10 * 30 + 10]).toBe(0);
   });
 
   it("only adopts repaired RGB inside the feathered box and preserves source alpha", () => {
@@ -108,5 +119,40 @@ describe("auto layer cloud output compositing", () => {
     expect([...output.slice(inside, inside + 3)]).toEqual([123, 146, 169]);
     expect([...output.slice(outside, outside + 4)])
       .toEqual([...source.slice(outside, outside + 4)]);
+  });
+
+  it("clamps corrected channels when regression inputs use Node buffers", () => {
+    const width = 60;
+    const height = 40;
+    const source = Buffer.alloc(width * height * 4);
+    const repaired = Buffer.alloc(width * height * 4);
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const offset = pixel * 4;
+      const value = 40 + pixel % 160;
+      repaired.set([value, value, value, 255], offset);
+      source.set([
+        Math.min(255, Math.round(value * 1.1 + 10)),
+        Math.min(255, Math.round(value * 1.1 + 10)),
+        Math.min(255, Math.round(value * 1.1 + 10)),
+        255
+      ], offset);
+    }
+    const box = { id: "subject", x: 20, y: 10, width: 20, height: 20 };
+    for (let y = box.y; y < box.y + box.height; y += 1) {
+      for (let x = box.x; x < box.x + box.width; x += 1) {
+        const offset = (y * width + x) * 4;
+        repaired.set([250, 250, 250, 255], offset);
+      }
+    }
+
+    const output = compositeAutoLayerCloudRgba(
+      source as unknown as Uint8ClampedArray,
+      repaired as unknown as Uint8ClampedArray,
+      width,
+      height,
+      [box]
+    );
+    const inside = (20 * width + 30) * 4;
+    expect([...output.slice(inside, inside + 3)]).toEqual([255, 255, 255]);
   });
 });

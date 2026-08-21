@@ -85,7 +85,7 @@ export const useAppStore = defineStore("app", () => {
   const pendingTemplate = ref<PromptTemplate | null>(null);
   const pendingHistoryWorkspace = shallowRef<{
     record: GenerationRecord;
-    referenceImage: SelectedImageFile | null;
+    referenceImages: SelectedImageFile[];
   } | null>(null);
   const pendingReferenceImage = shallowRef<SelectedImageFile | null>(null);
   const creatingGeneration = shallowRef(false);
@@ -119,6 +119,9 @@ export const useAppStore = defineStore("app", () => {
         records.set(record.generationId, {
           ...localRecord,
           images: record.images.map((image) => mergeServerImage(image, localRecord.images)),
+          inputImages: (record.inputImages || (record.inputImage ? [record.inputImage] : [])).map(
+            image => mergeServerImage(image, localRecord.inputImages || (localRecord.inputImage ? [localRecord.inputImage] : []))
+          ),
           inputImage: record.inputImage
             ? mergeServerImage(record.inputImage, localRecord.inputImage ? [localRecord.inputImage] : [])
             : localRecord.inputImage
@@ -558,7 +561,7 @@ export const useAppStore = defineStore("app", () => {
   async function generate(
     mode: GenerationMode,
     params: ImageParams,
-    referenceImage: SelectedImageFile | null = null
+    referenceImages: SelectedImageFile[] = []
   ) {
     error.value = "";
     generationErrorKind.value = "none";
@@ -578,16 +581,21 @@ export const useAppStore = defineStore("app", () => {
         outputCompression: Math.min(100, Math.max(0, params.outputCompression))
       };
 
-      let inputAssetId: string | undefined;
+      let inputAssetIds: string[] | undefined;
       if (mode === "image-to-image") {
-        if (!referenceImage) throw new Error("请先选择参考图片。");
-        if (!capabilities.value.supportedMimeTypes.includes(referenceImage.file.type)) {
-          throw new Error("仅支持 JPEG、PNG 和 WebP 图片。");
+        if (!referenceImages.length) throw new Error("请先选择参考图片。");
+        if (referenceImages.length > 3) throw new Error("最多上传 3 张参考图片。");
+        for (const referenceImage of referenceImages) {
+          if (!capabilities.value.supportedMimeTypes.includes(referenceImage.file.type)) {
+            throw new Error("仅支持 JPEG、PNG 和 WebP 图片。");
+          }
+          if (referenceImage.file.size > capabilities.value.uploadMaxBytes) {
+            throw new Error(`每张参考图片不能超过 ${Math.floor(capabilities.value.uploadMaxBytes / 1024 / 1024)} MB。`);
+          }
         }
-        if (referenceImage.file.size > capabilities.value.uploadMaxBytes) {
-          throw new Error(`参考图片不能超过 ${Math.floor(capabilities.value.uploadMaxBytes / 1024 / 1024)} MB。`);
-        }
-        inputAssetId = (await apiClient.uploadImage(referenceImage.file)).id;
+        inputAssetIds = await Promise.all(referenceImages.map(async image => (
+          await apiClient.uploadImage(image.file)
+        ).id));
       }
 
       const prompt = fixedParams.prompt.trim();
@@ -598,7 +606,7 @@ export const useAppStore = defineStore("app", () => {
         mode: toClientMode(mode),
         prompt,
         ...(fixedParams.templateId ? { templateId: fixedParams.templateId } : {}),
-        ...(inputAssetId ? { inputAssetId } : {}),
+        ...(inputAssetIds ? { inputAssetIds } : {}),
         ...parseSize(fixedParams.size),
         quality:
           isSupportedQuality(fixedParams.quality) &&
@@ -780,7 +788,8 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function resolveHistoryTask(record: GenerationRecord) {
-    if (record.mode !== "image-to-image" || record.inputImage || !session.value) return record;
+    const existingInputs = record.inputImages || (record.inputImage ? [record.inputImage] : []);
+    if (record.mode !== "image-to-image" || existingInputs.length || !session.value) return record;
 
     const task = await apiClient.task(record.generationId);
     const serverRecord = taskToRecord(task, balance.value.balance);
@@ -788,18 +797,19 @@ export const useAppStore = defineStore("app", () => {
     return {
       ...record,
       inputImage: serverRecord.inputImage,
+      inputImages: serverRecord.inputImages,
       images: record.images.length ? record.images : serverRecord.images
     };
   }
 
   function queueHistoryWorkspace(
     record: GenerationRecord,
-    referenceImage: SelectedImageFile | null
+    referenceImages: SelectedImageFile[]
   ) {
     pendingReferenceImage.value = null;
     pendingHistoryWorkspace.value = {
       record,
-      referenceImage
+      referenceImages
     };
   }
 

@@ -106,6 +106,19 @@ interface LocalRepairContext {
 const MAX_DETERMINISTIC_BOUNDARY_ERROR = 14;
 const MAX_DETERMINISTIC_STRONG_ERROR_RATIO = 0.12;
 
+export function resolveLocalRepairExecutionMode(
+  repairStrategy: MaterialContextAnalysis["repairStrategy"],
+  options: { forceDiffusion?: boolean; forceModel?: boolean } = {}
+) {
+  if (options.forceDiffusion && options.forceModel) {
+    throw new Error("背景修复不能同时强制确定性修复和 Big-LaMa。");
+  }
+  if (options.forceModel) return "model" as const;
+  if (options.forceDiffusion) return "deterministic" as const;
+  if (repairStrategy === "model") return "model" as const;
+  return "deterministic" as const;
+}
+
 function prepareRepairContext(
   image: CanvasImageSource,
   imageWidth: number,
@@ -450,9 +463,10 @@ export async function repairBackgroundLocally(
   options: {
     signal?: AbortSignal;
     forceDiffusion?: boolean;
+    forceModel?: boolean;
   } = {}
 ) {
-  const { signal, forceDiffusion = false } = options;
+  const { signal, forceDiffusion = false, forceModel = false } = options;
   if (!isTauri) throw new Error("浏览器预览不能运行本地背景修复模型。");
   if (signal?.aborted) throw abortError();
   const layout = buildCutoutRepairLayoutFromBounds(
@@ -470,7 +484,10 @@ export async function repairBackgroundLocally(
     bounds
   );
   let repairedPixels: Uint8ClampedArray;
-  const deterministic = forceDiffusion || repairContext.analysis.repairStrategy !== "model";
+  const deterministic = resolveLocalRepairExecutionMode(
+    repairContext.analysis.repairStrategy,
+    { forceDiffusion, forceModel }
+  ) === "deterministic";
   if (deterministic) {
     repairedPixels = repairSmoothBackgroundRgba(
       repairContext.sourceRgba,

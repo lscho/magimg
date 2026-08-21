@@ -74,13 +74,21 @@ function normalizeNativeError(exception: unknown, fallback: string): Error {
   return new Error(fallback);
 }
 
+const nativeCancellationSignals = new WeakSet<AbortSignal>();
+
+function cancelNativeRunOnce(signal: AbortSignal) {
+  if (nativeCancellationSignals.has(signal)) return;
+  nativeCancellationSignals.add(signal);
+  void invoke("cutout_cancel").catch(() => undefined);
+}
+
 async function invokeWithCancellation<T>(
   start: () => Promise<T>,
   signal?: AbortSignal
 ): Promise<T> {
   if (signal?.aborted) throw abortError();
   const handleAbort = () => {
-    void invoke("cutout_cancel").catch(() => undefined);
+    if (signal) cancelNativeRunOnce(signal);
   };
   signal?.addEventListener("abort", handleAbort, { once: true });
   try {

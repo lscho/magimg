@@ -205,16 +205,16 @@ struct LoadedSegmenter {
 #[derive(Default)]
 struct InferenceState {
     loaded: Option<LoadedModel>,
-    refiner: Option<LoadedRefiner>,
+    refiner: Option<Arc<Mutex<LoadedRefiner>>>,
     repairer: Option<LoadedRepairer>,
-    segmenter: Option<LoadedSegmenter>,
+    segmenter: Option<Arc<Mutex<LoadedSegmenter>>>,
     next_embedding_id: u64,
 }
 
 #[derive(Default)]
 pub struct CutoutState {
     inference: Mutex<InferenceState>,
-    active_run: Mutex<Option<Arc<RunOptions>>>,
+    active_runs: Mutex<Vec<Arc<RunOptions>>>,
     cancel_epoch: AtomicU64,
 }
 
@@ -280,11 +280,11 @@ impl CutoutState {
         let options =
             Arc::new(RunOptions::new().map_err(|error| format!("无法创建原生推理任务：{error}"))?);
         {
-            let mut active_run = self
-                .active_run
+            let mut active_runs = self
+                .active_runs
                 .lock()
                 .map_err(|_| "原生抠图状态异常，请重启应用后重试。".to_string())?;
-            *active_run = Some(Arc::clone(&options));
+            active_runs.push(Arc::clone(&options));
         }
         if self.is_cancelled(epoch) {
             let _ = options.terminate();
@@ -295,20 +295,15 @@ impl CutoutState {
     }
 
     fn finish_run(&self, options: &Arc<RunOptions>) {
-        if let Ok(mut active_run) = self.active_run.lock() {
-            if active_run
-                .as_ref()
-                .is_some_and(|active| Arc::ptr_eq(active, options))
-            {
-                *active_run = None;
-            }
+        if let Ok(mut active_runs) = self.active_runs.lock() {
+            active_runs.retain(|active| !Arc::ptr_eq(active, options));
         }
     }
 
     fn cancel(&self) {
         self.cancel_epoch.fetch_add(1, Ordering::SeqCst);
-        if let Ok(active_run) = self.active_run.lock() {
-            if let Some(options) = active_run.as_ref() {
+        if let Ok(active_runs) = self.active_runs.lock() {
+            for options in active_runs.iter() {
                 let _ = options.terminate();
             }
         }
@@ -1514,34 +1509,42 @@ fn refine_mask(
         return Err(cancelled_error());
     }
 
-    let mut inference = state.inference()?;
-    if inference
-        .refiner
-        .as_ref()
-        .is_none_or(|loaded| loaded.spec.id != spec.id)
-    {
-        inference.refiner = None;
-        let path = refiner_path(app, spec)?;
-        validate_refiner_model_file(
-            &path,
-            spec.size_bytes,
-            spec.crc32,
-            "精修模型",
-            &state,
-            epoch,
-        )?;
-        let session = create_session(&path, "精修模型")?;
-        validate_refiner_contract(&session)?;
-        inference.refiner = Some(LoadedRefiner { spec, session });
-    }
+    let refiner = {
+        let mut inference = state.inference()?;
+        if inference.refiner.is_none() {
+            let path = refiner_path(app, spec)?;
+            validate_refiner_model_file(
+                &path,
+                spec.size_bytes,
+                spec.crc32,
+                "精修模型",
+                &state,
+                epoch,
+            )?;
+            let session = create_session(&path, "精修模型")?;
+            validate_refiner_contract(&session)?;
+            inference.refiner = Some(Arc::new(Mutex::new(LoadedRefiner { spec, session })));
+        }
+        Arc::clone(
+            inference
+                .refiner
+                .as_ref()
+                .ok_or_else(|| "精修模型会话创建失败。".to_string())?,
+        )
+    };
     if state.is_cancelled(epoch) {
         return Err(cancelled_error());
     }
 
-    let refiner = inference
-        .refiner
-        .as_mut()
-        .ok_or_else(|| "精修模型会话创建失败。".to_string())?;
+    let mut refiner = refiner
+        .lock()
+        .map_err(|_| "精修模型会话状态异常，请重启应用后重试。".to_string())?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+    if refiner.spec.id != spec.id {
+        return Err("精修模型会话与请求不匹配。".to_string());
+    }
     let input_tensor = Tensor::from_array(([1_usize, 4, height, width], input))
         .map_err(|error| format!("无法创建精修模型输入：{error}"))?;
     let run_options = state.begin_run(epoch)?;
@@ -1679,29 +1682,37 @@ fn segment_image(app: &AppHandle, model_id: String, bytes: Vec<u8>) -> Result<Re
         return Err(cancelled_error());
     }
 
-    let mut inference = state.inference()?;
-    if inference
-        .segmenter
-        .as_ref()
-        .is_none_or(|loaded| loaded.spec.id != spec.id)
-    {
-        inference.segmenter = None;
-        let path = segmenter_path(app, spec)?;
-        validate_sam_model_file(&path, spec.file, "抠图分割模型", &state, epoch)?;
-        let session = create_session(&path, "抠图分割模型")?;
-        validate_segmenter_contract(&session)?;
-        inference.segmenter = Some(LoadedSegmenter { spec, session });
-        #[cfg(debug_assertions)]
-        eprintln!("[cutout:birefnet] session:ready");
-    }
+    let segmenter = {
+        let mut inference = state.inference()?;
+        if inference.segmenter.is_none() {
+            let path = segmenter_path(app, spec)?;
+            validate_sam_model_file(&path, spec.file, "抠图分割模型", &state, epoch)?;
+            let session = create_session(&path, "抠图分割模型")?;
+            validate_segmenter_contract(&session)?;
+            inference.segmenter = Some(Arc::new(Mutex::new(LoadedSegmenter { spec, session })));
+            #[cfg(debug_assertions)]
+            eprintln!("[cutout:birefnet] session:ready");
+        }
+        Arc::clone(
+            inference
+                .segmenter
+                .as_ref()
+                .ok_or_else(|| "抠图分割模型会话创建失败。".to_string())?,
+        )
+    };
     if state.is_cancelled(epoch) {
         return Err(cancelled_error());
     }
 
-    let segmenter = inference
-        .segmenter
-        .as_mut()
-        .ok_or_else(|| "抠图分割模型会话创建失败。".to_string())?;
+    let mut segmenter = segmenter
+        .lock()
+        .map_err(|_| "抠图分割模型会话状态异常，请重启应用后重试。".to_string())?;
+    if state.is_cancelled(epoch) {
+        return Err(cancelled_error());
+    }
+    if segmenter.spec.id != spec.id {
+        return Err("抠图分割模型会话与请求不匹配。".to_string());
+    }
     let input_tensor =
         Tensor::from_array(([1_usize, 3, spec.input_height, spec.input_width], input))
             .map_err(|error| format!("无法创建抠图分割输入：{error}"))?;
@@ -1850,12 +1861,9 @@ pub async fn cutout_release(app: AppHandle, model_id: Option<String>) -> Result<
         if should_release_model {
             inference.loaded = None;
         }
-        let should_release_segmenter = model_id.as_deref().is_none_or(|model_id| {
-            inference
-                .segmenter
-                .as_ref()
-                .is_some_and(|loaded| loaded.spec.id == model_id)
-        });
+        let should_release_segmenter = model_id
+            .as_deref()
+            .is_none_or(|model_id| model_id == CUTOUT_SEGMENTER.id);
         if should_release_segmenter {
             inference.segmenter = None;
         }
@@ -2401,6 +2409,19 @@ mod tests {
         assert!(!state.is_cancelled(0));
         state.cancel();
         assert!(state.is_cancelled(0));
+    }
+
+    #[test]
+    fn tracks_multiple_active_inference_runs() {
+        let state = CutoutState::default();
+        let first = state.begin_run(0).expect("first run should start");
+        let second = state.begin_run(0).expect("second run should start");
+        assert_eq!(state.active_runs.lock().expect("active runs").len(), 2);
+
+        state.finish_run(&first);
+        assert_eq!(state.active_runs.lock().expect("active runs").len(), 1);
+        state.finish_run(&second);
+        assert!(state.active_runs.lock().expect("active runs").is_empty());
     }
 
     #[test]

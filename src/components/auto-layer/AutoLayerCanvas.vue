@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from "vue";
-import { Maximize2 } from "lucide-vue-next";
-import { moveAutoLayer, scaleAutoLayer } from "@/services/autoLayerModel";
+import { moveAutoLayer } from "@/services/autoLayerModel";
 import { autoLayerFontFamilies, fitAutoLayerTextFontSize } from "@/services/autoLayerRecognition";
 import type { AutoLayerItem } from "./types";
 
@@ -10,16 +9,16 @@ const props = defineProps<{
   imageWidth: number;
   imageHeight: number;
   layers: AutoLayerItem[];
-  selectedId: string | null;
+  previewScaleLimit?: number | null;
 }>();
 
 const emit = defineEmits<{
   select: [id: string];
   updateLayers: [layers: AutoLayerItem[]];
+  fitScaleChange: [value: number];
 }>();
 
 interface LayerInteraction {
-  type: "drag" | "scale";
   pointerId: number;
   layer: AutoLayerItem;
   startX: number;
@@ -49,10 +48,14 @@ function resizeStage() {
   if (!element) return;
   const availableWidth = Math.max(1, element.clientWidth - 32);
   const availableHeight = Math.max(1, element.clientHeight - 32);
-  const scale = Math.min(
+  const naturalFitScale = Math.min(
     availableWidth / Math.max(1, props.imageWidth),
     availableHeight / Math.max(1, props.imageHeight)
   );
+  emit("fitScaleChange", naturalFitScale);
+  const scale = props.previewScaleLimit && props.previewScaleLimit > 0
+    ? Math.min(naturalFitScale, props.previewScaleLimit)
+    : naturalFitScale;
   stageWidth.value = Math.max(1, Math.round(props.imageWidth * scale));
   stageHeight.value = Math.max(1, Math.round(props.imageHeight * scale));
 }
@@ -86,12 +89,11 @@ function replaceLayer(id: string, next: AutoLayerItem) {
   emit("updateLayers", props.layers.map((layer) => layer.id === id ? next : layer));
 }
 
-function startInteraction(type: LayerInteraction["type"], layer: AutoLayerItem, event: PointerEvent) {
+function startInteraction(layer: AutoLayerItem, event: PointerEvent) {
   if (event.button !== 0 || editingId.value === layer.id) return;
   event.preventDefault();
   emit("select", layer.id);
   interaction.value = {
-    type,
     pointerId: event.pointerId,
     layer: { ...layer },
     startX: event.clientX,
@@ -107,26 +109,19 @@ function handlePointerMove(event: PointerEvent) {
   const scale = Math.max(0.001, previewScale.value);
   const deltaX = (event.clientX - current.startX) / scale;
   const deltaY = (event.clientY - current.startY) / scale;
-  if (current.type === "drag") {
-    replaceLayer(current.layer.id, moveAutoLayer(
-      current.layer,
-      current.layer.x + deltaX,
-      current.layer.y + deltaY,
-      props.imageWidth,
-      props.imageHeight
-    ));
-    return;
-  }
-  const scaleDelta = Math.abs(deltaX) >= Math.abs(deltaY)
-    ? deltaX / Math.max(1, current.layer.sourceBox.width)
-    : deltaY / Math.max(1, current.layer.sourceBox.height);
-  const initialScale = current.layer.width / Math.max(1, current.layer.sourceBox.width);
-  replaceLayer(current.layer.id, scaleAutoLayer(
+  replaceLayer(current.layer.id, moveAutoLayer(
     current.layer,
-    initialScale + scaleDelta,
+    current.layer.x + deltaX,
+    current.layer.y + deltaY,
     props.imageWidth,
     props.imageHeight
   ));
+}
+
+function layerAriaLabel(layer: AutoLayerItem) {
+  return layer.kind === "text"
+    ? `${layer.name}，文字图层，可拖动，双击编辑`
+    : `${layer.name}，素材图层，可拖动`;
 }
 
 function finishInteraction(event: PointerEvent) {
@@ -225,7 +220,7 @@ watch(
   syncObjectUrls,
   { immediate: true }
 );
-watch(() => [props.imageWidth, props.imageHeight], resizeStage);
+watch(() => [props.imageWidth, props.imageHeight, props.previewScaleLimit], resizeStage);
 
 onMounted(() => {
   resizeObserver = new ResizeObserver(resizeStage);
@@ -256,16 +251,16 @@ onBeforeUnmount(() => {
         :key="layer.id"
         class="auto-layer-object"
         :class="{
-          'is-selected': selectedId === layer.id,
+          'is-material': layer.kind === 'material',
           'is-text': layer.kind === 'text',
           'is-editing': editingId === layer.id
         }"
         :style="layerStyle(layer, index)"
-        :aria-label="`${layer.name}，可拖动和缩放`"
+        :aria-label="layerAriaLabel(layer)"
         tabindex="0"
         @focus="emit('select', layer.id)"
         @keydown="handleLayerKeydown(layer, $event)"
-        @pointerdown="startInteraction('drag', layer, $event)"
+        @pointerdown="startInteraction(layer, $event)"
       >
         <img
           v-if="layer.kind === 'material'"
@@ -284,16 +279,6 @@ onBeforeUnmount(() => {
           @dblclick.stop="beginTextEditing(layer, $event)"
           @blur="finishTextEditing(layer, $event)"
         >{{ layer.text }}</span>
-        <button
-          v-if="selectedId === layer.id && editingId !== layer.id"
-          class="auto-layer-scale-handle"
-          type="button"
-          title="拖动缩放图层"
-          aria-label="拖动缩放图层"
-          @pointerdown.stop="startInteraction('scale', layer, $event)"
-        >
-          <Maximize2 :size="11" aria-hidden="true" />
-        </button>
       </div>
     </div>
   </main>
@@ -342,16 +327,11 @@ onBeforeUnmount(() => {
   position: absolute;
   min-width: 8px;
   min-height: 8px;
-  border: 1px solid transparent;
   outline: none;
-  cursor: move;
   user-select: none;
 
-  &.is-selected,
-  &:focus-visible {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.24);
-  }
+  &.is-material { cursor: move; }
+  &.is-text { cursor: text; }
 
   &.is-editing {
     cursor: text;
@@ -372,24 +352,6 @@ onBeforeUnmount(() => {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
   letter-spacing: 0;
   outline: none;
-}
-
-.auto-layer-scale-handle {
-  position: absolute;
-  right: -10px;
-  bottom: -10px;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  color: var(--text);
-  background: var(--surface-raised);
-  cursor: nwse-resize;
-
-  &:focus-visible { outline: 2px solid var(--accent); }
 }
 
 @media (prefers-reduced-motion: reduce) {

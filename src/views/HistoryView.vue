@@ -199,14 +199,15 @@ function closeTaskMenus() {
   cutoutContextMenuTarget.value = null;
 }
 
-async function restoredReferenceImage(record: GenerationRecord): Promise<SelectedImageFile | null> {
-  if (record.mode !== "image-to-image") return null;
-  if (!record.inputImage) throw new Error("该图生图任务缺少可恢复的参考图。");
-  return remoteImageToSelectedFile(
-    record.inputImage.remoteUrl,
-    `huanhua-${record.generationId}-reference`,
-    record.inputImage.mimeType
-  );
+async function restoredReferenceImages(record: GenerationRecord): Promise<SelectedImageFile[]> {
+  if (record.mode !== "image-to-image") return [];
+  const inputs = record.inputImages || (record.inputImage ? [record.inputImage] : []);
+  if (!inputs.length) throw new Error("该图生图任务缺少可恢复的参考图。");
+  return Promise.all(inputs.map((input, index) => remoteImageToSelectedFile(
+    input.remoteUrl,
+    `huanhua-${record.generationId}-reference-${index + 1}`,
+    input.mimeType
+  )));
 }
 
 async function openContextTask() {
@@ -217,8 +218,8 @@ async function openContextTask() {
   actionError.value = "";
   try {
     const record = await app.resolveHistoryTask(selectedRecord);
-    const restoredReference = await restoredReferenceImage(record);
-    app.queueHistoryWorkspace(record, restoredReference);
+    const restoredReferences = await restoredReferenceImages(record);
+    app.queueHistoryWorkspace(record, restoredReferences);
     await router.push({ name: "generate", params: { mode: record.mode } });
   } catch (exception) {
     app.discardHistoryWorkspace();

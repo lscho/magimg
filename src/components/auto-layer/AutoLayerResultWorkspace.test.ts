@@ -52,7 +52,6 @@ describe("AutoLayerResultWorkspace selection", () => {
   it("starts with no selected layer and has no standalone PSD action", () => {
     const wrapper = mountWorkspace(document("complete", [material("title")]));
     expect(wrapper.find('button[aria-label="下载 PSD"]').exists()).toBe(false);
-    expect(wrapper.findComponent(AutoLayerCanvas).props("selectedId")).toBeNull();
     expect(wrapper.findComponent(AutoLayerInspector).props("selectedId")).toBeNull();
   });
 
@@ -65,7 +64,15 @@ describe("AutoLayerResultWorkspace selection", () => {
     expect(wrapper.findComponent(AutoLayerInspector).props("selectedId")).toBe(title.id);
 
     await wrapper.setProps({ document: document("complete", [panel]) });
-    expect(wrapper.findComponent(AutoLayerCanvas).props("selectedId")).toBeNull();
     expect(wrapper.findComponent(AutoLayerInspector).props("selectedId")).toBeNull();
+  });
+
+  it("forwards the shared preview scale and the canvas natural fit", async () => {
+    const wrapper = mountWorkspace(document("complete"));
+    await wrapper.setProps({ previewScaleLimit: 0.42 });
+
+    expect(wrapper.findComponent(AutoLayerCanvas).props("previewScaleLimit")).toBe(0.42);
+    wrapper.findComponent(AutoLayerCanvas).vm.$emit("fitScaleChange", 0.61);
+    expect(wrapper.emitted("fitScaleChange")).toEqual([[0.61]]);
   });
 });

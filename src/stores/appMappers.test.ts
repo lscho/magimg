@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { GeneratedImage } from "@/types";
+import type { GeneratedImage, GenerationTask } from "@/types";
 import {
   generationErrorDetails,
   isPersistedSession,
   mergeServerImage,
   parseSize,
+  taskToRecord,
   toGenerationMode,
   toTaskStatus
 } from "./appMappers";
@@ -44,6 +45,30 @@ describe("appMappers", () => {
 
     expect(mergeServerImage(serverImage, localImages).localPath).toBe("/tmp/new.png");
     expect(mergeServerImage(serverImage, localImages.slice(0, 1)).localPath).toBeUndefined();
+  });
+
+  it("按服务端顺序映射全部图生图参考图", () => {
+    const task = {
+      id: "task-1",
+      requestId: "request-1",
+      mode: "imageToImage",
+      prompt: "融合参考图",
+      inputAssets: [
+        { id: "11", kind: "input", url: "https://example.com/1.png", mimeType: "image/png", size: 1, createdAt: "2026-08-20T00:00:00.000Z" },
+        { id: "12", kind: "input", url: "https://example.com/2.png", mimeType: "image/png", size: 1, createdAt: "2026-08-20T00:00:00.000Z" }
+      ],
+      width: 1024,
+      height: 1024,
+      quality: "auto",
+      pointsCost: 15,
+      status: "pending",
+      attemptCount: 0,
+      createdAt: "2026-08-20T00:00:00.000Z"
+    } satisfies GenerationTask;
+
+    const record = taskToRecord(task, 85);
+    expect(record.inputImages?.map(image => image.id)).toEqual(["11", "12"]);
+    expect(record.inputImage?.id).toBe("11");
   });
 
   it("解析固定尺寸并归一化生成错误", () => {

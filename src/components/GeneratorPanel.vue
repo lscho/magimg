@@ -35,7 +35,7 @@ const props = defineProps<{
   sizeRules: GenerationSettings["sizeRules"];
 }>();
 const params = defineModel<ImageParams>("params", { required: true });
-const referenceImage = defineModel<SelectedImageFile | null>("referenceImage", { required: true });
+const referenceImages = defineModel<SelectedImageFile[]>("referenceImages", { required: true });
 
 const emit = defineEmits<{
   generate: [];
@@ -115,8 +115,9 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
     <div class="generator-scroll">
       <ReferenceImageUploader
         v-if="mode === 'image-to-image'"
-        v-model:reference-image="referenceImage"
+        v-model:reference-images="referenceImages"
         :max-bytes="uploadMaxBytes"
+        :max-images="3"
       />
 
       <div class="field prompt-field">
@@ -230,7 +231,7 @@ function handleOutputFormatChange(outputFormat: OutputFormat) {
           loading ||
           insufficientCredits ||
           (isLoggedIn && !params.prompt.trim()) ||
-          (isLoggedIn && mode === 'image-to-image' && !referenceImage)
+          (isLoggedIn && mode === 'image-to-image' && !referenceImages.length)
         "
         :aria-describedby="visibleError ? 'generation-error' : undefined"
         @click="emit('generate')"

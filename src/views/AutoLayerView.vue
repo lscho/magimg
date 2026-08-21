@@ -14,8 +14,14 @@ const workflow = useAutoLayerWorkflow();
 const showResourceDownload = shallowRef(false);
 const splitPercent = shallowRef(50);
 const resizing = shallowRef(false);
+const sourceFitScale = shallowRef(0);
+const resultFitScale = shallowRef(0);
 const hasCompleteResult = computed(() => workflow.document.value?.status === "complete");
 const drawerVisible = computed(() => hasCompleteResult.value && workflow.drawerOpen.value);
+const sharedPreviewScale = computed(() => {
+  if (!drawerVisible.value || sourceFitScale.value <= 0 || resultFitScale.value <= 0) return null;
+  return Math.min(sourceFitScale.value, resultFitScale.value);
+});
 const layoutStyle = computed(() => ({
   "--source-panel": `${splitPercent.value}fr`,
   "--result-panel": `${100 - splitPercent.value}fr`
@@ -83,6 +89,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
           :smart-selecting="workflow.smartSelection.busy.value"
           :smart-selection-available="workflow.smartSelection.available"
           :smart-selection-threshold="workflow.smartSelection.threshold.value"
+          :preview-scale-limit="sharedPreviewScale"
           @ready="workflow.handleReady"
           @selections-change="workflow.handleSelectionsChange"
           @import="workflow.chooseImage"
@@ -90,6 +97,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
           @drop-file="workflow.loadDroppedImage"
           @smart-select="workflow.smartSelect"
           @update-smart-selection-threshold="workflow.smartSelection.setThreshold"
+          @fit-scale-change="sourceFitScale = $event"
         />
       </section>
 
@@ -105,8 +113,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
         v-if="hasCompleteResult && workflow.document.value"
         class="auto-layer-drawer"
         :document="workflow.document.value"
+        :preview-scale-limit="sharedPreviewScale"
         @close="workflow.drawerOpen.value = false"
         @update-layers="workflow.updateLayers"
+        @fit-scale-change="resultFitScale = $event"
       />
     </div>
 

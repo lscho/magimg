@@ -4,6 +4,9 @@ import type { CutoutSelectionBox } from "@/types";
 const MAX_COLOR_SAMPLES = 100_000;
 const MAX_MATCHED_CHANNEL_DIFFERENCE = 32;
 const MIN_COLOR_SAMPLES = 256;
+const CLOUD_FEATHER_RATIO = 0.12;
+const CLOUD_MIN_FEATHER = 8;
+const CLOUD_MAX_FEATHER = 24;
 
 interface CloudCompositeGeometry {
   covered: Uint8Array;
@@ -38,11 +41,12 @@ function createAutoLayerCloudCompositeGeometry(
     const boxWidth = bounds.right - bounds.left;
     const boxHeight = bounds.bottom - bounds.top;
     if (boxWidth <= 0 || boxHeight <= 0) continue;
+    const minimumEdge = Math.min(boxWidth, boxHeight);
     const feather = Math.min(
-      24,
+      CLOUD_MAX_FEATHER,
       Math.max(0, Math.min(
-        Math.round(Math.min(boxWidth, boxHeight) * 0.04),
-        Math.floor((Math.min(boxWidth, boxHeight) - 1) / 2)
+        Math.max(CLOUD_MIN_FEATHER, Math.round(minimumEdge * CLOUD_FEATHER_RATIO)),
+        Math.floor((minimumEdge - 1) / 2)
       ))
     );
     for (let y = bounds.top; y < bounds.bottom; y += 1) {
@@ -58,9 +62,12 @@ function createAutoLayerCloudCompositeGeometry(
   for (let index = 0; index < mask.length; index += 1) {
     if (!covered[index]) continue;
     const feather = featherWidths[index];
-    mask[index] = feather > 0
-      ? Math.min(255, Math.round(Math.max(0, distances[index] - 1) / feather * 255))
-      : 255;
+    if (feather <= 0) {
+      mask[index] = 255;
+      continue;
+    }
+    const normalized = Math.min(1, Math.max(0, distances[index] - 1) / feather);
+    mask[index] = Math.round(normalized * (2 - normalized) * 255);
   }
   return { covered, mask };
 }
@@ -84,7 +91,6 @@ function unionInteriorDistances(covered: Uint8Array, width: number, height: numb
       const index = y * width + x;
       if (!covered[index]) continue;
       let distance = distances[index];
-      if (x === 0 || y === 0) distance = 1;
       if (x > 0) distance = Math.min(distance, distances[index - 1] + 1);
       if (y > 0) {
         distance = Math.min(distance, distances[index - width] + 1);
@@ -99,7 +105,6 @@ function unionInteriorDistances(covered: Uint8Array, width: number, height: numb
       const index = y * width + x;
       if (!covered[index]) continue;
       let distance = distances[index];
-      if (x + 1 === width || y + 1 === height) distance = 1;
       if (x + 1 < width) distance = Math.min(distance, distances[index + 1] + 1);
       if (y + 1 < height) {
         distance = Math.min(distance, distances[index + width] + 1);
@@ -189,7 +194,7 @@ function matchGeneratedPageColors(
   if (mappings.every(mapping =>
     Math.abs(mapping.scale - 1) < 0.002 && Math.abs(mapping.offset) < 0.5
   )) return repaired;
-  const corrected = repaired.slice();
+  const corrected = new Uint8ClampedArray(repaired);
   for (let pixel = 0; pixel < covered.length; pixel += 1) {
     if (!covered[pixel]) continue;
     const pixelOffset = pixel * 4;

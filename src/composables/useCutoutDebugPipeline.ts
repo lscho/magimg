@@ -33,7 +33,7 @@ import {
   buildRemovalMask,
   prepareRepairMask
 } from "@/services/cutoutRepairMask";
-import { alphaContentBounds, shouldForceManualDiffusion } from "@/services/cutoutRepairContext";
+import { alphaContentBounds } from "@/services/cutoutRepairContext";
 import { repairBackgroundLocally } from "@/services/cutoutBackgroundRepair";
 import { maskToTransparentPng } from "@/services/cutoutExport";
 import { unionMasks } from "@/services/cutoutLayering";
@@ -54,7 +54,7 @@ import {
 
 /** 分割档位：/cutout 使用 BiRefNet，/auto-layer 使用 SAM 2.1 多候选。 */
 export type CutoutDebugSegmenter = "birefnet" | "sam";
-/** 本地背景修复分流：自动按链路规则，或强制走扩散 / Big-LaMa。 */
+/** 本地背景修复调试：生产规则固定 Big-LaMa，并保留显式扩散对照。 */
 export type CutoutDebugRepairMode = "auto" | "diffusion" | "model";
 
 export interface CutoutDebugArtifact {
@@ -688,10 +688,7 @@ export function useCutoutDebugPipeline() {
           if (maskStats(repairMask).area <= 0) {
             finishStage(repairStage, { status: "skipped", summary: "修复蒙版为空，直接使用原图背景" });
           } else {
-            const autoDiffusion = shouldForceManualDiffusion(parent, children.length > 0);
-            const forceDiffusion = input.repairMode === "diffusion"
-              ? true
-              : input.repairMode === "model" ? false : autoDiffusion;
+            const forceDiffusion = input.repairMode === "diffusion";
             if (!forceDiffusion && resources.value.repair !== "ready") {
               throw new Error("Big-LaMa 修复模型未就绪，请先在 AI 抠图页下载修复模型或改用强制扩散。");
             }
@@ -708,7 +705,11 @@ export function useCutoutDebugPipeline() {
               repairMask,
               parentAlpha,
               parent,
-              { signal: controller.signal, forceDiffusion }
+              {
+                signal: controller.signal,
+                forceDiffusion,
+                forceModel: !forceDiffusion
+              }
             );
             const exported = await maskToTransparentPng(
               repaired,
@@ -723,7 +724,7 @@ export function useCutoutDebugPipeline() {
                 : "Big-LaMa 生成式修复（超尺寸时按 512×512 瓦片分块）",
               metrics: [
                 { label: "分流决策", value: forceDiffusion ? "扩散" : "Big-LaMa" },
-                { label: "自动规则判定", value: autoDiffusion ? "扩散" : "模型" },
+                { label: "生产规则", value: "Big-LaMa" },
                 { label: "修复上下文", value: `${contextBounds.x}, ${contextBounds.y} · ${contextBounds.width}×${contextBounds.height}` },
                 { label: "输出尺寸", value: `${exported.width}×${exported.height}` }
               ],

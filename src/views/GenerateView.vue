@@ -24,7 +24,7 @@ const route = useRoute();
 const router = useRouter();
 const app = useAppStore();
 const params = ref<ImageParams>({ ...defaultParams });
-const referenceImage = shallowRef<SelectedImageFile | null>(null);
+const referenceImages = shallowRef<SelectedImageFile[]>([]);
 const showTemplates = shallowRef(false);
 const showLogin = shallowRef(false);
 const taskAttached = shallowRef(false);
@@ -100,10 +100,14 @@ watch(
   { deep: true }
 );
 
-watch(referenceImage, (image) => {
-  const nextPath = image?.path;
-  if (params.value.referenceImagePath !== nextPath) {
-    params.value = { ...params.value, referenceImagePath: nextPath };
+watch(referenceImages, (images) => {
+  const nextPaths = images.map(image => image.path);
+  const nextPath = nextPaths[0];
+  if (
+    params.value.referenceImagePath !== nextPath ||
+    JSON.stringify(params.value.referenceImagePaths || []) !== JSON.stringify(nextPaths)
+  ) {
+    params.value = { ...params.value, referenceImagePath: nextPath, referenceImagePaths: nextPaths };
   }
 });
 
@@ -119,7 +123,7 @@ async function generate() {
   openedHistoryRecord.value = null;
   taskAttached.value = true;
   try {
-    await app.generate(mode.value, params.value, referenceImage.value);
+    await app.generate(mode.value, params.value, referenceImages.value);
   } catch {
     // The store exposes the user-facing error in the generator panel.
   }
@@ -138,6 +142,7 @@ function workspaceParams() {
     n: 1,
     background: "auto" as const,
     referenceImagePath: undefined,
+    referenceImagePaths: undefined,
     templateId: undefined
   };
 }
@@ -145,7 +150,7 @@ function workspaceParams() {
 function resetWorkspace(nextMode: GenerationMode) {
   app.activeMode = nextMode;
   params.value = workspaceParams();
-  referenceImage.value = null;
+  referenceImages.value = [];
   taskAttached.value = false;
   openedHistoryRecord.value = null;
   showTemplates.value = false;
@@ -154,7 +159,7 @@ function resetWorkspace(nextMode: GenerationMode) {
   const historyWorkspace = app.consumeHistoryWorkspace(nextMode);
   if (historyWorkspace) {
     params.value = { ...historyWorkspace.record.params };
-    referenceImage.value = historyWorkspace.referenceImage;
+    referenceImages.value = historyWorkspace.referenceImages;
     openedHistoryRecord.value = historyWorkspace.record;
     taskAttached.value = true;
     return;
@@ -162,7 +167,7 @@ function resetWorkspace(nextMode: GenerationMode) {
 
   const pendingReferenceImage = app.consumeReferenceImage(nextMode);
   if (pendingReferenceImage) {
-    referenceImage.value = pendingReferenceImage;
+    referenceImages.value = [pendingReferenceImage];
     params.value = {
       ...params.value,
       referenceImagePath: pendingReferenceImage.path
@@ -179,9 +184,10 @@ async function restoreTask() {
   if (mode.value !== task.mode) await router.push(`/generate/${task.mode}`);
   params.value = {
     ...task.params,
-    referenceImagePath: undefined
+    referenceImagePath: undefined,
+    referenceImagePaths: undefined
   };
-  referenceImage.value = null;
+  referenceImages.value = [];
   openedHistoryRecord.value = null;
   taskAttached.value = true;
   app.clearGenerationError();
@@ -216,11 +222,12 @@ async function useAsReference(image: SelectedImageFile) {
     await router.push("/generate/image-to-image");
     await nextTick();
   }
-  referenceImage.value = image;
+  referenceImages.value = [image];
   openedHistoryRecord.value = null;
   params.value = {
     ...params.value,
-    referenceImagePath: image.path
+    referenceImagePath: image.path,
+    referenceImagePaths: [image.path]
   };
   taskAttached.value = false;
   app.clearGenerationError();
@@ -272,7 +279,7 @@ async function cutoutImage(handoff: CutoutHandoff) {
       :size-rules="app.capabilities.sizeRules"
       @clear="clearPrompt"
       @open-templates="showTemplates = true"
-      v-model:reference-image="referenceImage"
+      v-model:reference-images="referenceImages"
       @generate="generate"
     />
     <PromptTemplateModal v-if="showTemplates" :mode="mode" @close="showTemplates = false" @use="applyTemplate" />

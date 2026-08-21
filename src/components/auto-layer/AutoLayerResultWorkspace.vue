@@ -5,10 +5,14 @@ import AutoLayerCanvas from "./AutoLayerCanvas.vue";
 import AutoLayerInspector from "./AutoLayerInspector.vue";
 import type { AutoLayerDocument, AutoLayerItem } from "./types";
 
-const props = defineProps<{ document: AutoLayerDocument }>();
+const props = defineProps<{
+  document: AutoLayerDocument;
+  previewScaleLimit?: number | null;
+}>();
 const emit = defineEmits<{
   close: [];
   updateLayers: [layers: AutoLayerItem[]];
+  fitScaleChange: [value: number];
 }>();
 const selectedId = shallowRef<string | null>(null);
 
@@ -32,9 +36,10 @@ watch(() => props.document.layers.map(layer => layer.id).join("|"), () => {
         :image-width="document.width"
         :image-height="document.height"
         :layers="document.layers"
-        :selected-id="selectedId"
+        :preview-scale-limit="previewScaleLimit"
         @select="selectedId = $event"
         @update-layers="emit('updateLayers', $event)"
+        @fit-scale-change="emit('fitScaleChange', $event)"
       />
       <AutoLayerInspector
         :layers="document.layers"

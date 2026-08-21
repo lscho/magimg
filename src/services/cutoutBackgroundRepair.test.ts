@@ -12,41 +12,25 @@ import {
   alphaContentBounds,
   diffuseRepairRgba,
   fillRgbaOutsideAlpha,
-  repairSmoothBackgroundRgba,
-  shouldForceManualDiffusion
+  repairSmoothBackgroundRgba
 } from "@/services/cutoutRepairContext";
 import { analyzeRepairBoundaryQuality } from "@/services/cutoutRepairSurface";
+import { resolveLocalRepairExecutionMode } from "@/services/cutoutBackgroundRepair";
 
 describe("background repair compositing", () => {
-  it("forces script-equivalent diffusion only for manual add strokes without children", () => {
-    const selection = {
-      id: "button",
-      x: 0,
-      y: 0,
-      width: 100,
-      height: 100,
-      behavior: "background" as const,
-      parentId: null,
-      relationSource: "manual" as const,
-      removalStrokes: [{
-        id: "stroke",
-        operation: "add" as const,
-        radius: 12,
-        smart: false,
-        points: [{ x: 50, y: 50 }]
-      }]
-    };
-
-    expect(shouldForceManualDiffusion(selection, false)).toBe(true);
-    expect(shouldForceManualDiffusion(selection, true)).toBe(false);
-    expect(shouldForceManualDiffusion({
-      ...selection,
-      removalStrokes: [{ ...selection.removalStrokes[0], smart: true }]
-    }, false)).toBe(false);
-    expect(shouldForceManualDiffusion({
-      ...selection,
-      removalStrokes: [{ ...selection.removalStrokes[0], operation: "restore" as const }]
-    }, false)).toBe(false);
+  it("allows production parent repairs to force Big-LaMa for every material class", () => {
+    expect(resolveLocalRepairExecutionMode("surface")).toBe("deterministic");
+    expect(resolveLocalRepairExecutionMode("diffusion")).toBe("deterministic");
+    expect(resolveLocalRepairExecutionMode("model")).toBe("model");
+    expect(resolveLocalRepairExecutionMode("model", { forceDiffusion: true }))
+      .toBe("deterministic");
+    expect(resolveLocalRepairExecutionMode("surface", { forceModel: true })).toBe("model");
+    expect(resolveLocalRepairExecutionMode("diffusion", { forceModel: true })).toBe("model");
+    expect(resolveLocalRepairExecutionMode("model", { forceModel: true })).toBe("model");
+    expect(() => resolveLocalRepairExecutionMode("surface", {
+      forceDiffusion: true,
+      forceModel: true
+    })).toThrow("不能同时强制");
   });
 
   it("keeps unmasked RGBA exact and preserves source alpha inside the mask", () => {

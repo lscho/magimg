@@ -133,14 +133,21 @@ export function selectedImageFileFromFile(file: File): SelectedImageFile {
 }
 
 export async function chooseImageFile(): Promise<SelectedImageFile | null> {
+  const selected = await chooseImageFiles(1);
+  return selected[0] ?? null;
+}
+
+export async function chooseImageFiles(maxFiles = 3): Promise<SelectedImageFile[]> {
+  const limit = Math.max(1, Math.floor(maxFiles));
   if (!isTauri) {
     return await new Promise((resolve, reject) => {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/jpeg,image/png,image/webp";
+      input.multiple = limit > 1;
       input.hidden = true;
 
-      const finish = (selected: SelectedImageFile | null) => {
+      const finish = (selected: SelectedImageFile[]) => {
         input.remove();
         resolve(selected);
       };
@@ -151,34 +158,34 @@ export async function chooseImageFile(): Promise<SelectedImageFile | null> {
       input.addEventListener(
         "change",
         () => {
-          const file = input.files?.[0];
           try {
-            finish(file ? selectedImageFileFromFile(file) : null);
+            finish(Array.from(input.files || []).slice(0, limit).map(selectedImageFileFromFile));
           } catch (exception) {
             fail(exception);
           }
         },
         { once: true }
       );
-      input.addEventListener("cancel", () => finish(null), { once: true });
+      input.addEventListener("cancel", () => finish([]), { once: true });
       document.body.append(input);
       input.click();
     });
   }
 
   const selected = await open({
-    multiple: false,
+    multiple: limit > 1,
     filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
   });
-  if (typeof selected !== "string") return null;
-
-  const name = fileNameFromPath(selected);
-  const bytes = await readFile(selected);
-  return {
-    name,
-    path: selected,
-    file: new File([bytes], name, { type: mimeTypeFromName(name) })
-  };
+  const paths = (typeof selected === "string" ? [selected] : selected || []).slice(0, limit);
+  return Promise.all(paths.map(async (path) => {
+    const name = fileNameFromPath(path);
+    const bytes = await readFile(path);
+    return {
+      name,
+      path,
+      file: new File([bytes], name, { type: mimeTypeFromName(name) })
+    };
+  }));
 }
 
 export async function autoLayerSelectionSourceExists(path: string): Promise<boolean> {

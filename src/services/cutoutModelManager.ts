@@ -58,11 +58,11 @@ const MODEL_FILES = [
 /**
  * BiRefNet Swin-T 通用抠图模型（rembg 官方导出，MIT）。
  * 输入 1x3x1024x1024 NCHW 归一化 float，输出 1x1x1024x1024 logits。
- * 下载源为 rembg 官方 GitHub Release（固定 URL + SHA-256 校验）。
+ * 上游来源为 rembg 官方 GitHub Release，客户端下载固定镜像并执行 SHA-256 校验。
  */
 const BIRENET_MODEL_FILE = {
   fileName: "birefnet-swin-tiny-general.onnx",
-  url: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+  url: `${CUTOUT_MODEL_DOWNLOAD_BASE_URL}/birefnet-swin-tiny-general.onnx`,
   sizeBytes: 224_005_088,
   sha256: "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
 } as const satisfies CutoutModelFileDescriptor;

@@ -135,22 +135,22 @@ export function taskParams(task: GenerationTask): ImageParams {
 }
 
 export function taskToRecord(task: GenerationTask, balanceAfter: number): GenerationRecord {
-  const input = task.inputAsset;
+  const inputs = task.inputAssets || (task.inputAsset ? [task.inputAsset] : []);
+  const inputImages = inputs.map(input => ({
+    id: input.id,
+    remoteUrl: resolveApiAssetUrl(input.url),
+    width: task.width,
+    height: task.height,
+    mimeType: input.mimeType
+  }));
   const output = task.outputAsset;
   return {
     id: `server_${task.id}`,
     generationId: task.id,
     mode: toGenerationMode(task.mode),
     params: taskParams(task),
-    inputImage: input
-      ? {
-          id: input.id,
-          remoteUrl: resolveApiAssetUrl(input.url),
-          width: task.width,
-          height: task.height,
-          mimeType: input.mimeType
-        }
-      : undefined,
+    inputImage: inputImages[0],
+    inputImages: inputImages.length ? inputImages : undefined,
     images: output
       ? [
           {
