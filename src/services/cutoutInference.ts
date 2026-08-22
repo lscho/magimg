@@ -5,6 +5,11 @@ import {
   guidedUpsampleAlpha,
   resampleAlphaPlane
 } from "@/services/cutoutResample";
+import {
+  createCutoutTrimapDetails,
+  refineSolidBackgroundEdgeAlpha,
+  type SolidBorderBackground
+} from "@/services/cutoutTrimap";
 import type {
   CutoutModelDescriptor,
   CutoutPointPrompt,
@@ -37,8 +42,6 @@ const SAM2_IMAGE_STD = [0.229, 0.224, 0.225] as const;
 const REFINER_MIN_LONG_EDGE = 512;
 const REFINER_MAX_LONG_EDGE = 1024;
 const REFINER_INPUT_MULTIPLE = 32;
-const TRIMAP_FOREGROUND_THRESHOLD = 128;
-const TRIMAP_DETAIL_THRESHOLD = 32;
 
 function invokeRawWithChannel(
   command: string,
@@ -496,114 +499,6 @@ export async function segmentBirefnetBox(
   return fullMask;
 }
 
-function morphBinaryMask(
-  source: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-  operation: "dilate" | "erode"
-): Uint8Array {
-  const diameter = radius * 2 + 1;
-  const horizontal = new Uint8Array(source.length);
-  const output = new Uint8Array(source.length);
-
-  for (let y = 0; y < height; y += 1) {
-    const row = y * width;
-    let count = 0;
-    for (let x = 0; x <= radius && x < width; x += 1) count += source[row + x];
-    for (let x = 0; x < width; x += 1) {
-      horizontal[row + x] = operation === "dilate"
-        ? Number(count > 0)
-        : Number(count === diameter);
-      const leaving = x - radius;
-      const entering = x + radius + 1;
-      if (leaving >= 0) count -= source[row + leaving];
-      if (entering < width) count += source[row + entering];
-    }
-  }
-
-  for (let x = 0; x < width; x += 1) {
-    let count = 0;
-    for (let y = 0; y <= radius && y < height; y += 1) {
-      count += horizontal[y * width + x];
-    }
-    for (let y = 0; y < height; y += 1) {
-      output[y * width + x] = operation === "dilate"
-        ? Number(count > 0)
-        : Number(count === diameter);
-      const leaving = y - radius;
-      const entering = y + radius + 1;
-      if (leaving >= 0) count -= horizontal[leaving * width + x];
-      if (entering < height) count += horizontal[entering * width + x];
-    }
-  }
-  return output;
-}
-
-/** 标记与裁剪区域边界连通的确定背景，封闭的内部缺口留给精修模型判断。 */
-function markExteriorBackground(
-  dilatedForeground: Uint8Array,
-  width: number,
-  height: number
-): Uint8Array {
-  const exterior = new Uint8Array(dilatedForeground.length);
-  const queue = new Uint32Array(dilatedForeground.length);
-  let head = 0;
-  let tail = 0;
-
-  const enqueue = (index: number) => {
-    if (dilatedForeground[index] || exterior[index]) return;
-    exterior[index] = 1;
-    queue[tail] = index;
-    tail += 1;
-  };
-
-  for (let x = 0; x < width; x += 1) {
-    enqueue(x);
-    enqueue((height - 1) * width + x);
-  }
-  for (let y = 1; y < height - 1; y += 1) {
-    enqueue(y * width);
-    enqueue(y * width + width - 1);
-  }
-
-  while (head < tail) {
-    const index = queue[head];
-    head += 1;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    if (x > 0) enqueue(index - 1);
-    if (x + 1 < width) enqueue(index + 1);
-    if (y > 0) enqueue(index - width);
-    if (y + 1 < height) enqueue(index + width);
-  }
-  return exterior;
-}
-
-/**
- * 未知带非对称：发丝、毛边向背景侧延伸，膨胀半径要远大于腐蚀半径；
- * 膨胀种子用更低阈值，让 SAM 对细节的弱响应也能进入未知带交给精修模型。
- */
-function createTrimap(alpha: Uint8Array, width: number, height: number): Uint8Array {
-  const solidForeground = new Uint8Array(alpha.length);
-  const faintForeground = new Uint8Array(alpha.length);
-  for (let index = 0; index < alpha.length; index += 1) {
-    solidForeground[index] = Number(alpha[index] >= TRIMAP_FOREGROUND_THRESHOLD);
-    faintForeground[index] = Number(alpha[index] >= TRIMAP_DETAIL_THRESHOLD);
-  }
-  const longEdge = Math.max(width, height);
-  const erodeRadius = clamp(Math.round(longEdge / 128), 4, 8);
-  const dilateRadius = clamp(Math.round(longEdge / 32), 12, 32);
-  const eroded = morphBinaryMask(solidForeground, width, height, erodeRadius, "erode");
-  const dilated = morphBinaryMask(faintForeground, width, height, dilateRadius, "dilate");
-  const exteriorBackground = markExteriorBackground(dilated, width, height);
-  const trimap = new Uint8Array(alpha.length);
-  for (let index = 0; index < trimap.length; index += 1) {
-    trimap[index] = eroded[index] ? 255 : exteriorBackground[index] ? 0 : 128;
-  }
-  return trimap;
-}
-
 function expandRefinerBounds(
   bounds: ReturnType<typeof cutoutSelectionBounds>,
   imageWidth: number,
@@ -630,6 +525,7 @@ interface RefinerInput {
   trimap: Uint8Array;
   rgba: Uint8ClampedArray;
   bounds: ReturnType<typeof cutoutSelectionBounds>;
+  solidBackground: SolidBorderBackground | null;
 }
 
 function prepareRefinerInput(
@@ -686,7 +582,12 @@ function prepareRefinerInput(
     createInterpolationAxis(drawWidth, bounds.width, bounds.x),
     createInterpolationAxis(drawHeight, bounds.height, bounds.y)
   );
-  const trimap = createTrimap(scaledAlpha, drawWidth, drawHeight);
+  const { trimap, solidBackground } = createCutoutTrimapDetails(
+    scaledAlpha,
+    rgba,
+    drawWidth,
+    drawHeight
+  );
   const planeSize = inputWidth * inputHeight;
   const input = new Float32Array(planeSize * 4);
   for (let y = 0; y < drawHeight; y += 1) {
@@ -701,7 +602,17 @@ function prepareRefinerInput(
       input[planeSize * 3 + targetOffset] = trimap[sourceRow + x] / 255;
     }
   }
-  return { input, inputWidth, inputHeight, drawWidth, drawHeight, trimap, rgba, bounds };
+  return {
+    input,
+    inputWidth,
+    inputHeight,
+    drawWidth,
+    drawHeight,
+    trimap,
+    rgba,
+    bounds,
+    solidBackground
+  };
 }
 
 /** 按原分辨率读取图片指定区域的 RGBA，用作导向滤波的引导图。 */
@@ -804,6 +715,15 @@ export async function refineCutoutMask(
   if (nativeAlpha.byteLength !== prepared.inputWidth * prepared.inputHeight) {
     throw new Error("原生精修模型返回的 alpha 尺寸无效。");
   }
+  refineSolidBackgroundEdgeAlpha(
+    nativeAlpha,
+    prepared.inputWidth,
+    prepared.rgba,
+    prepared.trimap,
+    prepared.drawWidth,
+    prepared.drawHeight,
+    prepared.solidBackground
+  );
   for (let y = 0; y < prepared.drawHeight; y += 1) {
     const trimapRow = y * prepared.drawWidth;
     const alphaRow = y * prepared.inputWidth;
